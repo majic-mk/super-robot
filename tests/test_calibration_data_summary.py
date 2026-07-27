@@ -1,10 +1,12 @@
 import unittest
 
 from probekv.calibration import (
+    CalibratedGradientBoostingIntervalPredictor,
     ConservativeRatioPredictor,
     IsotonicRegressor,
     QuantileGradientBoostingBudgetPredictor,
     SplitConformalUpper,
+    SplitConformalInterval,
 )
 from probekv.data import (
     assert_group_isolation,
@@ -40,6 +42,14 @@ class CalibrationTests(unittest.TestCase):
         # ceil((9+1)*0.8)=8th ordered residual.
         self.assertAlmostEqual(calibrator.correction, 0.8)
 
+    def test_two_sided_conformal_interval_contains_prediction(self):
+        calibrator = SplitConformalInterval.fit(
+            [0.1, 0.2, 0.3], [0.2, 0.25, 0.5], miscoverage=0.2
+        )
+        lower, upper = calibrator.bounds(0.4)
+        self.assertLessEqual(lower, 0.4)
+        self.assertGreaterEqual(upper, 0.4)
+
     def test_conservative_predictor_returns_bounded_ratio(self):
         predictor = ConservativeRatioPredictor().fit(
             [0, 1, 2, 3],
@@ -61,6 +71,17 @@ class CalibrationTests(unittest.TestCase):
         values = predictor.predict_upper([[0.5, 0.5], [2.5, 2.5]])
         self.assertEqual(len(values), 2)
         self.assertTrue(all(0 <= value <= 1 for value in values))
+
+    def test_calibrated_interval_predictor(self):
+        predictor = CalibratedGradientBoostingIntervalPredictor().fit(
+            [[0], [1], [2], [3], [4], [5]],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            [[0.5], [2.5], [4.5]],
+            [0.15, 0.35, 0.55],
+        )
+        bounds = predictor.predict_bounds([[1.5], [3.5]])
+        self.assertEqual(len(bounds), 2)
+        self.assertTrue(all(0 <= lower <= upper <= 1 for lower, upper in bounds))
 
 
 class DataIsolationTests(unittest.TestCase):

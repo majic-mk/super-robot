@@ -31,11 +31,14 @@
 | Canonical store | `source_store.py` | exact full-prefill only, Kmax=4 |
 | Probe selector | `selector.py` | conservative interval early exit |
 | Budget calibration | `calibration.py` | isotonic baseline + split conformal upper |
+| Case manifest | `manifest.py` | token hash plus content/document split isolation |
+| HF reference state | `reference_hf.py` | full-prefill pre-RoPE K/V/hidden/query correctness |
+| Local E1/E2 loop | `local_e1e2.py` | labels, fit/calibration, locked evaluation, resume |
 | Repair label | `labeling.py` | suffix-monotone safe ratio |
 | Reuse planner | `cost.py` | total-cost admission and dynamic layer |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
 | Scheduler | `scheduler.py` | No-overlap/A-only/B-only/Hybrid |
-| Repair integration | `backend.py` | stable interface; canonical input remains immutable |
+| Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |
 | Statistics/gates | `statistics.py`, `gates.py` | paired grouped inference |
 | Audit trail | `io.py` | JSONL, optional Parquet, environment manifest |
 

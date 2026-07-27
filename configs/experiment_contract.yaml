@@ -1,7 +1,12 @@
-schema_version: 1
+schema_version: 2
 project: ProbeKV
 core_claim: current-state-guided historical KV Source selection
 frozen_at: 2026-07-26
+amended_at: 2026-07-27
+amendment_note: >-
+  Following the pre-experiment design review, every layer through the 25%
+  ceiling is the main probe policy. The original sparse checkpoints remain a
+  mandatory overhead ablation. No test result motivated this amendment.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -13,6 +18,11 @@ invariants:
   gamma_ablation: [0.6, 0.7, 0.8, 0.9]
   max_probe_fraction: 0.25
   force_selection_at_probe_max: false
+
+probe_policy:
+  main_32_layer_checkpoints: [1, 2, 3, 4, 5, 6, 7, 8]
+  sparse_ablation_32_layer_checkpoints: [1, 2, 4, 6, 8]
+  checkpoint_cost_must_be_measured_separately: true
 
 repair_ratios: [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0]
 reuse_layer_fractions: [0.10, 0.15, 0.22, 0.30, 0.40]

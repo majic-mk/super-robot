@@ -13,6 +13,8 @@ from .io import (
     write_json,
     write_jsonl,
 )
+from .local_e1e2 import run_local_e1e2
+from .manifest import case_from_mapping, manifest_digest, validate_manifest
 from .simulation import run_local_simulation
 
 
@@ -79,6 +81,49 @@ def _validate(config_path: str) -> int:
     return 0
 
 
+def _local_e1e2(
+    config_path: str, output_override: str = None, resume: bool = False
+) -> int:
+    config = load_config(config_path)
+    output = Path(output_override or config.output_dir).resolve()
+    summary = run_local_e1e2(config, output, resume=resume)
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0
+
+
+def _build_manifest(
+    input_path: str,
+    output_path: str,
+    model_signature: str,
+    seed: int,
+) -> int:
+    rows = []
+    with Path(input_path).open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as error:
+                raise ValueError("invalid JSON on line %d" % line_number) from error
+    cases = [case_from_mapping(row, model_signature, seed) for row in rows]
+    validate_manifest(cases)
+    output = Path(output_path).resolve()
+    write_jsonl(output, [case.to_row() for case in cases])
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "cases": len(cases),
+                "manifest_digest": manifest_digest(cases),
+                "paper_evidence": False,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="probekv")
     subparsers = parser.add_subparsers(dest="command")
@@ -87,6 +132,15 @@ def build_parser() -> argparse.ArgumentParser:
     simulate = subparsers.add_parser("simulate")
     simulate.add_argument("--config", required=True)
     simulate.add_argument("--output")
+    e1e2 = subparsers.add_parser("local-e1e2")
+    e1e2.add_argument("--config", required=True)
+    e1e2.add_argument("--output")
+    e1e2.add_argument("--resume", action="store_true")
+    manifest = subparsers.add_parser("build-manifest")
+    manifest.add_argument("--input", required=True)
+    manifest.add_argument("--output", required=True)
+    manifest.add_argument("--model-signature", required=True)
+    manifest.add_argument("--seed", type=int, default=20260726)
     return parser
 
 
@@ -97,6 +151,12 @@ def main(argv=None) -> int:
         return _validate(args.config)
     if args.command == "simulate":
         return _simulate(args.config, args.output)
+    if args.command == "local-e1e2":
+        return _local_e1e2(args.config, args.output, args.resume)
+    if args.command == "build-manifest":
+        return _build_manifest(
+            args.input, args.output, args.model_signature, args.seed
+        )
     parser.print_help()
     return 2
 

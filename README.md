@@ -18,6 +18,7 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
+python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
 Simulation artifacts are always marked `paper_evidence: false`. Formal timing
@@ -29,6 +30,8 @@ claims require the pinned CacheBlend stack on A100.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/LOCAL_VALIDATION.md`: commands and local/A100 boundary.
 - `docs/A100_RUNBOOK.md`: timing and evidence collection rules.
+- `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.
+- `docs/CACHEBLEND_INTEGRATION.md`: the remaining pinned-runtime shim contract.
 - `src/probekv/backend.py`: integration boundary for CacheBlend or SparseX.
 - `tests/`: executable invariants and decision-policy tests.
 

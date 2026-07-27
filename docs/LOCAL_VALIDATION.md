@@ -21,6 +21,10 @@ For a locally cached Hugging Face causal LM:
 python scripts/local_model_h0.py `
   --model C:\path\to\snapshot `
   --output artifacts/local_validation/model_h0.json
+
+python scripts/local_reference_probe.py `
+  --model C:\path\to\snapshot `
+  --output artifacts/local_validation/reference_probe.json
 ```
 
 The model check verifies:
@@ -30,6 +34,8 @@ The model check verifies:
 - canonical tensor save/load is bit-exact;
 - probe-summary reads do not mutate the source;
 - deterministic greedy generation repeats exactly.
+- the reference backend captures pre-RoPE K, V, hidden and query projections
+  at every layer through the 25% probe ceiling.
 
 ## Current workstation finding
 

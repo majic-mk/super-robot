@@ -1,6 +1,6 @@
 # ProbeKV local validation report
 
-Date: 2026-07-26
+Date: 2026-07-27
 
 Workstation: Windows 11 / RTX 5070 Ti Laptop 12 GB / 32 GB RAM
 
@@ -13,11 +13,13 @@ a failing ProbeKV invariant.
 | Check | Result | Evidence |
 |---|---:|---|
 | Python compile | pass | `python -m compileall -q src scripts tests` |
-| Unit/integration/property tests | 57/57 pass | source, RoPE, labels, probe, calibration, reuse, prefetch, multi-request scheduler, statistics, CLI |
+| Unit/integration/property tests | 68/68 pass | source, RoPE, labels, probe, calibration, manifest isolation, CacheBlend adapter, resume, prefetch, scheduler, statistics, CLI |
 | Frozen contract audit | pass | 360 main RAG cells; 1620 profile cells without SSD |
 | Exact H3 sample audit | pass | minimum 299 zero-violation cases; pooled RAG has 600/model |
 | Local simulation | pass | JSONL and Parquet emitted, all rows marked non-paper evidence |
 | Real local causal-LM H0 | pass | cached TinyLlama-1.1B, CPU, 22 layers |
+| Real per-layer reference probe | pass | pre-RoPE K, V, hidden and query captured for layers 1-5 |
+| Local E1/E2 closed loop | pass | 60 fixtures; 10,800 ratio rows; 1,920 probe rows; selection and abstention both exercised |
 | Python wheel build | pass | `probekv-0.1.0-py3-none-any.whl` |
 | Current PyTorch GPU compatibility | fail/precondition | installed cu121 supports through `sm_90`; GPU is `sm_120` |
 
@@ -35,6 +37,12 @@ same 13-token segment. The same absolute token positions were therefore used.
 - The next-token logits from original versus reloaded full KV cache were exact.
 - Computing summaries did not mutate canonical tensors.
 - Two greedy generations were token-identical.
+
+The new reference-state backend also captured every layer through the 25%
+ceiling on the 22-layer model (layers 1-5). For the different historical
+context, pre-RoPE K drift grew from `0.0` at layer 1 to `0.1400` at layer 5;
+hidden drift grew from `0.0976` to `0.3202`. Matching-source drift remained
+exactly zero, and query plus pre-RoPE K hooks were present at every layer.
 
 This directly confirms the concern about `S1=KV(C|A)` and `S2=KV(C|B)`: the
 deep-layer state of C carries historical-context influence. S2 cannot be made
@@ -56,3 +64,8 @@ prefetch, scheduling and gate code. Its H1/H2/H4 booleans are not empirical
 evidence and must not be copied into the paper. A failed synthetic H2 is a
 successful demonstration that the gate stops an under-covered configuration,
 not a conclusion about ProbeKV.
+
+Likewise, the 60-case local E1/E2 run uses generated latent safe ratios. Its
+88.9% selection coverage, 11.1% abstention rate and ranking metrics only prove
+that the end-to-end software and audit paths execute; they are not H1/H2
+evidence and are deliberately labelled `paper_evidence: false`.

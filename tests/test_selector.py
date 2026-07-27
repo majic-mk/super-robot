@@ -4,6 +4,7 @@ from probekv.contracts import CandidateBounds, DecisionReason
 from probekv.selector import (
     DynamicProbeSelector,
     ProbePolicy,
+    dense_probe_checkpoints,
     default_probe_checkpoints,
     normalized_oracle_regret,
 )
@@ -39,6 +40,7 @@ class SelectorTests(unittest.TestCase):
 
     def test_32_layer_contract(self):
         self.assertEqual(default_probe_checkpoints(32), (1, 2, 4, 6, 8))
+        self.assertEqual(dense_probe_checkpoints(32), tuple(range(1, 9)))
         self.assertLessEqual(default_probe_checkpoints(22)[-1], 5)
 
     def test_normalized_regret(self):

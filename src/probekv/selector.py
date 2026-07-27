@@ -105,3 +105,11 @@ def default_probe_checkpoints(total_layers: int) -> Tuple[int, ...]:
         for fraction in fractions
     }
     return tuple(sorted(values))
+
+
+def dense_probe_checkpoints(total_layers: int) -> Tuple[int, ...]:
+    """Check every layer up to the inclusive 25% probe ceiling."""
+    if total_layers <= 0:
+        raise ValueError("total_layers must be positive")
+    maximum = max(1, int(total_layers * 0.25))
+    return tuple(range(1, maximum + 1))

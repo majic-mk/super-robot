@@ -83,6 +83,89 @@ class SplitConformalUpper:
         return min(upper, max(lower, float(prediction) + self.correction))
 
 
+@dataclass(frozen=True)
+class SplitConformalInterval:
+    """Symmetric finite-sample interval for source-cost ranking.
+
+    The one-sided upper predictor remains the quality budget used for online
+    repair.  This interval is separate: it lets the selector implement the
+    pre-registered rule ``best upper < second-best lower``.
+    """
+
+    miscoverage: float = 0.10
+    radius: float = 0.0
+
+    @classmethod
+    def fit(
+        cls,
+        predictions: Sequence[float],
+        actual: Sequence[float],
+        miscoverage: float = 0.10,
+    ) -> "SplitConformalInterval":
+        if len(predictions) != len(actual) or len(predictions) == 0:
+            raise ValueError("predictions and actual values must be paired")
+        if not 0.0 < miscoverage < 1.0:
+            raise ValueError("miscoverage must be in (0, 1)")
+        residuals = sorted(
+            abs(float(target) - float(prediction))
+            for prediction, target in zip(predictions, actual)
+        )
+        n = len(residuals)
+        rank = min(n, math.ceil((n + 1) * (1.0 - miscoverage)))
+        return cls(miscoverage, residuals[rank - 1])
+
+    def bounds(
+        self, prediction: float, lower: float = 0.0, upper: float = 1.0
+    ) -> Tuple[float, float]:
+        return (
+            min(upper, max(lower, float(prediction) - self.radius)),
+            min(upper, max(lower, float(prediction) + self.radius)),
+        )
+
+
+class CalibratedGradientBoostingIntervalPredictor:
+    """Dependency-light point model plus a held-out conformal interval."""
+
+    def __init__(self, miscoverage: float = 0.10, random_state: int = 20260726) -> None:
+        self.miscoverage = miscoverage
+        self.random_state = random_state
+        self.model = None
+        self.calibrator = None
+
+    def fit(
+        self,
+        train_features,
+        train_targets: Sequence[float],
+        calibration_features,
+        calibration_targets: Sequence[float],
+    ) -> "CalibratedGradientBoostingIntervalPredictor":
+        try:
+            from sklearn.ensemble import GradientBoostingRegressor
+        except ImportError as error:
+            raise RuntimeError("scikit-learn is required for interval prediction") from error
+        self.model = GradientBoostingRegressor(
+            loss="huber",
+            n_estimators=100,
+            max_depth=3,
+            learning_rate=0.05,
+            random_state=self.random_state,
+        )
+        self.model.fit(train_features, train_targets)
+        predictions = self.model.predict(calibration_features)
+        self.calibrator = SplitConformalInterval.fit(
+            predictions, calibration_targets, self.miscoverage
+        )
+        return self
+
+    def predict_bounds(self, features) -> List[Tuple[float, float]]:
+        if self.model is None or self.calibrator is None:
+            raise RuntimeError("predictor is not fitted")
+        return [
+            self.calibrator.bounds(float(prediction))
+            for prediction in self.model.predict(features)
+        ]
+
+
 class ConservativeRatioPredictor:
     def __init__(self, miscoverage: float = 0.10) -> None:
         self.regressor = IsotonicRegressor()

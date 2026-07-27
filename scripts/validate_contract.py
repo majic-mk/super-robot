@@ -29,6 +29,11 @@ def main() -> int:
         errors.append("online Kmax must be 4")
     if max(invariants["offline_k"]) != 8:
         errors.append("offline K ablation must include 8")
+    main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
+    if main_checkpoints != list(range(1, 9)):
+        errors.append("32-layer main probe policy must inspect every layer 1-8")
+    if max(main_checkpoints) > 32 * invariants["max_probe_fraction"]:
+        errors.append("main probe checkpoints exceed the 25% ceiling")
     if max(contract["repair_ratios"]) != 1.0 or min(contract["repair_ratios"]) != 0.0:
         errors.append("repair grid must cover [0, 1]")
     tail_minimum = minimum_zero_violation_trials(

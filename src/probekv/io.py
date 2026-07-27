@@ -6,6 +6,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,32 @@ def write_json(path: Path, value: Any) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=2, default=_json_default)
         handle.write("\n")
+
+
+def atomic_write_json(path: Path, value: Any) -> None:
+    """Atomically replace a JSON artifact after a successful stage.
+
+    Experiment stages can be interrupted by preemption or a workstation
+    shutdown.  Writing to a sibling temporary file first prevents a truncated
+    JSON file from being mistaken for a completed stage during resume.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2, default=_json_default)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, str(path))
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
 
 
 def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:

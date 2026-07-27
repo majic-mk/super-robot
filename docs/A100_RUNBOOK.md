@@ -5,6 +5,10 @@
 Run E0 first. Do not launch E1 until full-prefill identity, RoPE alignment,
 CacheBlend quality, timing stability and memory telemetry pass.
 
+The repository's local pipeline and `CacheBlendBackend` adapter are ready, but
+the pinned CacheBlend runtime shim is intentionally not simulated. Complete the
+CB0-CB3 milestones in `CACHEBLEND_INTEGRATION.md` before claiming E0 complete.
+
 ## Environment
 
 1. Clone CacheBlend and checkout
@@ -14,6 +18,17 @@ CacheBlend quality, timing stability and memory telemetry pass.
    repository dirty state.
 4. Use pinned CPU memory. Add SSD only after measuring sequential read bandwidth
    of at least 3 GB/s.
+
+Initial server preparation:
+
+```bash
+python -m pip install -e . -r requirements/ci.txt -r requirements/analysis.txt
+bash scripts/server/run_preflight.sh
+bash scripts/server/prepare_cacheblend.sh /absolute/external/path/CacheBlend
+```
+
+The CacheBlend path should be outside this repository, as should model weights,
+datasets and raw results.
 
 ## Required timing boundaries
 
