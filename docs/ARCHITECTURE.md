@@ -32,6 +32,7 @@
 | Probe selector | `selector.py` | conservative interval early exit |
 | Budget calibration | `calibration.py` | isotonic baseline + split conformal upper |
 | Case manifest | `manifest.py` | token hash plus content/document split isolation |
+| RAG normalization | `rag_data.py` | three schemas; controlled and corpus-repeat kept separate |
 | HF reference state | `reference_hf.py` | full-prefill pre-RoPE K/V/hidden/query correctness |
 | Local E1/E2 loop | `local_e1e2.py` | labels, fit/calibration, locked evaluation, resume |
 | Repair label | `labeling.py` | suffix-monotone safe ratio |

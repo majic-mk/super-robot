@@ -1,0 +1,16 @@
+[
+  {
+    "_id": "fixture-hotpot-001",
+    "question": "Which instrument was calibrated?",
+    "answer": "the spectrometer",
+    "supporting_facts": [["Target", 0]],
+    "context": [
+      ["Target", ["The spectrometer was calibrated twice."]],
+      ["Context A", ["A laboratory opened in 1999."]],
+      ["Context B", ["The project used an optical bench."]],
+      ["Context C", ["A second team reviewed the logs."]],
+      ["Context D", ["The room temperature stayed constant."]],
+      ["Context E", ["Calibration records were archived."]]
+    ]
+  }
+]

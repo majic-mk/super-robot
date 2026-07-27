@@ -8,6 +8,7 @@ from probekv.local_e1e2 import run_local_e1e2
 from probekv.manifest import (
     case_from_mapping,
     manifest_digest,
+    manifest_case_from_row,
     synthetic_manifest,
     token_content_hash,
     validate_manifest,
@@ -24,6 +25,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual({case.split for case in cases}, {"train", "calibration", "test"})
         self.assertEqual(len({case.case_id for case in cases}), 20)
         self.assertEqual(len(manifest_digest(cases)), 64)
+        self.assertEqual(manifest_case_from_row(cases[0].to_row()), cases[0])
 
     def test_mapping_requires_model_token_ids(self):
         case = case_from_mapping(

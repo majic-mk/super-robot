@@ -36,6 +36,9 @@ class ManifestSource:
     source_id: str
     historical_context: str
     context_id: str
+    origin_example_id: str = ""
+    preceding_document_ids: Tuple[str, ...] = ()
+    regime: str = "unspecified"
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,10 @@ class ManifestCase:
     content_hash: str
     current_context: str
     sources: Tuple[ManifestSource, ...]
+    question: str = ""
+    answers: Tuple[str, ...] = ()
+    construction: str = "normalized_input"
+    target_document_id: str = ""
 
     def validate(self, online_kmax: int = 4) -> None:
         if self.split not in {"train", "calibration", "test", "pilot"}:
@@ -68,6 +75,9 @@ class ManifestCase:
             raise ValueError("source identifiers must be unique")
         if len(context_ids) != len(set(context_ids)):
             raise ValueError("historical contexts must be independently identified")
+        contexts = [source.historical_context for source in self.sources]
+        if len(contexts) != len(set(contexts)):
+            raise ValueError("historical preceding contexts must be distinct")
 
     def to_row(self) -> Dict[str, Any]:
         row = asdict(self)
@@ -146,6 +156,43 @@ def case_from_mapping(
         content_hash=content_hash,
         current_context=str(raw["current_context"]),
         sources=tuple(sources),
+    )
+    result.validate()
+    return result
+
+
+def manifest_case_from_row(raw: Mapping[str, Any]) -> ManifestCase:
+    """Rehydrate a previously audited manifest row without re-splitting it."""
+    sources = tuple(
+        ManifestSource(
+            source_id=str(source["source_id"]),
+            historical_context=str(source["historical_context"]),
+            context_id=str(source["context_id"]),
+            origin_example_id=str(source.get("origin_example_id", "")),
+            preceding_document_ids=tuple(
+                str(value) for value in source.get("preceding_document_ids", ())
+            ),
+            regime=str(source.get("regime", "unspecified")),
+        )
+        for source in raw["sources"]
+    )
+    result = ManifestCase(
+        case_id=str(raw["case_id"]),
+        dataset=str(raw["dataset"]),
+        document_id=str(raw["document_id"]),
+        group_id=str(raw["group_id"]),
+        split=str(raw["split"]),
+        regime=str(raw["regime"]),
+        model_signature=str(raw["model_signature"]),
+        segment_text=str(raw["segment_text"]),
+        segment_token_ids=tuple(int(token) for token in raw["segment_token_ids"]),
+        content_hash=str(raw["content_hash"]),
+        current_context=str(raw["current_context"]),
+        sources=sources,
+        question=str(raw.get("question", "")),
+        answers=tuple(str(answer) for answer in raw.get("answers", ())),
+        construction=str(raw.get("construction", "normalized_input")),
+        target_document_id=str(raw.get("target_document_id", "")),
     )
     result.validate()
     return result

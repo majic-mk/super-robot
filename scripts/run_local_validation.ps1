@@ -57,6 +57,23 @@ try {
                 --output artifacts/local_validation/reference_probe.json `
                 --threads 8
             if ($LASTEXITCODE -ne 0) { throw "local reference probe failed" }
+
+            python scripts/prepare_rag_data.py `
+                --dataset hotpotqa `
+                --input examples/hotpot_fixture.json `
+                --output artifacts/local_validation/hotpot_fixture `
+                --tokenizer $snapshot `
+                --model-signature "TinyLlama-local-fixture" `
+                --construction controlled
+            if ($LASTEXITCODE -ne 0) { throw "RAG fixture construction failed" }
+
+            python scripts/probe_rag_manifest.py `
+                --manifest artifacts/local_validation/hotpot_fixture/cases.jsonl `
+                --model $snapshot `
+                --output artifacts/local_validation/hotpot_fixture/reference_probe `
+                --limit-cases 1 `
+                --threads 8
+            if ($LASTEXITCODE -ne 0) { throw "RAG manifest probe failed" }
         }
     }
 
