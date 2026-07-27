@@ -1,0 +1,18 @@
+id	title	type	primary_url	audited_at	closest_overlap	status
+2405.16444	CacheBlend: Fast Large Language Model Serving for RAG with Cached Knowledge Fusion	paper	https://arxiv.org/abs/2405.16444	2026-07-27	selective per-layer token repair and load-compute overlap	audited
+2502.15734	Cache-Craft: Managing Chunk-Caches for Efficient Retrieval-Augmented Generation	paper	https://arxiv.org/abs/2502.15734	2026-07-27	multiple context-conditioned chunk-cache variants and CFO selection	closest
+2404.12457	RAGCache: Efficient Knowledge Caching for Retrieval-Augmented Generation	paper	https://arxiv.org/abs/2404.12457	2026-07-27	prefix-aware multi-tier RAG caching and scheduling	audited
+2311.04934	Prompt Cache: Modular Attention Reuse for Low-Latency Inference	paper	https://arxiv.org/abs/2311.04934	2026-07-27	modular reusable attention state	audited
+2410.15332	EPIC: Efficient Position-Independent Caching for Serving Large Language Models	paper	https://arxiv.org/abs/2410.15332	2026-07-27	position-independent context reuse and sparse linking	audited
+2502.16002	KVLink: Accelerating Large Language Models via Efficient KV Cache Reuse	paper	https://arxiv.org/abs/2502.16002	2026-07-27	independent document KV linking with trained tokens	audited
+2503.16525	KVShare: An LLM Service System with Efficient and Effective Multi-Tenant KV Cache Reuse	paper	https://arxiv.org/abs/2503.16525	2026-07-27	cross-request sharing dual-stage deviation and scheduling	audited
+2602.02579	ProphetKV: User-Query-Driven Selective Recomputation for Efficient KV Cache Reuse in Retrieval-Augmented Generation	paper	https://arxiv.org/abs/2602.02579	2026-07-27	query-aware recomputation-token selection	close
+2606.05875	QCFuse: Query-Aware Cache Fusion via Compressed View for Efficient RAG Serving	paper	https://arxiv.org/abs/2606.05875	2026-07-27	query-conditioned anchors and critical-layer probing	close
+ACL-2026-859	SpecCache: Speculative KV Cache Reuse for Efficient RAG Serving	paper	https://aclanthology.org/2026.acl-long.859/	2026-07-27	hidden-state-norm-guided repair-token selection	close
+2605.24022	Adaptive KV Cache Reuse for Fast Long-Context LLM Serving	paper	https://arxiv.org/abs/2605.24022	2026-07-27	hardware-aware recompute-ratio and storage-tier TTFT optimization	close
+2606.01751	SparseX: Efficient Segment-Level KV Cache Sharing for Interleaved LLM Serving	paper	https://arxiv.org/abs/2606.01751	2026-07-27	Sparse-Q repair and segment-level runtime	close
+2510.12872	KVCOMM: Online Cross-context KV-cache Communication for Efficient LLM-based Multi-agent Systems	paper	https://arxiv.org/abs/2510.12872	2026-07-27	bounded historical anchors and prompt-adaptive cross-context reuse	close
+FAST26-CacheSlide	CacheSlide: Unlocking Cross Position-Aware KV Cache Reuse for Accelerating LLM Serving	paper	https://www.usenix.org/conference/fast26/presentation/liu-yang	2026-07-27	position layer and spill-aware cache reuse	audited
+CN120338090A	A method and device for reasoning of a large language model	patent	https://patents.google.com/patent/CN120338090A/en	2026-07-27	historical RAG KV pool exact segment matching and reuse-versus-compute cost	close
+CN120371524A	Large language model reasoning acceleration method and system based on dynamic video memory compression and memory isomerism	patent	https://patents.google.com/patent/CN120371524A/en	2026-07-27	multi-KV fusion selective prefill tiering and asynchronous load	close
+CN120163246A	Large model reasoning acceleration method device storage medium and terminal	patent	https://patents.google.com/patent/CN120163246A/en	2026-07-27	front-layer look-ahead hidden-state attention and layerwise transfer overlap	close

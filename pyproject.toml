@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "probekv"
 version = "0.1.0"
-description = "Current-state-guided historical KV source selection research harness"
+description = "Current-early-state-guided safe-cost selection among historical KV variants"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Research-only"}

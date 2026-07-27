@@ -1,9 +1,10 @@
 # ProbeKV
 
-ProbeKV is a research harness for **current-state-guided historical KV source
-selection**. When the same non-prefix segment has several canonical historical
-KV versions, early fresh state from the current request selects the source with
-the lowest conservative downstream repair cost.
+ProbeKV is a research harness for **target-model current-early-state-guided,
+variant-specific safe-cost selection**. When the same exact non-prefix segment
+has several canonical historical KV variants, fresh early state from the
+current request selects only a conservatively safe and economically useful
+source; uncertain decisions abstain and fall back to full recomputation.
 
 This repository currently implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,
@@ -28,6 +29,8 @@ claims require the pinned CacheBlend stack on A100.
 
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
+- `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
+- `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.
 - `docs/LOCAL_VALIDATION.md`: commands and local/A100 boundary.
 - `docs/A100_RUNBOOK.md`: timing and evidence collection rules.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.

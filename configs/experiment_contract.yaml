@@ -1,12 +1,18 @@
 schema_version: 2
 project: ProbeKV
-core_claim: current-state-guided historical KV Source selection
+core_claim: >-
+  target-model current-early-state-guided selection among multiple canonical
+  historical KV variants of the same exact non-prefix segment, using
+  variant-specific conservative safe total-reuse cost bounds and abstention
 frozen_at: 2026-07-26
 amended_at: 2026-07-27
 amendment_note: >-
   Following the pre-experiment design review, every layer through the 25%
   ceiling is the main probe policy. The original sparse checkpoints remain a
-  mandatory overhead ablation. No test result motivated this amendment.
+  mandatory overhead ablation. A 2026-07-27 prior-art audit also narrowed the
+  claim because Cache-Craft already stores and selects multiple cache variants;
+  multi-version selection, dynamic repair ratios, prefetch and scheduling are
+  not claimed independently. No test result motivated either amendment.
 
 invariants:
   canonical_source_origin: full_prefill
