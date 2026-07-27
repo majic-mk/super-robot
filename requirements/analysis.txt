@@ -1,0 +1,4 @@
+-r ci.txt
+numpy>=1.23,<3
+pandas>=1.5,<3
+pyarrow>=10,<30

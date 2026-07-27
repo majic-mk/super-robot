@@ -1,0 +1,148 @@
+schema_version: 1
+project: ProbeKV
+core_claim: current-state-guided historical KV Source selection
+frozen_at: 2026-07-26
+
+invariants:
+  canonical_source_origin: full_prefill
+  promote_selective_repair: false
+  prefix_cache_precedence: true
+  online_kmax: 4
+  offline_k: [1, 2, 4, 8]
+  default_gamma: 0.8
+  gamma_ablation: [0.6, 0.7, 0.8, 0.9]
+  max_probe_fraction: 0.25
+  force_selection_at_probe_max: false
+
+repair_ratios: [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0]
+reuse_layer_fractions: [0.10, 0.15, 0.22, 0.30, 0.40]
+profile_segment_tokens: [256, 512, 1024, 2048, 4096, 8192]
+main_segment_tokens: [512, 1024, 2048, 4096]
+concurrency: [1, 2, 4, 8, 16]
+seeds: [20260726, 20260727, 20260728]
+
+models:
+  primary:
+    - mistralai/Mistral-7B-Instruct-v0.3
+    - meta-llama/Llama-3.1-8B-Instruct
+  auxiliary:
+    - Qwen/Qwen2.5-7B-Instruct
+  local_correctness:
+    - Qwen/Qwen2.5-1.5B-Instruct
+
+datasets:
+  rag:
+    - name: MuSiQue
+      train: 150
+      calibration: 100
+      locked_test: 200
+    - name: 2WikiMultiHopQA
+      train: 150
+      calibration: 100
+      locked_test: 200
+    - name: HotPotQA
+      train: 150
+      calibration: 100
+      locked_test: 200
+  controlled_cases: 200
+  agent:
+    name: GSM8K
+    agents: 4
+    calibration: 200
+    locked_test: 300
+
+quality:
+  case_task_drop_max: 0.10
+  token_f1_min: 0.90
+  noninferiority_margin_points: 1.0
+  tail_violation_upper_bound: 0.01
+  tail_gate_scope: pooled_three_rag_datasets_per_model
+  note: >-
+    A per-dataset n=200 test cannot establish a one-sided 95% upper bound
+    below 1% with zero observed violations. The formal tail gate is therefore
+    pre-registered on the pooled 600 RAG cases per model; per-dataset estimates
+    remain descriptive. Alternatively increase every dataset to at least 299
+    for the exact one-sided Clopper-Pearson bound with zero violations.
+
+selectors:
+  - random
+  - latest
+  - single_source
+  - cache_craft_style_cfo
+  - raw_drift_argmin
+  - calibrated_repair_cost
+  - probekv_combined
+  - oracle
+
+features:
+  - metadata_only
+  - k_only_pre_rope
+  - v_only
+  - hidden_only
+  - current_query
+  - k_v_hidden
+  - current_state_plus_metadata
+
+prefetch:
+  policies: [P0, P1, P2, P3, P4, Dynamic]
+  dynamic_inputs:
+    - selection_prior
+    - source_bytes
+    - storage_tier
+    - free_hbm
+    - bus_occupancy
+    - concurrency
+
+scheduler:
+  policies: [No-overlap, A-only, B-only, Hybrid]
+  hybrid_extra_dense_budgets: [0, 1, 2, 4]
+  source_ready_promotes_request: true
+  cancel_at_economic_boundary: true
+
+statistics:
+  bootstrap_iterations: 10000
+  unit: case_or_segment_group
+  multiple_testing: Holm-Bonferroni
+  paired_effect_size: Hodges-Lehmann
+  tail_interval: one-sided exact Clopper-Pearson
+  delete_performance_outliers: false
+
+gates:
+  H0:
+    rope_relative_error_max: 1.0e-5
+    greedy_full_exact: true
+    cacheblend_quality_drop_points_max: 1.0
+  H1:
+    min_fraction_spread_ge_10pp: 0.25
+    oracle_k4_cost_reduction_min: 0.10
+  H2:
+    cachecraft_regret_gap_min: 0.05
+    regret_reduction_min: 0.20
+    accepted_by_19pct_layers_min: 0.80
+    probe_compare_full_ttft_max: 0.05
+  H3:
+    noninferiority_lower_ci_min: -0.01
+    tail_upper_ci_max: 0.01
+  H4:
+    admitted_reuse_over_full_max: 0.8
+  H5:
+    q1_ttft_min: 0.10
+    q1_throughput_min: 0.10
+    q1_p95_ttft_min: 0.05
+    q2_range: [0.05, 0.10]
+    stop_below: 0.03
+
+stacks:
+  primary:
+    repository: https://github.com/YaoJiayi/CacheBlend
+    commit: b72d7945e6d6306f12be66520196e0f081fa2b0c
+    vllm: 0.4.1
+    pytorch: 2.2.1
+    cuda: "12.1"
+  compatibility_smoke:
+    vllm: 0.25.1
+
+evidence_policy:
+  local_simulation_is_paper_evidence: false
+  local_correctness_is_paper_performance_evidence: false
+  a100_measurements_required_for_timing_claims: true

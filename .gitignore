@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+artifacts/
+results/
+.idea/
+.vscode/
+
+# Private research material and extracted conversation context
+literature/
+tmp/
+
+# Datasets, checkpoints, model weights, and caches
+data/
+datasets/
+models/
+checkpoints/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+.cache/
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+
+# Server and experiment runtime output
+logs/
+slurm-*.out
+wandb/
+mlruns/
