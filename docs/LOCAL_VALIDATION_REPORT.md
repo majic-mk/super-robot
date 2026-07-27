@@ -13,7 +13,7 @@ a failing ProbeKV invariant.
 | Check | Result | Evidence |
 |---|---:|---|
 | Python compile | pass | `python -m compileall -q src scripts tests` |
-| Unit/integration/property tests | 76/76 pass | source, RoPE, labels, probe, calibration, RAG adapters/construction, manifest isolation, CacheBlend adapter, resume, prefetch, scheduler, statistics, CLI |
+| Unit/integration/property tests | 87/87 pass | source, RoPE, labels, probe, calibration, RAG/E1 orchestration, manifest isolation, CacheBlend adapter, resume, prefetch, scheduler, statistics, CLI |
 | Frozen contract audit | pass | 360 main RAG cells; 1620 profile cells without SSD |
 | Exact H3 sample audit | pass | minimum 299 zero-violation cases; pooled RAG has 600/model |
 | Local simulation | pass | JSONL and Parquet emitted, all rows marked non-paper evidence |
@@ -21,6 +21,7 @@ a failing ProbeKV invariant.
 | Real per-layer reference probe | pass | pre-RoPE K, V, hidden and query captured for layers 1-5 |
 | Local E1/E2 closed loop | pass | 60 fixtures; 10,800 ratio rows; 1,920 probe rows; selection and abstention both exercised |
 | RAG manifest reference probe | pass | HotPot-shaped tokenizer fixture; 1 current + 4 Sources; 5 layers; 20 real observations |
+| E1 four-shard orchestration | pass | 2,664 jobs; no missing/duplicate results; 296 labels; synthetic H1 remains non-paper |
 | Python wheel build | pass | `probekv-0.1.0-py3-none-any.whl` |
 | Current PyTorch GPU compatibility | fail/precondition | installed cu121 supports through `sm_90`; GPU is `sm_120` |
 

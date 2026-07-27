@@ -30,6 +30,10 @@ bash scripts/server/prepare_cacheblend.sh /absolute/external/path/CacheBlend
 The CacheBlend path should be outside this repository, as should model weights,
 datasets and raw results.
 
+Before launching E1, build and archive the immutable job manifest described in
+`E1_JOBS.md`. A server worker may change attempts after a crash, but it must not
+change a job's case, Source, layer or repair ratio.
+
 ## Required timing boundaries
 
 Use CUDA events around GPU work and monotonic host timestamps around I/O.

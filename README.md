@@ -32,6 +32,7 @@ claims require the pinned CacheBlend stack on A100.
 - `docs/A100_RUNBOOK.md`: timing and evidence collection rules.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.
 - `docs/RAG_DATA.md`: real-dataset normalization and Source construction rules.
+- `docs/E1_JOBS.md`: deterministic repair-grid sharding and result audit.
 - `docs/CACHEBLEND_INTEGRATION.md`: the remaining pinned-runtime shim contract.
 - `src/probekv/backend.py`: integration boundary for CacheBlend or SparseX.
 - `tests/`: executable invariants and decision-policy tests.

@@ -36,6 +36,31 @@ try {
         --resume
     if ($LASTEXITCODE -ne 0) { throw "local E1/E2 pipeline failed" }
 
+    python scripts/build_e1_jobs.py `
+        --manifest artifacts/local_validation/local_e1e2/case_manifest.jsonl `
+        --config configs/local_e1e2.json `
+        --output artifacts/local_validation/e1/jobs `
+        --splits train,calibration
+    if ($LASTEXITCODE -ne 0) { throw "E1 job construction failed" }
+
+    0..3 | ForEach-Object {
+        python scripts/simulate_e1_shard.py `
+            --jobs artifacts/local_validation/e1/jobs/jobs.jsonl `
+            --output artifacts/local_validation/e1/shards `
+            --shard-index $_ `
+            --shard-count 4 `
+            --total-layers 32
+        if ($LASTEXITCODE -ne 0) { throw "E1 shard $_ failed" }
+    }
+
+    python scripts/merge_e1_results.py `
+        --jobs artifacts/local_validation/e1/jobs/jobs.jsonl `
+        --result-dir artifacts/local_validation/e1/shards `
+        --output artifacts/local_validation/e1/merged `
+        --total-layers 32 `
+        --require-complete
+    if ($LASTEXITCODE -ne 0) { throw "E1 merge failed" }
+
     python scripts/audit_environment.py `
         --output artifacts/local_validation/environment.json
     if ($LASTEXITCODE -ne 0) { throw "environment audit failed" }
