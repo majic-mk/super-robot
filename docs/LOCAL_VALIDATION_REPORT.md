@@ -13,7 +13,7 @@ a failing ProbeKV invariant.
 | Check | Result | Evidence |
 |---|---:|---|
 | Python compile | pass | `python -m compileall -q src scripts tests` |
-| Unit/integration/property tests | 87/87 pass | source, RoPE, labels, probe, calibration, RAG/E1 orchestration, manifest isolation, CacheBlend adapter, resume, prefetch, scheduler, statistics, CLI |
+| Unit/integration/property tests | 88/88 pass | source, RoPE, labels, probe, calibration, RAG/E1 orchestration, manifest isolation, CacheBlend adapter, resume, prefetch, scheduler, statistics, CLI |
 | Frozen contract audit | pass | 360 main RAG cells; 1620 profile cells without SSD |
 | Exact H3 sample audit | pass | minimum 299 zero-violation cases; pooled RAG has 600/model |
 | Local simulation | pass | JSONL and Parquet emitted, all rows marked non-paper evidence |
@@ -27,28 +27,38 @@ a failing ProbeKV invariant.
 
 ## Real-model observations
 
-Two different, equal-token-length prefixes were independently prefixed to the
-same 13-token segment. The same absolute token positions were therefore used.
+Three mutually different prefixes with different natural token lengths were
+independently prefixed to the same 13-token segment. `P|C` was the current
+request and only `A|C`, `B|C` were historical Sources. No prefix was truncated
+or padded to manufacture matching positions. Token counts were `P=22`, `A=14`
+and `B=12`.
 
-- Layer 0 C-KV difference: `0.0` for K and V. This is expected because the first
-  layer's K/V projection has not yet mixed preceding context.
-- Layer 21 mean absolute difference: `0.275337` for K and `0.183128` for V.
-- Raw current-state drift selected the matching A-conditioned source:
-  source A `0.0`, source B `0.458465`.
+- Layer 0 post-RoPE C-KV difference between A and B was `0.170383` for K and
+  approximately zero for V. K already differs because C occupies different
+  absolute positions; V has not yet mixed preceding context.
+- Layer 21 mean absolute difference was `0.462194` for K and `0.174398` for V.
+- Current-to-historical raw drift was nonzero for both candidates: source A
+  `1.072367`, source B `1.174658`. These values are descriptive only: the toy
+  case has no safe-repair label and therefore cannot establish selector
+  accuracy.
 - Canonical tensor save/load was bit-exact.
 - The next-token logits from original versus reloaded full KV cache were exact.
 - Computing summaries did not mutate canonical tensors.
 - Two greedy generations were token-identical.
 
-The new reference-state backend also captured every layer through the 25%
-ceiling on the 22-layer model (layers 1-5). For the different historical
-context, pre-RoPE K drift grew from `0.0` at layer 1 to `0.1400` at layer 5;
-hidden drift grew from `0.0976` to `0.3202`. Matching-source drift remained
-exactly zero, and query plus pre-RoPE K hooks were present at every layer.
+The reference-state backend also captured every layer through the 25% ceiling
+on the 22-layer model (layers 1-5). For historical source A, pre-RoPE K drift
+grew from approximately zero to `0.0950`; for source B, it also ended at
+`0.0950`. Hidden drift grew from `0.1110` to `0.2876` for A and from `0.1039`
+to `0.2954` for B. Current-to-current self-comparison remained exactly zero only
+as a hook sanity check and was never offered as a candidate Source. Query plus
+pre-RoPE K hooks were present at every layer.
 
-This directly confirms the concern about `S1=KV(C|A)` and `S2=KV(C|B)`: the
-deep-layer state of C carries historical-context influence. S2 cannot be made
-by copying S1 and relabelling it; both must come from independent full prefills.
+This confirms only that the state of C carries historical-context influence and
+that Sources must come from independent full prefills. Growing drift does not
+prove that deeper probing improves Source ranking: that requires safe-repair
+labels and is tested by H2. If ranking becomes reliable only after deep probing,
+the economic gate rejects the Probe path in favor of full recomputation.
 
 ## Environment blocker
 

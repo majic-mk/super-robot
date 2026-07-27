@@ -20,11 +20,15 @@ def encode(text):
     return [ord(character) for character in text]
 
 
-def documents(count=6, shared=None):
+def documents(count=6, shared=None, prefix_tag=""):
     result = []
     for index in range(count):
         title = "Shared" if shared is not None and index == 2 else "Title %d" % index
-        text = shared if shared is not None and index == 2 else "Document text %d" % index
+        text = (
+            shared
+            if shared is not None and index == 2
+            else "Document text %s %d" % (prefix_tag, index)
+        )
         result.append(
             RAGDocument(
                 "%s-%s" % (title, text), title, text, index == 2, index
@@ -119,6 +123,16 @@ class ConstructionTests(unittest.TestCase):
             },
         )
         self.assertEqual(len({source.historical_context for source in cases[0].sources}), 4)
+        self.assertNotIn(cases[0].current_context, {source.historical_context for source in cases[0].sources})
+        self.assertNotIn("Question?", cases[0].current_context)
+        prefix_lengths = [
+            len(encode(cases[0].current_context)),
+            *[
+                len(encode(source.historical_context))
+                for source in cases[0].sources
+            ],
+        ]
+        self.assertEqual(len(prefix_lengths), len(set(prefix_lengths)))
 
     def test_corpus_repeat_requires_five_distinct_occurrences(self):
         examples = [
@@ -127,7 +141,7 @@ class ConstructionTests(unittest.TestCase):
                 "e%d" % index,
                 "Distinct question %d?" % index,
                 ("Answer",),
-                documents(shared="Exactly repeated document"),
+                documents(shared="Exactly repeated document", prefix_tag=str(index)),
             )
             for index in range(5)
         ]
@@ -149,7 +163,7 @@ class ConstructionTests(unittest.TestCase):
                 "e%d" % index,
                 "Distinct question %d?" % index,
                 ("Answer",),
-                documents(shared="Exactly repeated document"),
+                documents(shared="Exactly repeated document", prefix_tag=str(index)),
             )
             for index in range(5)
         ]

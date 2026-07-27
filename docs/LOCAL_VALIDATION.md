@@ -29,8 +29,17 @@ python scripts/local_reference_probe.py `
 
 The model check verifies:
 
-- two equal-length but different prefixes produce different KV for the same
-  exact segment, demonstrating why `S2` cannot be constructed from `S1`;
+- three mutually different prefixes `P`, `A` and `B`, with three different
+  natural token lengths, are independently prefixed to the same exact segment
+  `C`; `P|C` is the current
+  request and only `A|C`, `B|C` are historical Sources;
+- both historical Sources differ from the current state, and `A|C` differs
+  from `B|C`, demonstrating why one Source cannot be copied from another;
+- no prefix is truncated or padded to equal length; this exercises the same
+  simultaneous context and position changes that Cache-Craft handles with
+  position correction;
+- current-to-current self-comparison is allowed only as a zero-drift hook
+  sanity check and is never presented to the Source selector;
 - canonical tensor save/load is bit-exact;
 - probe-summary reads do not mutate the source;
 - deterministic greedy generation repeats exactly.

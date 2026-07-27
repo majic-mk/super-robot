@@ -145,7 +145,7 @@ Related Work 中必须主动写明：
 以下不是普通消融，而是决定创新点能否成立的 gate：
 
 1. **先证明选择问题真实存在。** 至少 25% case 的四个 Source 之间 `r_safe` spread ≥10 个百分点，Oracle-K4 相对 Latest/K1 的安全成本至少降低 10%。
-2. **正面对比 Cache-Craft。** 实现真实 CFO，并给它完全相同的 repair backend、cost model、admission、prefetch 和 scheduler；只允许选择信号不同。
+2. **正面对比 Cache-Craft。** 实现真实 CFO，并给它完全相同的 repair backend、cost model、admission、prefetch 和 scheduler；只允许选择信号不同。当前请求 prefix 不得被放入候选历史 Source；Cache-Craft 和 ProbeKV 必须共享同一批由不同过去请求形成的 cache variants。
 3. **隔离当前早层状态的增量。** 对比 metadata-only、current-query-only、K/V/hidden-only、current-state+metadata，并报告 paired normalized regret、排名相关性和安全成本。
 4. **隔离“版本选择”与“token 选择”。** ProphetKV、QCFuse、SpecCache-style 信号至少要作为同一后端中的 selector/feature baselines，不能只引用其论文数字。
 5. **隔离校准与拒绝机制。** 比较 mean prediction、uncalibrated quantile、calibrated bound、calibrated+abstention；同时报告 coverage、abstention、尾部违规和 TTFT。

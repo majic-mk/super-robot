@@ -78,6 +78,10 @@ class ManifestCase:
         contexts = [source.historical_context for source in self.sources]
         if len(contexts) != len(set(contexts)):
             raise ValueError("historical preceding contexts must be distinct")
+        if self.current_context in contexts:
+            raise ValueError(
+                "current context must not be reused as a historical source context"
+            )
 
     def to_row(self) -> Dict[str, Any]:
         row = asdict(self)

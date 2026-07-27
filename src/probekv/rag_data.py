@@ -264,10 +264,14 @@ def segment_text(document: RAGDocument) -> str:
     )
 
 
-def render_preceding_context(
-    question: str, documents: Sequence[RAGDocument]
-) -> str:
-    chunks = ["Question: %s\n" % question]
+def render_preceding_context(documents: Sequence[RAGDocument]) -> str:
+    """Render only chunks causally preceding the repeated segment.
+
+    Cache-Craft places the user question after the retrieved chunks.  The
+    question is therefore retained separately on ``ManifestCase`` and must not
+    be copied into either the current or historical prefix of C.
+    """
+    chunks = []
     for index, document in enumerate(documents):
         chunks.append(
             "\n[Context %d]\nTitle: %s\n%s\n"
@@ -306,9 +310,9 @@ def build_controlled_cases(
         current_documents = tuple(ordered)
         plans = (
             ("high-prefix/same-order", tuple(ordered[:4])),
-            ("low-prefix/same-order", tuple(ordered[:2])),
-            ("high-prefix/different-order", tuple(reversed(ordered))),
-            ("low-prefix/different-order", tuple(reversed(ordered[-2:]))),
+            ("low-prefix/same-order", tuple(ordered[:1])),
+            ("high-prefix/different-order", tuple(reversed(ordered[:3]))),
+            ("low-prefix/different-order", tuple(reversed(ordered[:2]))),
         )
         repeated = segment_text(target)
         token_ids = tuple(int(token) for token in encoder(repeated))
@@ -320,7 +324,7 @@ def build_controlled_cases(
         sources = tuple(
             ManifestSource(
                 "s%d" % index,
-                render_preceding_context(example.question, documents),
+                render_preceding_context(documents),
                 "%s:controlled:%d" % (example.example_id, index),
                 example.example_id,
                 tuple(document.document_id for document in documents),
@@ -339,7 +343,7 @@ def build_controlled_cases(
             segment_text=repeated,
             segment_token_ids=token_ids,
             content_hash=content_hash,
-            current_context=render_preceding_context(example.question, current_documents),
+            current_context=render_preceding_context(current_documents),
             sources=sources,
             question=example.question,
             answers=example.answers,
@@ -385,7 +389,7 @@ def build_corpus_repeat_cases(
             token_ids = tuple(int(token) for token in encoder(repeated))
             content_hash = token_content_hash(token_ids)
             preceding = tuple(example.documents[max(0, position - max_preceding_documents) : position])
-            context = render_preceding_context(example.question, preceding)
+            context = render_preceding_context(preceding)
             event = RetrievalEvent(
                 "%s:%s" % (example.example_id, target.document_id),
                 example,

@@ -12,12 +12,18 @@ amendment_note: >-
   mandatory overhead ablation. A 2026-07-27 prior-art audit also narrowed the
   claim because Cache-Craft already stores and selects multiple cache variants;
   multi-version selection, dynamic repair ratios, prefetch and scheduling are
-  not claimed independently. No test result motivated either amendment.
+  not claimed independently. The Cache-Craft parity correction requires the
+  controlled current and historical prefixes to be independently constructed
+  with unequal natural lengths; the question remains after retrieved chunks.
+  Natural corpus traces are not filtered solely for equal token counts. No test
+  result motivated these amendments.
 
 invariants:
   canonical_source_origin: full_prefill
   promote_selective_repair: false
   prefix_cache_precedence: true
+  require_current_historical_context_distinct: true
+  user_question_position: after_retrieved_chunks
   online_kmax: 4
   offline_k: [1, 2, 4, 8]
   default_gamma: 0.8
@@ -26,9 +32,27 @@ invariants:
   force_selection_at_probe_max: false
 
 probe_policy:
+  objective: earliest_calibrated_safe_and_economical_decision
   main_32_layer_checkpoints: [1, 2, 3, 4, 5, 6, 7, 8]
   sparse_ablation_32_layer_checkpoints: [1, 2, 4, 6, 8]
+  full_layer_scan_pilot_fraction: 0.20
+  full_layer_scan_is_online_policy: false
+  no_go_if_reliable_only_beyond_ceiling: true
   checkpoint_cost_must_be_measured_separately: true
+
+repair_policy:
+  ratio_unit: recomputed_segment_tokens_over_segment_tokens_per_active_layer
+  token_ranking: cachecraft_style_historical_inter_attention
+  nested_topn_sets_required: true
+  safe_label_requires_all_higher_tested_ratios_to_pass: true
+  report_effective_token_layer_work_ratio: true
+
+cachecraft_fairness:
+  same_case_and_source_manifest: true
+  same_token_repair_ordering: true
+  same_repair_backend: true
+  same_cost_admission_prefetch_scheduler: true
+  only_source_selector_differs: true
 
 repair_ratios: [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0]
 reuse_layer_fractions: [0.10, 0.15, 0.22, 0.30, 0.40]

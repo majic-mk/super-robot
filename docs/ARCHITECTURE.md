@@ -7,6 +7,7 @@
    not solve the request.
 3. For every historical context (`A`, `B`, `E`, ...), the system independently
    runs `full_prefill(context | C)` and registers a read-only canonical source.
+   The current prefix `P` and all historical prefixes are mutually distinct;
    `KV(C | B)` must never be derived from `KV(C | A)`.
 4. The current request computes fresh early layers. At calibrated checkpoints,
    current K/V/hidden/query features are compared with compact source summaries.
@@ -23,6 +24,44 @@
    is cancelled and A finishes with full recomputation.
 9. Repaired output is consumed by the request but is never registered as a new
    source.
+
+## Probe depth objective
+
+Increasing raw drift at deeper layers does not prove that Source ranking becomes
+better. All Sources may simply move farther from the current state, while noise
+and probe cost also increase. ProbeKV therefore minimizes decision time rather
+than maximizing feature separation:
+
+`choose the earliest layer whose calibrated intervals separate and whose total reuse path is economical`.
+
+Every layer through the 25% ceiling is checked in the main policy. A full-layer
+scan is allowed only on a small pilot subset to diagnose where the signal peaks;
+it is not an online policy. If reliable ranking appears only near or beyond the
+25% ceiling, or its net TTFT gain is below the gate, the Probe hypothesis fails
+and the request falls back to full recomputation.
+
+## Repair ratio definition
+
+For Source `s`, reuse boundary `l` and repeated segment `C`, the nominal
+layer-wise repair ratio is
+
+`r_l = number of C tokens recomputed at layer l / number of tokens in C`.
+
+The Cache-Craft-style repair backend ranks tokens by historical prefix-to-token
+inter-attention. For a requested ratio `r`, it recomputes the top
+`ceil(r * |C|)` tokens. Ratio grids must use nested sets: a token repaired at
+10% is also repaired at 20%. Thus `r=0` means reuse all token KVs, while `r=1`
+means recompute all `C` tokens at every active repair layer.
+
+ProbeKV labels a ratio as safe only when both quality conditions pass. On the
+tested grid `R`, the conservative label is
+
+`r_safe(s,l) = min {r in R: every tested r' >= r also passes}`.
+
+If no such ratio exists, the Source has no safe label at that boundary. Because
+`r` does not include probe layers, early termination or loading time, the system
+also reports the effective token-layer work ratio and uses measured total time
+for admission; nominal repair ratio is never treated as a speedup estimate.
 
 ## Components
 

@@ -17,6 +17,32 @@ ProbeKV keeps two constructions separate:
 Synthetic fixtures, controlled cases, corpus repeats and true production traces
 must never be pooled under the label "natural trace".
 
+## Cache-Craft-compatible request construction
+
+The causal prompt layout follows Cache-Craft: retrieved chunks precede the user
+question. For a target repeated chunk `C`, the manifest represents:
+
+`current: P_new | C | remaining current chunks | U_new`
+
+`source s: P_old,s | C | remaining old chunks | U_old,s`
+
+Only the prefix causally preceding `C` determines its cached state. Therefore
+the manifest stores `P_new`, every `P_old,s`, exact `C`, and `U_new` separately;
+it does not prepend the current question to `C`. Every `P_old,s` must be
+different from `P_new` and from every other historical prefix. "High overlap"
+means many common prefix chunks in the same order, not an identical prefix.
+The controlled construction uses five preceding chunks for `P_new` and
+respectively four, one, three and two chunks for its four historical variants.
+Thus it does not equalize A/B positions or lengths. Corpus-derived repeats keep
+their naturally occurring lengths, including legitimate equal-length cases,
+which are logged rather than filtered to avoid selection bias.
+
+For the fair Cache-Craft comparison, both selectors receive the exact same
+cases, historical variants, token-repair ordering, repair backend, cost model,
+admission policy and runtime. Cache-Craft chooses with CFO; ProbeKV replaces
+only that Source-selection signal with current early-state safe-cost bounds.
+The repair algorithm itself is not claimed as a ProbeKV contribution.
+
 ## Supported input shapes
 
 The normalizer accepts common raw-JSON and Hugging Face representations:

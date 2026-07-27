@@ -28,17 +28,28 @@ def main() -> int:
     )
     load_seconds = time.perf_counter() - started
     tokenizer = backend.tokenizer
+    prefix_current = tokenizer.encode(
+        "Current request context P: laboratory maintenance records, sensor logs, and the latest calibration schedule. ",
+        add_special_tokens=True,
+    )
     prefix_a = tokenizer.encode(
         "Historical context A: alpine climate records and snowfall. ",
         add_special_tokens=True,
     )
     prefix_b = tokenizer.encode(
-        "Historical context B: tropical ocean currents and coral reefs. ",
+        "Historical context B: coral reefs. ",
         add_special_tokens=True,
     )
-    equal_length = min(len(prefix_a), len(prefix_b))
-    prefix_a = prefix_a[:equal_length]
-    prefix_b = prefix_b[:equal_length]
+    prefix_token_counts = {
+        "current_P": len(prefix_current),
+        "source_A": len(prefix_a),
+        "source_B": len(prefix_b),
+    }
+    if len(set(prefix_token_counts.values())) != 3:
+        raise RuntimeError(
+            "P, A and B must have different natural token lengths: %r"
+            % prefix_token_counts
+        )
     segment = tokenizer.encode(
         "The shared segment states that the instrument was calibrated twice.",
         add_special_tokens=False,
@@ -46,24 +57,38 @@ def main() -> int:
     total_layers = len(_model_layers(backend.model))
     capture_layers = tuple(range(max(1, int(total_layers * 0.25))))
     inference_started = time.perf_counter()
-    current = backend.prefill_ids(prefix_a, segment, capture_layers)
-    other = backend.prefill_ids(prefix_b, segment, capture_layers)
+    current = backend.prefill_ids(prefix_current, segment, capture_layers)
+    source_a = backend.prefill_ids(prefix_a, segment, capture_layers)
+    source_b = backend.prefill_ids(prefix_b, segment, capture_layers)
     inference_seconds = time.perf_counter() - inference_started
-    matching = [
+    self_comparison = [
         backend.compare_layer(current.layer_states[layer], current.layer_states[layer])
         for layer in capture_layers
     ]
-    different = [
-        backend.compare_layer(current.layer_states[layer], other.layer_states[layer])
-        for layer in capture_layers
-    ]
-    matching_zero = all(
+    source_drifts = {
+        "source_A": [
+            backend.compare_layer(
+                current.layer_states[layer], source_a.layer_states[layer]
+            )
+            for layer in capture_layers
+        ],
+        "source_B": [
+            backend.compare_layer(
+                current.layer_states[layer], source_b.layer_states[layer]
+            )
+            for layer in capture_layers
+        ],
+    }
+    self_comparison_zero = all(
         all(value is None or value == 0.0 for value in row.values())
-        for row in matching
+        for row in self_comparison
     )
-    different_nonzero = any(
-        any(value is not None and value > 0.0 for value in row.values())
-        for row in different
+    historical_sources_nonzero = all(
+        any(
+            any(value is not None and value > 0.0 for value in row.values())
+            for row in rows
+        )
+        for rows in source_drifts.values()
     )
     query_and_pre_rope_k_captured = all(
         current.layer_states[layer].query is not None
@@ -80,19 +105,27 @@ def main() -> int:
         "total_layers": total_layers,
         "captured_experiment_layers_1_based": [layer + 1 for layer in capture_layers],
         "segment_tokens": len(segment),
-        "equal_prefix_tokens": equal_length,
+        "prefix_token_counts": prefix_token_counts,
         "load_seconds": load_seconds,
-        "two_prefills_seconds": inference_seconds,
-        "matching_source_all_drifts_zero": matching_zero,
-        "different_context_has_nonzero_drift": different_nonzero,
+        "three_prefills_seconds": inference_seconds,
+        "self_comparison_all_drifts_zero": self_comparison_zero,
+        "all_historical_sources_differ_from_current": historical_sources_nonzero,
+        "source_ranking_is_descriptive_only": True,
         "query_and_pre_rope_k_captured": query_and_pre_rope_k_captured,
-        "different_source_drift_by_layer": [
-            dict(layer=layer + 1, **row)
-            for layer, row in zip(capture_layers, different)
-        ],
+        "historical_source_drift_by_layer": {
+            source_id: [
+                dict(layer=layer + 1, **row)
+                for layer, row in zip(capture_layers, rows)
+            ]
+            for source_id, rows in source_drifts.items()
+        },
         "evidence_class": "local_correctness",
         "paper_performance_evidence": False,
-        "passed": matching_zero and different_nonzero and query_and_pre_rope_k_captured,
+        "passed": (
+            self_comparison_zero
+            and historical_sources_nonzero
+            and query_and_pre_rope_k_captured
+        ),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

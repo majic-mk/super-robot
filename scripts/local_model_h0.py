@@ -65,33 +65,45 @@ def main() -> int:
     model.eval()
     load_seconds = time.perf_counter() - started
 
+    prefix_current = tokenizer.encode(
+        "Current request context P: laboratory maintenance records, sensor logs, and the latest calibration schedule. ",
+        add_special_tokens=True,
+    )
     prefix_a = tokenizer.encode(
         "Historical context A: alpine climate records and snowfall. ",
         add_special_tokens=True,
     )
     prefix_b = tokenizer.encode(
-        "Historical context B: tropical ocean currents and coral reefs. ",
+        "Historical context B: coral reefs. ",
         add_special_tokens=True,
     )
-    # Equalize length so C uses the same absolute positions; observed KV
-    # differences then come from preceding content rather than a RoPE offset.
-    common_prefix_length = min(len(prefix_a), len(prefix_b))
-    prefix_a = prefix_a[:common_prefix_length]
-    prefix_b = prefix_b[:common_prefix_length]
+    prefix_token_counts = {
+        "current_P": len(prefix_current),
+        "source_A": len(prefix_a),
+        "source_B": len(prefix_b),
+    }
+    if len(set(prefix_token_counts.values())) != 3:
+        raise RuntimeError(
+            "P, A and B must have different natural token lengths: %r"
+            % prefix_token_counts
+        )
     segment_c = tokenizer.encode(
         "The shared segment states that the instrument was calibrated twice.",
         add_special_tokens=False,
     )
     if not segment_c:
         raise RuntimeError("tokenized shared segment is empty")
+    ids_current = torch.tensor([prefix_current + segment_c], dtype=torch.long)
     ids_a = torch.tensor([prefix_a + segment_c], dtype=torch.long)
     ids_b = torch.tensor([prefix_b + segment_c], dtype=torch.long)
 
     inference_started = time.perf_counter()
     with torch.inference_mode():
+        output_current = model(ids_current, use_cache=True, return_dict=True)
         output_a = model(ids_a, use_cache=True, return_dict=True)
         output_b = model(ids_b, use_cache=True, return_dict=True)
     inference_seconds = time.perf_counter() - inference_started
+    cache_current = legacy_cache(output_current.past_key_values)
     cache_a = legacy_cache(output_a.past_key_values)
     cache_b = legacy_cache(output_b.past_key_values)
     layer_count = len(cache_a)
@@ -120,13 +132,18 @@ def main() -> int:
             }
         )
         if layer_index == layer_count - 1:
-            # Treat the fresh A|C pass as the current request. The matching
-            # canonical source must have lower raw K/V drift than B|C.
+            current_key = cache_current[layer_index][0][:, :, -c_length:, :]
+            current_value = cache_current[layer_index][1][:, :, -c_length:, :]
+            # P|C is the current request; A|C and B|C are both genuinely
+            # historical.  No toy Source has privileged matching-prefix status.
             raw_drift_by_source = {
-                "source_A": 0.0,
+                "source_A": float(
+                    (current_key - c_key_a).abs().mean().item()
+                    + (current_value - c_value_a).abs().mean().item()
+                ),
                 "source_B": float(
-                    (c_key_a - c_key_b).abs().mean().item()
-                    + (c_value_a - c_value_b).abs().mean().item()
+                    (current_key - c_key_b).abs().mean().item()
+                    + (current_value - c_value_b).abs().mean().item()
                 ),
             }
 
@@ -178,10 +195,10 @@ def main() -> int:
 
     with torch.inference_mode():
         first_generation = model.generate(
-            ids_a, max_new_tokens=4, do_sample=False, use_cache=True
+            ids_current, max_new_tokens=4, do_sample=False, use_cache=True
         )
         second_generation = model.generate(
-            ids_a, max_new_tokens=4, do_sample=False, use_cache=True
+            ids_current, max_new_tokens=4, do_sample=False, use_cache=True
         )
     greedy_exact = torch.equal(first_generation, second_generation)
     contexts_condition_source = any(
@@ -189,9 +206,8 @@ def main() -> int:
         or row["value_mean_abs_difference"] > 0
         for row in source_differences
     )
-    raw_drift_selects_matching = (
-        min(raw_drift_by_source, key=raw_drift_by_source.get) == "source_A"
-        and raw_drift_by_source["source_B"] > 0.0
+    current_differs_from_all_sources = all(
+        value > 0.0 for value in raw_drift_by_source.values()
     )
 
     result = {
@@ -204,14 +220,17 @@ def main() -> int:
         "transformers": __import__("transformers").__version__,
         "device": "cpu",
         "load_seconds": load_seconds,
-        "two_prefills_seconds": inference_seconds,
+        "three_prefills_seconds": inference_seconds,
         "layers": layer_count,
         "shared_segment_tokens": c_length,
-        "equal_prefix_tokens": common_prefix_length,
+        "prefix_token_counts": prefix_token_counts,
         "independent_contexts_change_segment_kv": contexts_condition_source,
         "source_differences": source_differences,
         "raw_drift_by_source": raw_drift_by_source,
-        "current_state_raw_drift_selects_matching_source": raw_drift_selects_matching,
+        "current_context_distinct_from_all_historical_sources": (
+            current_differs_from_all_sources
+        ),
+        "raw_drift_ranking_is_descriptive_only": True,
         "canonical_save_load_exact": exact_save_load,
         "loaded_cache_next_logits_exact": loaded_cache_logits_exact,
         "source_read_only": source_read_only,
@@ -219,7 +238,7 @@ def main() -> int:
         "passed": all(
             [
                 contexts_condition_source,
-                raw_drift_selects_matching,
+                current_differs_from_all_sources,
                 exact_save_load,
                 loaded_cache_logits_exact,
                 source_read_only,

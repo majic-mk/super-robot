@@ -43,6 +43,21 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(len(case.sources), 4)
         self.assertEqual(case.model_signature, "model@revision")
 
+    def test_current_context_cannot_be_a_historical_source(self):
+        with self.assertRaisesRegex(ValueError, "current context"):
+            case_from_mapping(
+                {
+                    "case_id": "c1",
+                    "dataset": "fixture",
+                    "document_id": "d1",
+                    "segment_text": "same segment",
+                    "segment_token_ids": [10, 11, 12],
+                    "current_context": "current",
+                    "historical_contexts": ["current", "b", "c", "d"],
+                },
+                "model@revision",
+            )
+
     def test_same_content_cannot_cross_splits_under_different_documents(self):
         first = synthetic_manifest(3, 20260726)[0]
         from dataclasses import replace
