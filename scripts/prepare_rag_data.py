@@ -11,7 +11,9 @@ from probekv.manifest import manifest_digest, validate_manifest
 from probekv.rag_data import (
     build_controlled_cases,
     build_corpus_repeat_cases,
+    build_streaming_pilot_cases,
     construction_audit,
+    iter_raw_records,
     load_raw_records,
     normalize_example,
 )
@@ -49,6 +51,11 @@ def main() -> int:
     )
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument(
+        "--streaming-pilot",
+        action="store_true",
+        help="scan the full train split with bounded memory",
+    )
     args = parser.parse_args()
 
     try:
@@ -59,10 +66,6 @@ def main() -> int:
     input_path = Path(args.input).resolve()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    raw_records = load_raw_records(input_path)
-    if args.limit_records:
-        raw_records = raw_records[: args.limit_records]
-    normalized = [normalize_example(args.dataset, row) for row in raw_records]
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, local_files_only=not args.allow_download
     )
@@ -70,35 +73,68 @@ def main() -> int:
     def encode(text):
         return tokenizer.encode(text, add_special_tokens=False)
 
-    cases = []
-    if args.construction in {"controlled", "both"}:
-        controlled_limit = args.max_controlled_cases
-        if args.max_cases and not controlled_limit:
-            controlled_limit = args.max_cases
-        cases.extend(
-            build_controlled_cases(
-                normalized,
-                encode,
-                args.model_signature,
-                seed=args.seed,
-                max_cases=controlled_limit,
+    streaming_audit = {}
+    if args.streaming_pilot:
+        if args.limit_records:
+            raise ValueError(
+                "--streaming-pilot must scan the complete input"
             )
+        if args.construction != "both":
+            raise ValueError(
+                "--streaming-pilot requires --construction both"
+            )
+
+        def example_factory():
+            return (
+                normalize_example(args.dataset, row)
+                for row in iter_raw_records(input_path)
+            )
+
+        cases, normalized, streaming_audit = build_streaming_pilot_cases(
+            example_factory,
+            encode,
+            args.model_signature,
+            seed=args.seed,
+            max_controlled_cases=args.max_controlled_cases,
+            max_corpus_repeat_cases=args.max_corpus_repeat_cases,
         )
-    if args.construction in {"corpus-repeat", "both"}:
-        if args.max_cases:
-            corpus_limit = max(0, args.max_cases - len(cases))
-        else:
-            corpus_limit = args.max_corpus_repeat_cases
-        if not args.max_cases or corpus_limit:
+    else:
+        raw_records = load_raw_records(input_path)
+        if args.limit_records:
+            raw_records = raw_records[: args.limit_records]
+        normalized = [
+            normalize_example(args.dataset, row)
+            for row in raw_records
+        ]
+        cases = []
+        if args.construction in {"controlled", "both"}:
+            controlled_limit = args.max_controlled_cases
+            if args.max_cases and not controlled_limit:
+                controlled_limit = args.max_cases
             cases.extend(
-                build_corpus_repeat_cases(
+                build_controlled_cases(
                     normalized,
                     encode,
                     args.model_signature,
                     seed=args.seed,
-                    max_cases=corpus_limit,
+                    max_cases=controlled_limit,
                 )
             )
+        if args.construction in {"corpus-repeat", "both"}:
+            if args.max_cases:
+                corpus_limit = max(0, args.max_cases - len(cases))
+            else:
+                corpus_limit = args.max_corpus_repeat_cases
+            if not args.max_cases or corpus_limit:
+                cases.extend(
+                    build_corpus_repeat_cases(
+                        normalized,
+                        encode,
+                        args.model_signature,
+                        seed=args.seed,
+                        max_cases=corpus_limit,
+                    )
+                )
     if not cases and not args.allow_empty:
         raise RuntimeError(
             "construction produced zero cases; inspect document counts/repetition or use --allow-empty"
@@ -108,6 +144,7 @@ def main() -> int:
     write_jsonl(output / "normalized_examples.jsonl", [example.to_row() for example in normalized])
     write_jsonl(output / "cases.jsonl", [case.to_row() for case in cases])
     audit = construction_audit(normalized, cases)
+    audit.update(streaming_audit)
     audit.update(
         {
             "dataset_argument": args.dataset,
@@ -118,6 +155,7 @@ def main() -> int:
             "max_cases": args.max_cases,
             "max_controlled_cases": args.max_controlled_cases,
             "max_corpus_repeat_cases": args.max_corpus_repeat_cases,
+            "streaming_pilot": args.streaming_pilot,
             "raw_input": str(input_path),
             "raw_input_sha256": sha256_file(input_path),
             "official_source_url": args.source_url,

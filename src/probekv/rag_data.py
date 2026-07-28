@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple
 
 from .data import deterministic_group_split
 from .manifest import (
@@ -257,6 +258,41 @@ def load_raw_records(path: Path) -> List[Mapping[str, Any]]:
     return rows
 
 
+def iter_raw_records(path: Path) -> Iterator[Mapping[str, Any]]:
+    """Stream a JSON array or JSONL file without retaining the raw dataset."""
+    with path.open("r", encoding="utf-8") as handle:
+        prefix = handle.read(4096)
+    stripped = prefix.lstrip()
+    if not stripped:
+        raise ValueError("input dataset is empty")
+    if stripped.startswith("["):
+        try:
+            import ijson
+        except ImportError as error:
+            raise RuntimeError(
+                "ijson is required to stream JSON-array datasets"
+            ) from error
+        with path.open("rb") as handle:
+            for row in ijson.items(handle, "item"):
+                if not isinstance(row, Mapping):
+                    raise ValueError("JSON array rows must be objects")
+                yield row
+        return
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    "invalid streaming JSONL at line %d" % line_number
+                ) from error
+            if not isinstance(row, Mapping):
+                raise ValueError("JSONL rows must be objects")
+            yield row
+
+
 def segment_text(document: RAGDocument) -> str:
     return "\n[Repeated document]\nTitle: %s\n%s\n" % (
         document.title,
@@ -420,6 +456,201 @@ class RetrievalEvent:
     context: str
     token_ids: Tuple[int, ...]
     content_hash: str
+
+
+def _stable_rank(seed: int, namespace: str, value: str) -> int:
+    return int(
+        hashlib.sha256(
+            ("%d:%s:%s" % (seed, namespace, value)).encode("utf-8")
+        ).hexdigest(),
+        16,
+    )
+
+
+def build_streaming_pilot_cases(
+    example_factory: Callable[[], Iterable[RAGExample]],
+    encoder: TokenEncoder,
+    model_signature: str,
+    seed: int = 20260726,
+    max_controlled_cases: int = 250,
+    max_corpus_repeat_cases: int = 250,
+) -> Tuple[List[ManifestCase], List[RAGExample], Dict[str, int]]:
+    """Construct bounded pilot candidates while scanning the full dataset.
+
+    The first pass counts exact documents and retains a deterministic bounded
+    pool for controlled construction.  A second pass keeps only the five
+    lowest-rank distinct contexts for document ids observed at least five
+    times.  Raw examples are never accumulated in memory.
+    """
+    if max_controlled_cases < 0 or max_corpus_repeat_cases < 0:
+        raise ValueError("streaming case limits must be non-negative")
+    controlled_pool_limit = max(
+        64,
+        max_controlled_cases,
+        max_controlled_cases * 4,
+    )
+    controlled_heap = []
+    document_counts: Dict[str, int] = {}
+    examples_scanned = 0
+    documents_scanned = 0
+    for ordinal, example in enumerate(example_factory()):
+        examples_scanned += 1
+        score = _stable_rank(seed, "controlled-example", example.example_id)
+        entry = (-score, example.example_id, ordinal, example)
+        if len(controlled_heap) < controlled_pool_limit:
+            heapq.heappush(controlled_heap, entry)
+        elif score < -controlled_heap[0][0]:
+            heapq.heapreplace(controlled_heap, entry)
+        for document in example.documents:
+            documents_scanned += 1
+            current = document_counts.get(document.document_id, 0)
+            if current < 5:
+                document_counts[document.document_id] = current + 1
+
+    sampled_examples = [
+        entry[3]
+        for entry in sorted(
+            controlled_heap,
+            key=lambda entry: (-entry[0], entry[1], entry[2]),
+        )
+    ]
+    controlled = build_controlled_cases(
+        sampled_examples,
+        encoder,
+        model_signature,
+        seed=seed,
+        max_cases=max_controlled_cases,
+    )
+    repeated_ids = [
+        document_id
+        for document_id, count in document_counts.items()
+        if count >= 5
+    ]
+    repeat_pool_limit = max(
+        max_corpus_repeat_cases,
+        max_corpus_repeat_cases * 4,
+    )
+    selected_repeat_ids = set(
+        sorted(
+            repeated_ids,
+            key=lambda document_id: (
+                _stable_rank(seed, "repeat-document", document_id),
+                document_id,
+            ),
+        )[:repeat_pool_limit]
+    )
+    del document_counts
+
+    event_buckets: Dict[
+        str, Dict[str, Tuple[int, RetrievalEvent]]
+    ] = {document_id: {} for document_id in selected_repeat_ids}
+    segment_cache: Dict[str, Tuple[str, Tuple[int, ...], str]] = {}
+    for example in example_factory():
+        for position, target in enumerate(example.documents):
+            if target.document_id not in selected_repeat_ids:
+                continue
+            preceding = tuple(
+                example.documents[max(0, position - 5) : position]
+            )
+            context = render_preceding_context(preceding)
+            event_id = "%s:%s" % (example.example_id, target.document_id)
+            cached_segment = segment_cache.get(target.document_id)
+            if cached_segment is None:
+                repeated = segment_text(target)
+                token_ids = tuple(int(token) for token in encoder(repeated))
+                cached_segment = (
+                    repeated,
+                    token_ids,
+                    token_content_hash(token_ids),
+                )
+                segment_cache[target.document_id] = cached_segment
+            _, token_ids, content_hash = cached_segment
+            event = RetrievalEvent(
+                event_id,
+                example,
+                target,
+                preceding,
+                context,
+                token_ids,
+                content_hash,
+            )
+            rank = _stable_rank(seed, "repeat-event", event_id)
+            bucket = event_buckets[target.document_id]
+            existing = bucket.get(context)
+            if existing is None or rank < existing[0]:
+                bucket[context] = (rank, event)
+            if len(bucket) > 5:
+                worst_context = max(
+                    bucket, key=lambda value: (bucket[value][0], value)
+                )
+                del bucket[worst_context]
+
+    corpus_candidates = []
+    for document_id, bucket in event_buckets.items():
+        if len(bucket) < 5:
+            continue
+        distinct = [
+            item[1]
+            for item in sorted(
+                bucket.values(),
+                key=lambda item: (item[0], item[1].event_id),
+            )
+        ]
+        historical = distinct[:4]
+        current = distinct[4]
+        content_hash = current.content_hash
+        group_id = "%s:%s" % (current.example.dataset, content_hash)
+        sources = tuple(
+            ManifestSource(
+                "s%d" % index,
+                event.context,
+                event.event_id,
+                event.example.example_id,
+                tuple(
+                    document.document_id
+                    for document in event.preceding
+                ),
+                "corpus-repeat",
+            )
+            for index, event in enumerate(historical)
+        )
+        case = ManifestCase(
+            case_id="%s:corpus-repeat" % current.event_id,
+            dataset=current.example.dataset,
+            document_id=document_id,
+            group_id=group_id,
+            split=deterministic_group_split(group_id, seed),
+            regime="corpus-repeat",
+            model_signature=model_signature,
+            segment_text=segment_text(current.target),
+            segment_token_ids=current.token_ids,
+            content_hash=content_hash,
+            current_context=current.context,
+            sources=sources,
+            question=current.example.question,
+            answers=current.example.answers,
+            construction="corpus_repeat_pseudotime",
+            target_document_id=document_id,
+        )
+        case.validate()
+        corpus_candidates.append(case)
+    corpus = sorted(
+        corpus_candidates,
+        key=lambda case: (case.content_hash, case.case_id),
+    )[:max_corpus_repeat_cases]
+    cases = controlled + corpus
+    validate_manifest(cases) if cases else None
+    return (
+        cases,
+        sampled_examples,
+        {
+            "normalized_examples_scanned": examples_scanned,
+            "documents_scanned": documents_scanned,
+            "controlled_pool_examples": len(sampled_examples),
+            "repeat_document_ids_at_least_five": len(repeated_ids),
+            "repeat_document_ids_examined": len(selected_repeat_ids),
+        },
+    )
 
 
 def build_corpus_repeat_cases(

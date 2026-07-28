@@ -8,6 +8,8 @@ from probekv.rag_data import (
     RAGExample,
     build_controlled_cases,
     build_corpus_repeat_cases,
+    build_streaming_pilot_cases,
+    iter_raw_records,
     load_raw_records,
     normalize_2wiki,
     normalize_hotpotqa,
@@ -105,6 +107,27 @@ class AdapterTests(unittest.TestCase):
             lines_path.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
             self.assertEqual(len(load_raw_records(array_path)), 1)
             self.assertEqual(len(load_raw_records(lines_path)), 2)
+
+    def test_streaming_json_array_and_jsonl_loaders(self):
+        try:
+            import ijson  # noqa: F401
+        except ImportError:
+            self.skipTest("ijson is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            array_path = Path(temporary) / "array.json"
+            lines_path = Path(temporary) / "lines.jsonl"
+            array_path.write_text('[{"id": 1}, {"id": 2}]', encoding="utf-8")
+            lines_path.write_text(
+                '{"id": 1}\n{"id": 2}\n', encoding="utf-8"
+            )
+            self.assertEqual(
+                [row["id"] for row in iter_raw_records(array_path)],
+                [1, 2],
+            )
+            self.assertEqual(
+                [row["id"] for row in iter_raw_records(lines_path)],
+                [1, 2],
+            )
 
 
 class ConstructionTests(unittest.TestCase):
@@ -219,6 +242,51 @@ class ConstructionTests(unittest.TestCase):
             examples, encode, "model@revision", max_cases=3
         )
         self.assertEqual(len(cases), 3)
+
+    def test_streaming_builder_scans_factory_twice_with_bounded_outputs(self):
+        examples = [
+            RAGExample(
+                "fixture",
+                "e%d" % index,
+                "Distinct question %d?" % index,
+                ("Answer",),
+                documents(
+                    shared="Exactly repeated document",
+                    prefix_tag=str(index),
+                ),
+            )
+            for index in range(8)
+        ]
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(True)
+            return iter(examples)
+
+        cases, sampled, audit = build_streaming_pilot_cases(
+            factory,
+            encode,
+            "model@revision",
+            max_controlled_cases=3,
+            max_corpus_repeat_cases=1,
+        )
+        self.assertEqual(len(factory_calls), 2)
+        self.assertEqual(
+            sum(
+                case.construction == "controlled_document_order"
+                for case in cases
+            ),
+            3,
+        )
+        self.assertEqual(
+            sum(
+                case.construction == "corpus_repeat_pseudotime"
+                for case in cases
+            ),
+            1,
+        )
+        self.assertLessEqual(len(sampled), 64)
+        self.assertEqual(audit["normalized_examples_scanned"], 8)
 
 
 if __name__ == "__main__":

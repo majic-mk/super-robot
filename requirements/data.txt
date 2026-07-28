@@ -1,3 +1,4 @@
 -r ci.txt
 datasets>=2.14,<4
 transformers>=4.31,<5
+ijson>=3.2,<4

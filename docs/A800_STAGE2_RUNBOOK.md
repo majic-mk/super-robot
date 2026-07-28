@@ -62,7 +62,9 @@ For each dataset, run `scripts/prepare_rag_data.py` with the corresponding
 - no record limit;
 - `--max-controlled-cases 250 --max-corpus-repeat-cases 250` for the
   150-case server pilot.  These flags cap emitted cases only; corpus-repeat
-  discovery still scans the complete official train split.
+  discovery still scans the complete official train split;
+- `--streaming-pilot` on the no-GPU preparation instance so JSON arrays and
+  normalized examples remain within the instance memory limit.
 
 Combine the three prepared `cases.jsonl` files:
 
