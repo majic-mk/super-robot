@@ -15,6 +15,7 @@
     "transport_url": "https://hf-mirror.com/datasets/voidful/2WikiMultihopQA/resolve/main/train.json?download=true",
     "transport_revision": "16852fde9d85cba158cf7e6517e7a3f9415a28c0",
     "expected_train_bytes": 681705246,
+    "expected_train_sha256": "b3fddb4d5bb42cd797919cad67616545be51b24740e0a7dabdae7bf76b8f7bfa",
     "expected_git_blob_sha1": "d14a020e5224c986448a42992a64fa6f30cae517",
     "archive_member": "train.json",
     "license": "Apache-2.0"
