@@ -130,6 +130,26 @@ def main() -> int:
     layer_count = len(cache_a)
     c_length = len(segment_c)
 
+    from probekv.rope import apply_rope, relative_l2_error, rope_angles
+
+    rope_vector = (
+        cache_a[0][0][0, 0, -1, :].detach().float().cpu().tolist()
+    )
+    rope_head_dim = len(rope_vector)
+    rope_theta = float(getattr(model.config, "rope_theta", 10000.0))
+    rope_cosine, rope_sine = rope_angles(
+        position=len(prefix_a) + c_length - 1,
+        head_dim=rope_head_dim,
+        theta=rope_theta,
+    )
+    de_rotated = apply_rope(
+        rope_vector, rope_cosine, rope_sine, inverse=True
+    )
+    re_rotated = apply_rope(de_rotated, rope_cosine, rope_sine)
+    rope_round_trip_relative_error = relative_l2_error(
+        rope_vector, re_rotated
+    )
+
     source_differences = []
     source_tensors = []
     raw_drift_by_source = {}
@@ -257,6 +277,8 @@ def main() -> int:
         "raw_drift_ranking_is_descriptive_only": True,
         "canonical_save_load_exact": exact_save_load,
         "loaded_cache_next_logits_exact": loaded_cache_logits_exact,
+        "rope_round_trip_relative_error": rope_round_trip_relative_error,
+        "rope_round_trip_threshold": 1e-5,
         "source_read_only": source_read_only,
         "greedy_generation_exact": greedy_exact,
         "passed": all(
@@ -265,6 +287,7 @@ def main() -> int:
                 current_differs_from_all_sources,
                 exact_save_load,
                 loaded_cache_logits_exact,
+                rope_round_trip_relative_error <= 1e-5,
                 source_read_only,
                 greedy_exact,
             ]
