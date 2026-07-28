@@ -45,11 +45,25 @@ write the same `E1Result` schema.
 
 Every latest job result is retained with one of: completed, process crash, GPU
 reset, OOM, data error or transient I/O. The merge audit lists missing,
-unexpected, duplicate-attempt and retryable job IDs. OOM and data errors are
-not silently retried because changing batch size or data changes the experiment
-cell; process crash, GPU reset and transient I/O are retryable with a strictly
-higher attempt number. Resume rejects rows belonging to another shard and
-duplicate attempt numbers.
+unexpected, failed, duplicate-attempt and retryable job IDs. It also records
+the chosen attempt and why older or conflicting attempts were ignored. OOM and
+data errors are not silently retried because changing batch size or data
+changes the experiment cell; process crash, GPU reset and transient I/O are
+retryable with a strictly higher attempt number. Resume rejects rows belonging
+to another shard and duplicate attempt numbers.
+
+`result_set_complete` is true only when every expected job has exactly one
+unambiguous final completed result, with no missing, unexpected, failed or
+duplicate-conflict rows. `run_environment_valid` is evaluated independently
+from completeness. `publication_ready` requires both conditions plus
+`paper_evidence: true` on every resolved final row. The legacy aggregate field
+is an alias:
+
+`paper_evidence == publication_ready`.
+
+A scientifically valid negative result such as "no safe repair ratio" does not
+make the result set incomplete. It may cause H1 to fail, but it remains
+publishable evidence when the execution and provenance contracts pass.
 
 The generic E1 analysis reports `s0` (K=1) and `last-source` baselines. It does
 not call the latter `Latest`: controlled construction has no real timestamp,
@@ -60,4 +74,5 @@ Latest baseline requires timestamped production traces.
 
 Job generation defaults to `pilot,train`. The analyzer rejects any test job
 unless `--allow-test` is explicitly supplied. A computed H1 diagnostic becomes
-paper-claimable only when every consumed result has `paper_evidence: true`.
+paper-claimable only when the complete expected-job audit is publication-ready;
+checking only the rows that happened to arrive is insufficient.

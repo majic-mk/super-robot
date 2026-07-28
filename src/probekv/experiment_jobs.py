@@ -504,49 +504,160 @@ def merge_e1_results(
     jobs: Sequence[E1Job], results: Sequence[E1Result]
 ) -> Tuple[List[E1Result], Dict[str, Any]]:
     expected = {job.job_id: job for job in jobs}
+    if len(expected) != len(jobs):
+        raise ValueError("duplicate expected jobs cannot be merged")
     grouped: Dict[str, List[E1Result]] = {}
     for result in results:
         result.validate()
         grouped.setdefault(result.job_id, []).append(result)
     unexpected = sorted(set(grouped) - set(expected))
-    latest = []
+    latest: List[E1Result] = []
     duplicate_attempt_rows = 0
-    for job_id, attempts in grouped.items():
-        attempt_numbers = [result.attempt for result in attempts]
-        duplicate_attempt_rows += len(attempt_numbers) - len(set(attempt_numbers))
-        latest.append(
-            max(attempts, key=lambda result: (result.attempt, result.finished_at_utc))
+    duplicate_job_ids = []
+    duplicate_conflicts = []
+    selected_attempt_by_job: Dict[str, Dict[str, Any]] = {}
+    ignored_attempts: Dict[str, List[Dict[str, Any]]] = {}
+    for job_id, attempts in sorted(grouped.items()):
+        by_attempt: Dict[int, List[E1Result]] = {}
+        for result in attempts:
+            by_attempt.setdefault(result.attempt, []).append(result)
+        duplicate_numbers = sorted(
+            attempt for attempt, rows in by_attempt.items() if len(rows) > 1
         )
+        if duplicate_numbers:
+            duplicate_job_ids.append(job_id)
+        for attempt in duplicate_numbers:
+            rows = by_attempt[attempt]
+            duplicate_attempt_rows += len(rows) - 1
+            duplicate_conflicts.append(
+                {
+                    "job_id": job_id,
+                    "attempt": attempt,
+                    "rows": len(rows),
+                    "reason": "duplicate attempt number is not uniquely resolvable",
+                }
+            )
+        selected = max(
+            attempts,
+            key=lambda result: (
+                result.attempt,
+                result.finished_at_utc,
+                json.dumps(result.to_row(), sort_keys=True),
+            ),
+        )
+        latest.append(selected)
+        selected_attempt_by_job[job_id] = {
+            "attempt": selected.attempt,
+            "status": selected.status.value,
+            "finished_at_utc": selected.finished_at_utc,
+        }
+        ignored = [
+            {
+                "attempt": result.attempt,
+                "status": result.status.value,
+                "finished_at_utc": result.finished_at_utc,
+                "reason": (
+                    "older attempt"
+                    if result.attempt < selected.attempt
+                    else "duplicate row lost deterministic tie-break"
+                ),
+            }
+            for result in attempts
+            if result is not selected
+        ]
+        if ignored:
+            ignored_attempts[job_id] = ignored
     latest.sort(key=lambda result: result.job_id)
     latest_map = {result.job_id: result for result in latest}
     missing = sorted(set(expected) - set(latest_map))
+    resolved = sorted(set(expected) & set(latest_map))
+    expected_latest = [
+        latest_map[job_id] for job_id in sorted(expected) if job_id in latest_map
+    ]
+    failed = sorted(
+        result.job_id
+        for result in expected_latest
+        if result.status is not ResultStatus.COMPLETED
+    )
     status_counts = {
-        status.value: sum(result.status is status for result in latest)
+        status.value: sum(result.status is status for result in expected_latest)
         for status in ResultStatus
     }
     retryable = sorted(
         result.job_id
-        for result in latest
+        for result in expected_latest
         if result.status in RETRYABLE_STATUSES
+    )
+    completed = [
+        result
+        for result in expected_latest
+        if result.status is ResultStatus.COMPLETED
+    ]
+    provenance_fields = (
+        "code_commit",
+        "environment_hash",
+        "model_revision",
+        "cacheblend_commit",
+        "cacheblend_patch_sha256",
+        "cacheblend_tree",
+        "gpu_uuid",
+    )
+    provenance_complete = bool(completed) and all(
+        result.code_commit and result.environment_hash and result.finished_at_utc
+        for result in completed
+    )
+    provenance_consistent = provenance_complete and all(
+        len(
+            {
+                getattr(result, field)
+                for result in completed
+                if getattr(result, field)
+            }
+        )
+        <= 1
+        for field in provenance_fields
+    )
+    run_environment_valid = provenance_complete and provenance_consistent
+    result_set_complete = (
+        bool(expected)
+        and not missing
+        and not unexpected
+        and not duplicate_conflicts
+        and not failed
+        and len(expected_latest) == len(expected)
+        and all(
+            result.status is ResultStatus.COMPLETED
+            for result in expected_latest
+        )
+    )
+    publication_ready = (
+        run_environment_valid
+        and result_set_complete
+        and bool(expected_latest)
+        and all(result.paper_evidence for result in expected_latest)
     )
     audit = {
         "expected_jobs": len(expected),
+        "expected_job_ids": sorted(expected),
         "input_result_rows": len(results),
         "latest_result_rows": len(latest),
+        "resolved_job_ids": resolved,
         "missing_job_ids": missing,
         "unexpected_job_ids": unexpected,
+        "failed_job_ids": failed,
+        "duplicate_job_ids": duplicate_job_ids,
+        "duplicate_conflicts": duplicate_conflicts,
         "duplicate_attempt_rows": duplicate_attempt_rows,
+        "selected_attempt_by_job": selected_attempt_by_job,
+        "ignored_attempts": ignored_attempts,
         "status_counts": status_counts,
         "retryable_job_ids": retryable,
-        "all_accounted": not missing and not unexpected and duplicate_attempt_rows == 0,
-        "all_completed": (
-            not missing
-            and not unexpected
-            and duplicate_attempt_rows == 0
-            and all(result.status is ResultStatus.COMPLETED for result in latest)
-        ),
-        "paper_evidence": bool(latest)
-        and all(result.paper_evidence for result in latest),
+        "all_accounted": not missing and not unexpected and not duplicate_conflicts,
+        "all_completed": result_set_complete,
+        "run_environment_valid": run_environment_valid,
+        "result_set_complete": result_set_complete,
+        "publication_ready": publication_ready,
+        "paper_evidence": publication_ready,
     }
     return latest, audit
 

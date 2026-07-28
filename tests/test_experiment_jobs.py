@@ -117,6 +117,76 @@ class ResultAuditTests(unittest.TestCase):
         self.assertFalse(audit["all_accounted"])
         self.assertFalse(audit["all_completed"])
         self.assertEqual(audit["duplicate_attempt_rows"], 1)
+        self.assertIn(results[0].job_id, audit["duplicate_job_ids"])
+        self.assertTrue(audit["duplicate_conflicts"])
+        self.assertFalse(audit["publication_ready"])
+
+    def test_incomplete_paper_rows_can_never_be_publication_ready(self):
+        paper_rows = [
+            replace(
+                result,
+                evidence_class="paper_measurement",
+                paper_evidence=True,
+            )
+            for result in simulate_e1_results(self.jobs[:-1])
+        ]
+        _, audit = merge_e1_results(self.jobs, paper_rows)
+        self.assertTrue(audit["run_environment_valid"])
+        self.assertFalse(audit["result_set_complete"])
+        self.assertFalse(audit["publication_ready"])
+        self.assertFalse(audit["paper_evidence"])
+        self.assertEqual(audit["missing_job_ids"], [self.jobs[-1].job_id])
+
+    def test_complete_paper_rows_are_publication_ready(self):
+        paper_rows = [
+            replace(
+                result,
+                evidence_class="paper_measurement",
+                paper_evidence=True,
+            )
+            for result in simulate_e1_results(self.jobs)
+        ]
+        latest, audit = merge_e1_results(self.jobs, paper_rows)
+        self.assertTrue(audit["run_environment_valid"])
+        self.assertTrue(audit["result_set_complete"])
+        self.assertTrue(audit["publication_ready"])
+        analysis = analyze_e1(
+            self.jobs,
+            latest,
+            total_layers=32,
+            result_set_audit=audit,
+        )
+        self.assertTrue(analysis["paper_evidence"])
+
+    def test_failed_or_unexpected_result_blocks_publication(self):
+        paper_rows = [
+            replace(
+                result,
+                evidence_class="paper_measurement",
+                paper_evidence=True,
+            )
+            for result in simulate_e1_results(self.jobs)
+        ]
+        failed = E1Result(
+            job_id=self.jobs[0].job_id,
+            attempt=1,
+            status=ResultStatus.OOM,
+            error_type="OOM",
+            code_commit="local-simulation",
+            environment_hash="local-simulation",
+            finished_at_utc="deterministic-2",
+            evidence_class="paper_measurement",
+            paper_evidence=False,
+        )
+        foreign = replace(paper_rows[1], job_id="unexpected-job")
+        _, audit = merge_e1_results(
+            self.jobs,
+            paper_rows[1:] + [failed, foreign],
+        )
+        self.assertIn(self.jobs[0].job_id, audit["failed_job_ids"])
+        self.assertEqual(audit["unexpected_job_ids"], ["unexpected-job"])
+        self.assertFalse(audit["result_set_complete"])
+        self.assertFalse(audit["paper_evidence"])
 
     def test_resume_retries_only_retryable_failures_with_next_attempt(self):
         first, second, third = self.jobs[:3]

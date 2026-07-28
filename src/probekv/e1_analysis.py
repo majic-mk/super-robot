@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .experiment_jobs import E1Job, E1Result, ResultStatus
 from .labeling import RatioMeasurement, safe_repair_ratio
@@ -16,6 +16,7 @@ def analyze_e1(
     allow_test: bool = False,
     bootstrap_iterations: int = 2000,
     seed: int = 20260726,
+    result_set_audit: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     job_by_id = {job.job_id: job for job in jobs}
     if len(job_by_id) != len(jobs):
@@ -247,14 +248,36 @@ def analyze_e1(
         "completed_fraction": completed_fraction,
         "runtime_endpoint_failures": len(runtime_endpoint_failures),
     }
-    paper_claimable = (
-        bool(results)
-        and len(results) == len(jobs)
-        and len(completed) == len(jobs)
-        and not incomplete_groups
-        and not no_safe_groups
-        and all(result.paper_evidence for result in results)
-    )
+    if result_set_audit is None:
+        observed_ids = {result.job_id for result in results}
+        expected_ids = set(job_by_id)
+        result_set_complete = (
+            bool(jobs)
+            and observed_ids == expected_ids
+            and len(results) == len(jobs)
+            and len(completed) == len(jobs)
+        )
+        run_environment_valid = bool(results) and all(
+            result.code_commit
+            and result.environment_hash
+            and result.finished_at_utc
+            for result in results
+        )
+        publication_ready = (
+            result_set_complete
+            and run_environment_valid
+            and all(result.paper_evidence for result in results)
+        )
+    else:
+        result_set_complete = bool(
+            result_set_audit.get("result_set_complete", False)
+        )
+        run_environment_valid = bool(
+            result_set_audit.get("run_environment_valid", False)
+        )
+        publication_ready = bool(
+            result_set_audit.get("publication_ready", False)
+        )
     return {
         "primary_reuse_layer": primary_layer,
         "jobs": len(jobs),
@@ -276,8 +299,11 @@ def analyze_e1(
         "runtime_endpoint_failures": runtime_endpoint_failures,
         "improvement_ci": interval_row,
         "gate_diagnostic": gate_row,
-        "paper_gate_claimable": paper_claimable,
-        "paper_evidence": paper_claimable,
+        "run_environment_valid": run_environment_valid,
+        "result_set_complete": result_set_complete,
+        "publication_ready": publication_ready,
+        "paper_gate_claimable": publication_ready,
+        "paper_evidence": publication_ready,
         "labels": labels,
         "case_rows": case_rows,
     }

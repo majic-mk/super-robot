@@ -53,6 +53,7 @@ def main() -> int:
         total_layers=args.total_layers,
         allow_test=args.allow_test,
         bootstrap_iterations=args.bootstrap_iterations,
+        result_set_audit=audit,
     )
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
