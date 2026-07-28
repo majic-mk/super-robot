@@ -1,11 +1,11 @@
-schema_version: 2
+schema_version: 3
 project: ProbeKV
 core_claim: >-
   target-model current-early-state-guided selection among multiple canonical
   historical KV variants of the same exact non-prefix segment, using
   variant-specific conservative safe total-reuse cost bounds and abstention
 frozen_at: 2026-07-26
-amended_at: 2026-07-28
+amended_at: 2026-07-29
 amendment_note: >-
   Following the pre-experiment design review, every layer through the 25%
   ceiling is the main probe policy. The original sparse checkpoints remain a
@@ -18,7 +18,11 @@ amendment_note: >-
   Natural corpus traces are not filtered solely for equal token counts. No test
   result motivated these amendments. Before any formal server performance data
   was collected, the provisioned NVIDIA A800-SXM4-80GB was frozen as the
-  matched primary hardware for ProbeKV and every same-stack baseline.
+  matched primary hardware for ProbeKV and every same-stack baseline. Before
+  H1 runtime or any formal H2 data, version 3 separated Source selection from
+  final reuse admission, retained strict interval selection for reproduction,
+  added explicit final economic selector policies, made scheduler work atomic,
+  and required complete expected-job accounting before publication evidence.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -31,10 +35,19 @@ invariants:
   default_gamma: 0.8
   gamma_ablation: [0.6, 0.7, 0.8, 0.9]
   max_probe_fraction: 0.25
-  force_selection_at_probe_max: false
+  legacy_force_selection_at_probe_max: false
+  selected_source_none_implies_reuse_rejected: true
+  full_recompute_implies_reuse_rejected: true
 
 probe_policy:
   objective: earliest_calibrated_safe_and_economical_decision
+  legacy_policy: strict_interval
+  formal_candidate_policy: final_economic_min_cost
+  ablation_policy: final_economic_max_reuse
+  final_selection_requires_quality_coverage: true
+  final_selection_requires_predicted_gamma_admission: true
+  final_max_reuse_tolerance: 0.02
+  final_timing_rejection_retains_selected_source: true
   main_32_layer_checkpoints: [1, 2, 3, 4, 5, 6, 7, 8]
   sparse_ablation_32_layer_checkpoints: [1, 2, 4, 6, 8]
   full_layer_scan_pilot_fraction: 0.20
@@ -148,10 +161,22 @@ prefetch:
     - concurrency
 
 scheduler:
-  policies: [No-overlap, A-only, B-only, Hybrid]
+  policies:
+    - no_overlap
+    - a_only
+    - b_only
+    - hybrid
+    - hybrid_strict
+    - hybrid_bounded_overrun
   hybrid_extra_dense_budgets: [0, 1, 2, 4]
   source_ready_promotes_request: true
   cancel_at_economic_boundary: true
+  atomic_dense_or_microbatch_steps: true
+  strict_post_ready_overrun_ms: 0.0
+  bounded_overrun_ms_ablation: [0.0, 0.5, 1.0, 2.0]
+  charge_post_ready_blocking_to_request_a: true
+  report_useful_other_request_work: true
+  load_interference_must_be_explicit: true
 
 statistics:
   bootstrap_iterations: 10000
@@ -202,3 +227,6 @@ evidence_policy:
   local_correctness_is_paper_performance_evidence: false
   primary_hardware_measurements_required_for_timing_claims: true
   stage1_cb0_h0_performance_is_paper_evidence: false
+  publication_requires_complete_expected_job_set: true
+  publication_rejects_missing_failed_unexpected_or_conflicting_jobs: true
+  paper_evidence_aliases_publication_ready: true

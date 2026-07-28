@@ -5,11 +5,13 @@ variant-specific safe-cost selection**. When the same exact non-prefix segment
 has several canonical historical KV variants, fresh early state from the
 current request selects only a conservatively safe and economically useful
 source; uncertain decisions abstain and fall back to full recomputation.
+Legacy strict abstention remains reproducible, while new final-layer selector
+policies and bounded-overrun scheduling must be enabled explicitly.
 
 This repository implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,
 conformal upper budgets, dynamic `L_reuse`, total-cost admission, P0-P4/Dynamic
-prefetch, A-only/B-only/Hybrid scheduling, grouped statistics, gates, audit
+prefetch, strict/bounded atomic scheduling, grouped statistics, gates, audit
 output, deterministic simulation, and an offline Hugging Face model H0 check.
 It also contains the audited CacheBlend patchset, A800 CB0-CB3 gate runner,
 official-data pilot builder and resumable non-paper H1 server worker. Server
@@ -22,6 +24,7 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
+python -m probekv simulate --config configs/local_system_v3.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 

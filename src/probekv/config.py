@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
-from .selector import default_probe_checkpoints
+from .scheduler import SchedulerPolicy
+from .selector import SelectorPolicy, default_probe_checkpoints
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,12 @@ class ExperimentConfig:
     online_kmax: int
     gamma: float
     probe_checkpoints: Tuple[int, ...]
+    max_selection_layer: int
+    selector_policy: SelectorPolicy
+    reuse_ratio_tolerance: float
+    scheduler_policy: SchedulerPolicy
+    max_post_ready_overrun_ms: float
+    load_interference_ms: float
     repair_ratios: Tuple[float, ...]
     output_dir: str
 
@@ -39,6 +46,24 @@ class ExperimentConfig:
             online_kmax=int(raw.get("online_kmax", 4)),
             gamma=float(raw.get("gamma", 0.8)),
             probe_checkpoints=checkpoints,
+            max_selection_layer=int(
+                raw.get("max_selection_layer", checkpoints[-1])
+            ),
+            selector_policy=SelectorPolicy(
+                str(raw.get("selector_policy", "strict_interval"))
+            ),
+            reuse_ratio_tolerance=float(
+                raw.get("reuse_ratio_tolerance", 0.02)
+            ),
+            scheduler_policy=SchedulerPolicy(
+                str(raw.get("scheduler_policy", "hybrid_strict"))
+            ),
+            max_post_ready_overrun_ms=float(
+                raw.get("max_post_ready_overrun_ms", 0.0)
+            ),
+            load_interference_ms=float(
+                raw.get("load_interference_ms", 0.0)
+            ),
             repair_ratios=tuple(float(value) for value in raw["repair_ratios"]),
             output_dir=str(raw.get("output_dir", "artifacts/local_smoke")),
         )
@@ -60,8 +85,34 @@ class ExperimentConfig:
             raise ValueError("gamma must be in (0, 1]")
         if not self.probe_checkpoints:
             raise ValueError("probe checkpoints required")
-        if self.probe_checkpoints[-1] > max(1, int(self.total_layers * 0.25)):
+        maximum_probe = max(1, int(self.total_layers * 0.25))
+        if self.probe_checkpoints[-1] > maximum_probe:
             raise ValueError("L_probe_max exceeds 25% of total layers")
+        if not 1 <= self.max_selection_layer <= maximum_probe:
+            raise ValueError("max_selection_layer exceeds the probe ceiling")
+        if self.probe_checkpoints[-1] > self.max_selection_layer:
+            raise ValueError("checkpoint exceeds max_selection_layer")
+        if (
+            self.selector_policy is not SelectorPolicy.STRICT_INTERVAL
+            and self.max_selection_layer not in self.probe_checkpoints
+        ):
+            raise ValueError(
+                "final selector policy requires a max-layer checkpoint"
+            )
+        if not 0 <= self.reuse_ratio_tolerance <= 1:
+            raise ValueError("reuse_ratio_tolerance must be in [0, 1]")
+        if self.max_post_ready_overrun_ms < 0:
+            raise ValueError("max_post_ready_overrun_ms must be non-negative")
+        if self.load_interference_ms < 0:
+            raise ValueError("load_interference_ms must be non-negative")
+        if (
+            self.scheduler_policy
+            is not SchedulerPolicy.HYBRID_BOUNDED_OVERRUN
+            and self.max_post_ready_overrun_ms > 0
+        ):
+            raise ValueError(
+                "only hybrid_bounded_overrun may use a positive overrun budget"
+            )
         if any(not 0 <= ratio <= 1 for ratio in self.repair_ratios):
             raise ValueError("repair ratios must be in [0, 1]")
 

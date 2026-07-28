@@ -12,8 +12,15 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
+python -m probekv validate-config --config configs/local_system_v3.json
+python -m probekv simulate --config configs/local_system_v3.json
 python scripts/audit_environment.py --output artifacts/local_validation/environment.json
 ```
+
+`local_smoke.json` explicitly preserves `strict_interval` plus
+`hybrid_strict`. `local_system_v3.json` exercises final economic minimum-cost
+selection and bounded-overrun scheduling. Both are deterministic software
+checks and never paper performance evidence.
 
 For a locally cached Hugging Face causal LM:
 

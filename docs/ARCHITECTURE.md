@@ -11,17 +11,25 @@
    `KV(C | B)` must never be derived from `KV(C | A)`.
 4. The current request computes fresh early layers. At calibrated checkpoints,
    current K/V/hidden/query features are compared with compact source summaries.
-5. A source is selected only when its conservative cost upper bound is below
-   every competitor's lower bound. At `L_probe_max`, uncertainty causes abstain.
-6. The selected source is prefetched. The reuse planner checks layer-by-layer
-   buffer readiness and the full cost:
+5. Before `L_probe_max`, a source is selected only when its conservative total
+   cost upper bound is below every quality-safe competitor's lower bound. At
+   `L_probe_max`, the configured selector policy either preserves strict
+   abstention or applies an explicit quality-safe, predicted-economic fallback.
+6. Source selection and reuse admission are separate states. A selected source
+   is prefetched, then the reuse planner checks layer-by-layer buffer readiness
+   and refined full cost:
 
-   `probe + compare + visible_load + repair <= gamma * full_recompute`.
+   `probe + compare + visible_load + post_ready_blocking + repair <= gamma * full_recompute`.
 
 7. While the source is loading, the scheduler may compute more dense layers of
-   request A and/or run short ready microbatches from requests B/C.
-8. A source-ready event promotes A. If the economic boundary has passed, reuse
-   is cancelled and A finishes with full recomputation.
+   request A and/or run complete, non-preemptible dense steps or microbatches
+   from requests B/C. Strict scheduling never starts work that crosses
+   source-ready. The bounded-overrun policy may start one complete step whose
+   crossing is within its explicit budget.
+8. A source-ready event promotes A after any already-running atomic step.
+   Post-ready blocking is charged to A, while B/C service remains useful system
+   work. If refined admission fails, the selected Source ID remains audited but
+   execution switches to full recomputation.
 9. Repaired output is consumed by the request but is never registered as a new
    source.
 
@@ -39,6 +47,47 @@ scan is allowed only on a small pilot subset to diagnose where the signal peaks;
 it is not an online policy. If reliable ranking appears only near or beyond the
 25% ceiling, or its net TTFT gain is below the gate, the Probe hypothesis fails
 and the request falls back to full recomputation.
+
+## Selector and admission policies
+
+`strict_interval` is the legacy reproduction policy: overlapping calibrated
+intervals at the maximum selection layer abstain. Two explicit final-layer
+policies are available for new experiments:
+
+- `final_economic_min_cost` selects the lowest predicted total-cost upper bound
+  after quality and predicted `gamma` filtering. This matches ProbeKV's core
+  safe-total-cost objective.
+- `final_economic_max_reuse` first keeps Sources within
+  `reuse_ratio_tolerance` of the best conservative repair-ratio upper bound,
+  then minimizes predicted total cost inside that set. It is an ablation, not
+  a silent replacement of the core objective.
+
+The selector never claims that selecting a Source accepts reuse. Refined
+timing produces a separate execution decision. The following invariants are
+enforced by the data model:
+
+- no selected Source implies reuse is rejected;
+- accepted reuse implies a selected Source;
+- full-recompute mode implies reuse is rejected;
+- refined time rejection retains the selected Source for audit.
+
+## Atomic waiting-window scheduling
+
+`hybrid_strict` starts only complete steps that finish by `source_ready_ms`.
+`hybrid_bounded_overrun` may start at most one complete step satisfying
+
+`max(0, step_finish_ms - source_ready_ms) <= max_post_ready_overrun_ms`.
+
+The simulator records `scheduled_step_finish_ms`, `a_resume_ms`,
+`post_ready_blocking_ms`, hidden pre-ready work, useful B/C work, GPU busy time
+and `load_interference_ms`. An interference value of zero means "not added by
+this profile"; it is not a claim that copy and compute cannot interfere.
+
+The corresponding configuration keys are `max_selection_layer`,
+`selector_policy`, `reuse_ratio_tolerance`, `gamma`, `scheduler_policy`,
+`max_post_ready_overrun_ms` and `load_interference_ms`. Positive overrun is
+valid only with `hybrid_bounded_overrun`; all other policies reject such a
+configuration instead of silently ignoring it.
 
 ## Repair ratio definition
 
@@ -68,7 +117,7 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Component | Implementation | Contract |
 |---|---|---|
 | Canonical store | `source_store.py` | exact full-prefill only, Kmax=4 |
-| Probe selector | `selector.py` | conservative interval early exit |
+| Probe selector | `selector.py` | strict early exit plus explicit final policies |
 | Budget calibration | `calibration.py` | isotonic baseline + split conformal upper |
 | Case manifest | `manifest.py` | token hash plus content/document split isolation |
 | RAG normalization | `rag_data.py` | three schemas; controlled and corpus-repeat kept separate |
@@ -76,9 +125,9 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | HF reference state | `reference_hf.py` | full-prefill pre-RoPE K/V/hidden/query correctness |
 | Local E1/E2 loop | `local_e1e2.py` | labels, fit/calibration, locked evaluation, resume |
 | Repair label | `labeling.py` | suffix-monotone safe ratio |
-| Reuse planner | `cost.py` | total-cost admission and dynamic layer |
+| Reuse planner | `cost.py` | refined total-cost admission; selection retained on rejection |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
-| Scheduler | `scheduler.py` | No-overlap/A-only/B-only/Hybrid |
+| Scheduler | `scheduler.py` | strict atomic and bounded-overrun policies |
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |
 | Statistics/gates | `statistics.py`, `gates.py` | paired grouped inference |
 | Audit trail | `io.py` | JSONL, optional Parquet, environment manifest |

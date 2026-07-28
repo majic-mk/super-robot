@@ -323,7 +323,13 @@ def run_local_e1e2(
     )
 
     selector = DynamicProbeSelector(
-        ProbePolicy(config.probe_checkpoints, config.probe_checkpoints[-1])
+        ProbePolicy(
+            config.probe_checkpoints,
+            config.max_selection_layer,
+            config.selector_policy,
+            config.gamma,
+            config.reuse_ratio_tolerance,
+        )
     )
     decision_rows: List[Dict[str, Any]] = []
     accepted_regrets = []
@@ -382,7 +388,10 @@ def run_local_e1e2(
                 predictions.append((lower_ratio + interval_upper) / 2.0)
             bounds_by_layer[layer] = tuple(bounds)
             layer_predictions[layer] = predictions
-        decision = selector.select(bounds_by_layer)
+        decision = selector.select(
+            bounds_by_layer,
+            full_recompute_ms=100.0,
+        )
         if decision.abstained:
             selected = None
             selected_cost = 100.0

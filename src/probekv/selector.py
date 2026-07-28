@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from .contracts import CandidateBounds, DecisionReason, SourceDecision
+from .contracts import CandidateBounds, SelectionReason, SourceDecision
+
+
+class SelectorPolicy(str, Enum):
+    STRICT_INTERVAL = "strict_interval"
+    FINAL_ECONOMIC_MIN_COST = "final_economic_min_cost"
+    FINAL_ECONOMIC_MAX_REUSE = "final_economic_max_reuse"
 
 
 @dataclass(frozen=True)
 class ProbePolicy:
     checkpoints: Tuple[int, ...]
     max_layer: int
+    selector_policy: SelectorPolicy = SelectorPolicy.STRICT_INTERVAL
+    gamma: float = 0.8
+    reuse_ratio_tolerance: float = 0.02
 
     def __post_init__(self) -> None:
         if not self.checkpoints:
@@ -18,6 +28,10 @@ class ProbePolicy:
             raise ValueError("checkpoints must be sorted and unique")
         if self.checkpoints[-1] > self.max_layer:
             raise ValueError("checkpoint exceeds max_layer")
+        if not 0.0 < self.gamma <= 1.0:
+            raise ValueError("gamma must be in (0, 1]")
+        if not 0.0 <= self.reuse_ratio_tolerance <= 1.0:
+            raise ValueError("reuse_ratio_tolerance must be in [0, 1]")
 
 
 class DynamicProbeSelector:
@@ -48,8 +62,87 @@ class DynamicProbeSelector:
             return best
         return None
 
+    @staticmethod
+    def _selected(
+        candidate: CandidateBounds,
+        layer: int,
+        reason: SelectionReason,
+    ) -> SourceDecision:
+        return SourceDecision(
+            selected_source_id=candidate.source_id,
+            probe_layer=layer,
+            reuse_layer=None,
+            safe_repair_ratio_upper=candidate.repair_ratio_upper,
+            prefetch_m=1,
+            selection_reason=reason,
+            predicted_cost_upper_ms=candidate.cost_upper_ms,
+        )
+
+    @staticmethod
+    def _abstained(layer: int, reason: SelectionReason) -> SourceDecision:
+        return SourceDecision(
+            selected_source_id=None,
+            probe_layer=layer,
+            reuse_layer=None,
+            safe_repair_ratio_upper=None,
+            prefetch_m=0,
+            selection_reason=reason,
+        )
+
+    def _final_winner(
+        self,
+        candidates: Sequence[CandidateBounds],
+        full_recompute_ms: Optional[float],
+    ) -> Tuple[Optional[CandidateBounds], SelectionReason]:
+        quality_candidates = [
+            candidate for candidate in candidates if candidate.quality_covered
+        ]
+        if not quality_candidates:
+            return None, SelectionReason.NO_QUALITY_SAFE_SOURCE
+        if full_recompute_ms is None or full_recompute_ms <= 0:
+            raise ValueError(
+                "final economic selection requires positive full_recompute_ms"
+            )
+        economic = [
+            candidate
+            for candidate in quality_candidates
+            if candidate.cost_upper_ms <= self.policy.gamma * full_recompute_ms
+        ]
+        if not economic:
+            return None, SelectionReason.NO_ECONOMIC_SOURCE
+        if self.policy.selector_policy is SelectorPolicy.FINAL_ECONOMIC_MIN_COST:
+            return (
+                min(
+                    economic,
+                    key=lambda item: (
+                        item.cost_upper_ms,
+                        item.repair_ratio_upper,
+                        item.source_id,
+                    ),
+                ),
+                SelectionReason.FINAL_ECONOMIC_MIN_COST,
+            )
+        minimum_repair = min(
+            candidate.repair_ratio_upper for candidate in economic
+        )
+        near_max_reuse = [
+            candidate
+            for candidate in economic
+            if candidate.repair_ratio_upper
+            <= minimum_repair + self.policy.reuse_ratio_tolerance
+        ]
+        return (
+            min(
+                near_max_reuse,
+                key=lambda item: (item.cost_upper_ms, item.source_id),
+            ),
+            SelectionReason.FINAL_MAX_REUSE_LOWER_BOUND,
+        )
+
     def select(
-        self, bounds_by_layer: Mapping[int, Sequence[CandidateBounds]]
+        self,
+        bounds_by_layer: Mapping[int, Sequence[CandidateBounds]],
+        full_recompute_ms: Optional[float] = None,
     ) -> SourceDecision:
         last_layer = self.policy.checkpoints[-1]
         saw_quality_coverage = False
@@ -58,30 +151,30 @@ class DynamicProbeSelector:
             saw_quality_coverage = saw_quality_coverage or any(
                 candidate.quality_covered for candidate in candidates
             )
+            at_final_layer = layer == self.policy.max_layer
+            if (
+                at_final_layer
+                and self.policy.selector_policy
+                is not SelectorPolicy.STRICT_INTERVAL
+            ):
+                winner, reason = self._final_winner(
+                    candidates, full_recompute_ms
+                )
+                if winner is None:
+                    return self._abstained(layer, reason)
+                return self._selected(winner, layer, reason)
             winner = self._confident_winner(candidates)
             if winner is not None:
-                return SourceDecision(
-                    selected_source_id=winner.source_id,
-                    probe_layer=layer,
-                    reuse_layer=None,
-                    safe_repair_ratio_upper=winner.repair_ratio_upper,
-                    prefetch_m=1,
-                    reason=DecisionReason.CONFIDENT,
+                return self._selected(
+                    winner, layer, SelectionReason.EARLY_CONFIDENT
                 )
             last_layer = layer
         reason = (
-            DecisionReason.MAX_PROBE_UNCERTAIN
+            SelectionReason.MAX_PROBE_UNCERTAIN
             if saw_quality_coverage
-            else DecisionReason.QUALITY_UNCOVERED
+            else SelectionReason.NO_QUALITY_SAFE_SOURCE
         )
-        return SourceDecision(
-            selected_source_id=None,
-            probe_layer=last_layer,
-            reuse_layer=None,
-            safe_repair_ratio_upper=None,
-            prefetch_m=0,
-            reason=reason,
-        )
+        return self._abstained(last_layer, reason)
 
 
 def normalized_oracle_regret(

@@ -106,6 +106,91 @@ class SchedulerTests(unittest.TestCase):
         self.assertLessEqual(result.a_ttft_ms, 30)
         self.assertGreater(result.jain_fairness, 0)
 
+    def test_bounded_overrun_accounts_for_atomic_step_and_a_delay(self):
+        scenario = SchedulerScenario(
+            load_ms=5,
+            dense_layer_ms=1,
+            max_extra_dense_layers=0,
+            repair_ms=10,
+            decode_start_ms=1,
+            other_ready_work_ms=2,
+            microbatch_ms=2,
+            max_post_ready_overrun_ms=1,
+        )
+        result = simulate_waiting_queue(
+            SchedulerPolicy.HYBRID_BOUNDED_OVERRUN,
+            scenario,
+            [ReadyRequest("b", 4, 3, 2)],
+            a_layer=4,
+            hybrid_dense_budget=0,
+        )
+        self.assertEqual(result.source_ready_ms, 5)
+        self.assertEqual(result.scheduled_step_finish_ms, 6)
+        self.assertEqual(result.a_resume_ms, 6)
+        self.assertEqual(result.post_ready_blocking_ms, 1)
+        self.assertEqual(result.useful_other_request_work_ms, 2)
+        self.assertEqual(result.hidden_work_ms, 1)
+
+    def test_bounded_overrun_rejects_step_above_budget(self):
+        scenario = SchedulerScenario(
+            load_ms=5,
+            dense_layer_ms=1,
+            max_extra_dense_layers=0,
+            repair_ms=10,
+            decode_start_ms=1,
+            other_ready_work_ms=2,
+            microbatch_ms=2,
+            max_post_ready_overrun_ms=0.5,
+        )
+        result = simulate_waiting_queue(
+            SchedulerPolicy.HYBRID_BOUNDED_OVERRUN,
+            scenario,
+            [ReadyRequest("b", 4, 3, 2)],
+            a_layer=4,
+            hybrid_dense_budget=0,
+        )
+        self.assertEqual(result.a_resume_ms, 5)
+        self.assertEqual(result.post_ready_blocking_ms, 0)
+        self.assertEqual(result.useful_other_request_work_ms, 0)
+
+    def test_strict_policy_never_splits_or_overruns_atomic_step(self):
+        scenario = SchedulerScenario(
+            load_ms=5,
+            dense_layer_ms=1,
+            max_extra_dense_layers=0,
+            repair_ms=10,
+            decode_start_ms=1,
+            other_ready_work_ms=2,
+            microbatch_ms=2,
+            max_post_ready_overrun_ms=10,
+        )
+        result = simulate_waiting_queue(
+            SchedulerPolicy.HYBRID_STRICT,
+            scenario,
+            [ReadyRequest("b", 4, 3, 2)],
+            a_layer=4,
+            hybrid_dense_budget=0,
+        )
+        self.assertEqual(result.a_resume_ms, result.source_ready_ms)
+        self.assertEqual(result.service_ms_by_request["b"], 0)
+        self.assertLessEqual(
+            result.hidden_work_ms, result.source_ready_ms
+        )
+
+    def test_load_interference_moves_source_ready_explicitly(self):
+        scenario = SchedulerScenario(
+            load_ms=5,
+            dense_layer_ms=1,
+            max_extra_dense_layers=0,
+            repair_ms=1,
+            decode_start_ms=1,
+            other_ready_work_ms=0,
+            load_interference_ms=2,
+        )
+        result = simulate_schedule(SchedulerPolicy.NO_OVERLAP, scenario)
+        self.assertEqual(result.source_ready_ms, 7)
+        self.assertEqual(result.load_interference_ms, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

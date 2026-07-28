@@ -3,7 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from .contracts import DecisionReason, TimingBreakdown
+from .contracts import (
+    DecisionReason,
+    ExecutionDecision,
+    ExecutionMode,
+    RejectionReason,
+    SelectionReason,
+    SourceDecision,
+    TimingBreakdown,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +25,8 @@ class LayerOption:
     repair_ms: float
     full_ms: float
     buffer_ready: bool = True
+    post_ready_blocking_ms: float = 0.0
+    load_interference_ms: float = 0.0
 
     def timing(self) -> TimingBreakdown:
         return TimingBreakdown(
@@ -26,6 +36,8 @@ class LayerOption:
             visible_load_ms=max(0.0, self.load_ms - self.overlap_ms),
             repair_ms=self.repair_ms,
             full_ms=self.full_ms,
+            post_ready_blocking_ms=self.post_ready_blocking_ms,
+            load_interference_ms=self.load_interference_ms,
         )
 
 
@@ -67,6 +79,73 @@ class DynamicReusePlanner:
             timing,
             DecisionReason.CONFIDENT,
         )
+
+
+def finalize_execution(
+    selection: SourceDecision,
+    reuse_plan: Optional[ReusePlan] = None,
+) -> ExecutionDecision:
+    """Combine source selection with the later, refined time admission.
+
+    Selection and admission are deliberately separate: a selected source is
+    retained when refined timing rejects reuse, while abstention can never
+    fall through to an arbitrary historical source.
+    """
+
+    if selection.abstained:
+        rejection_by_reason = {
+            SelectionReason.NO_QUALITY_SAFE_SOURCE:
+                RejectionReason.QUALITY_GATE_FAILED,
+            SelectionReason.NO_ECONOMIC_SOURCE:
+                RejectionReason.PREDICTED_TIME_GATE_FAILED,
+            SelectionReason.MAX_PROBE_UNCERTAIN:
+                RejectionReason.SELECTION_UNCERTAIN,
+        }
+        rejection = rejection_by_reason.get(
+            selection.selection_reason,
+            RejectionReason.SELECTION_UNCERTAIN,
+        )
+        return ExecutionDecision(
+            selected_source_id=None,
+            selection_reason=selection.selection_reason,
+            reuse_accepted=False,
+            rejection_reason=rejection,
+            execution_mode=ExecutionMode.FULL_RECOMPUTE,
+            probe_layer=selection.probe_layer,
+            reuse_layer=None,
+            safe_repair_ratio_upper=None,
+            timing=None,
+        )
+    if reuse_plan is None:
+        raise ValueError("selected source requires a refined reuse plan")
+    if reuse_plan.accepted:
+        return ExecutionDecision(
+            selected_source_id=selection.selected_source_id,
+            selection_reason=selection.selection_reason,
+            reuse_accepted=True,
+            rejection_reason=None,
+            execution_mode=ExecutionMode.REUSE,
+            probe_layer=selection.probe_layer,
+            reuse_layer=reuse_plan.layer,
+            safe_repair_ratio_upper=reuse_plan.repair_ratio_upper,
+            timing=reuse_plan.timing,
+        )
+    rejection = (
+        RejectionReason.NO_FEASIBLE_REUSE_LAYER
+        if reuse_plan.reason is DecisionReason.NO_FEASIBLE_LAYER
+        else RejectionReason.FINAL_TIME_GATE_FAILED
+    )
+    return ExecutionDecision(
+        selected_source_id=selection.selected_source_id,
+        selection_reason=selection.selection_reason,
+        reuse_accepted=False,
+        rejection_reason=rejection,
+        execution_mode=ExecutionMode.FULL_RECOMPUTE,
+        probe_layer=selection.probe_layer,
+        reuse_layer=None,
+        safe_repair_ratio_upper=selection.safe_repair_ratio_upper,
+        timing=reuse_plan.timing,
+    )
 
 
 def conservative_ratio_for_layer(

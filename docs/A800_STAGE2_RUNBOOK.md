@@ -5,6 +5,13 @@ CacheBlend base commit, tracked patch hashes, Mistral revision and A800 UUID
 recorded in the artifact directory.  Never place SSH credentials in a command,
 configuration file, shell history, Git repository or artifact.
 
+The 150-case H1 Source-sensitivity manifest and its 9,720 repair jobs are
+selector- and scheduler-neutral. System-contract v3 therefore does not change
+their semantic job IDs. It does change the ProbeKV code SHA, so the server must
+checkout the new exact commit, rerun the full test suite and regenerate
+`stage2_readiness.json` before CB1-CB3 or H1 resumes. Existing readiness
+artifacts remain historical records and must not be overwritten in place.
+
 ## Local freeze
 
 ```bash

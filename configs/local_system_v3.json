@@ -1,8 +1,8 @@
 {
-  "name": "probekv-local-e1e2",
+  "name": "probekv-local-system-v3",
   "evidence_class": "local_simulation",
   "seed": 20260726,
-  "cases": 60,
+  "cases": 50,
   "total_layers": 32,
   "online_kmax": 4,
   "gamma": 0.8,
@@ -10,9 +10,9 @@
   "max_selection_layer": 8,
   "selector_policy": "final_economic_min_cost",
   "reuse_ratio_tolerance": 0.02,
-  "scheduler_policy": "hybrid_strict",
-  "max_post_ready_overrun_ms": 0.0,
+  "scheduler_policy": "hybrid_bounded_overrun",
+  "max_post_ready_overrun_ms": 1.0,
   "load_interference_ms": 0.0,
   "repair_ratios": [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0],
-  "output_dir": "artifacts/local_e1e2"
+  "output_dir": "artifacts/local_system_v3"
 }
