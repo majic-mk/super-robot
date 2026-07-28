@@ -59,7 +59,10 @@ For each dataset, run `scripts/prepare_rag_data.py` with the corresponding
 - model revision `c170c708c41dac9275d15a8fff4eca08d52bab71`;
 - construction `both`;
 - seed `20260726`;
-- no record limit.
+- no record limit;
+- `--max-controlled-cases 250 --max-corpus-repeat-cases 250` for the
+  150-case server pilot.  These flags cap emitted cases only; corpus-repeat
+  discovery still scans the complete official train split.
 
 Combine the three prepared `cases.jsonl` files:
 

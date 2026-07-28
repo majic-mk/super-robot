@@ -35,6 +35,18 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260726)
     parser.add_argument("--limit-records", type=int, default=0)
     parser.add_argument("--max-cases", type=int, default=0)
+    parser.add_argument(
+        "--max-controlled-cases",
+        type=int,
+        default=0,
+        help="cap controlled cases without limiting the records scanned",
+    )
+    parser.add_argument(
+        "--max-corpus-repeat-cases",
+        type=int,
+        default=0,
+        help="cap corpus-repeat cases after scanning the complete input",
+    )
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--allow-empty", action="store_true")
     args = parser.parse_args()
@@ -60,25 +72,31 @@ def main() -> int:
 
     cases = []
     if args.construction in {"controlled", "both"}:
+        controlled_limit = args.max_controlled_cases
+        if args.max_cases and not controlled_limit:
+            controlled_limit = args.max_cases
         cases.extend(
             build_controlled_cases(
                 normalized,
                 encode,
                 args.model_signature,
                 seed=args.seed,
-                max_cases=args.max_cases,
+                max_cases=controlled_limit,
             )
         )
     if args.construction in {"corpus-repeat", "both"}:
-        remaining = max(0, args.max_cases - len(cases)) if args.max_cases else 0
-        if not args.max_cases or remaining:
+        if args.max_cases:
+            corpus_limit = max(0, args.max_cases - len(cases))
+        else:
+            corpus_limit = args.max_corpus_repeat_cases
+        if not args.max_cases or corpus_limit:
             cases.extend(
                 build_corpus_repeat_cases(
                     normalized,
                     encode,
                     args.model_signature,
                     seed=args.seed,
-                    max_cases=remaining,
+                    max_cases=corpus_limit,
                 )
             )
     if not cases and not args.allow_empty:
@@ -97,6 +115,9 @@ def main() -> int:
             "model_signature": args.model_signature,
             "tokenizer": str(args.tokenizer),
             "seed": args.seed,
+            "max_cases": args.max_cases,
+            "max_controlled_cases": args.max_controlled_cases,
+            "max_corpus_repeat_cases": args.max_corpus_repeat_cases,
             "raw_input": str(input_path),
             "raw_input_sha256": sha256_file(input_path),
             "official_source_url": args.source_url,
