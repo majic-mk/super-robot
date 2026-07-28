@@ -25,7 +25,7 @@ index 9d35d6e..3c02757 100644
          self.unpadded_vocab_size = config.vocab_size
          if lora_config:
              self.unpadded_vocab_size += lora_config.lora_extra_vocab_size
-@@ -423,6 +432,9 @@ class LlamaForCausalLM(nn.Module):
+@@ -423,7 +432,10 @@ class LlamaForCausalLM(nn.Module):
      def compute_logits(self, hidden_states: torch.Tensor,
                         sampling_metadata: SamplingMetadata) -> torch.Tensor:
          logits = self.logits_processor(self.lm_head.weight, hidden_states,
@@ -40,7 +40,7 @@ diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/at
 index b98cc39..5702130 100644
 --- a/vllm_blend/vllm/attention/backends/xformers.py
 +++ b/vllm_blend/vllm/attention/backends/xformers.py
-@@ -182,16 +182,47 @@ class XFormersImpl(AttentionImpl):
+@@ -182,16 +182,49 @@ class XFormersImpl(AttentionImpl):
              value_old = old_kv[1].view(-1, self.num_kv_heads, self.head_size)
  
          if status in [1]:

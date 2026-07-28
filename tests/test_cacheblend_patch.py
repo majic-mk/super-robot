@@ -5,6 +5,7 @@ from probekv.cacheblend_patch import (
     combined_patch_sha256,
     load_patch_manifest,
     patch_files_for_mode,
+    validate_unified_diff,
 )
 
 
@@ -39,6 +40,10 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertNotIn(
             "(total_len-last_len)*cache_fuse_metadata", additions
         )
+
+    def test_all_tracked_patches_have_valid_hunk_counts(self):
+        for path in patch_files_for_mode(MANIFEST, "probekv"):
+            validate_unified_diff(path)
 
 
 if __name__ == "__main__":
