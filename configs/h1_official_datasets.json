@@ -2,18 +2,28 @@
   "hotpotqa": {
     "official_repository": "https://github.com/hotpotqa/hotpot",
     "train_url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json",
+    "transport_url": "https://hf-mirror.com/datasets/waylonli/SEKA-datasets/resolve/main/hotpotqa/hotpot_train_v1.1.json?download=true",
+    "transport_revision": "91bf3f67fb2044c7e81514e103a962d6ef76c230",
+    "expected_train_bytes": 566426227,
+    "expected_train_sha256": "26650cf50234ef5fb2e664ed70bbecdfd87815e6bffc257e068efea5cf7cd316",
     "archive_member": "hotpot_train_v1.1.json",
     "license": "CC-BY-SA-4.0"
   },
   "2wiki": {
     "official_repository": "https://github.com/Alab-NII/2wikimultihop",
     "train_url": "https://www.dropbox.com/scl/fi/32t7pv1dyf3o2pp0dl25u/data_ids_april7.zip?rlkey=u868q6h0jojw4djjg7ea65j46&dl=1",
+    "transport_url": "https://hf-mirror.com/datasets/voidful/2WikiMultihopQA/resolve/main/train.json?download=true",
+    "transport_revision": "16852fde9d85cba158cf7e6517e7a3f9415a28c0",
+    "expected_train_bytes": 681705246,
+    "expected_git_blob_sha1": "d14a020e5224c986448a42992a64fa6f30cae517",
     "archive_member": "train.json",
     "license": "Apache-2.0"
   },
   "musique": {
     "official_repository": "https://github.com/stonybrooknlp/musique",
     "train_url": "https://drive.google.com/uc?id=1tGdADlNjWFaHLeZZGShh2IRcpO6Lv24h",
+    "expected_archive_sha256": "98f839bf2fd5319f5c688aed77901a6d5c30b3b9f9f691ab9a8ecafb045ee0cd",
+    "expected_train_sha256": "83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a",
     "archive_member": "data/musique_ans_v1.0_train.jsonl",
     "license": "CC-BY-4.0"
   }

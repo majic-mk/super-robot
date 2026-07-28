@@ -51,6 +51,12 @@ python scripts/server/download_h1_datasets.py \
   --output "$STAGE2_ROOT/data/official"
 ```
 
+If the official Dropbox or CMU host is unreachable from the cloud region,
+rerun the command with `--use-transport`.  `transport_url` is used only as a
+byte transport.  The resulting raw train file must match the frozen byte count
+and SHA-256 or Git-blob identity in the registry.  Record both the official URL
+and transport revision; do not describe the mirror as the dataset authority.
+
 For each dataset, run `scripts/prepare_rag_data.py` with the corresponding
 `train_path`, official URL, repository revision and license from
 `official_sources.json`.  Use:
