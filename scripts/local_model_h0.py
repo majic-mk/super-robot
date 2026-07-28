@@ -1,4 +1,4 @@
-"""Offline CPU H0 checks against a locally cached Hugging Face causal LM.
+"""Offline H0 checks against a locally cached Hugging Face causal LM.
 
 This verifies model-level invariants that do not require CacheBlend kernels:
 independent context-conditioned sources, exact save/load, deterministic greedy
@@ -19,8 +19,14 @@ from pathlib import Path
 
 
 def tensor_digest(tensor) -> str:
+    import torch
+
     contiguous = tensor.detach().cpu().contiguous()
-    return hashlib.sha256(contiguous.numpy().tobytes()).hexdigest()
+    # NumPy cannot expose every torch dtype (notably BF16). Hash the tensor's
+    # byte representation so exactness checks work on both CPU FP32 and GPU
+    # BF16 runs.
+    raw_bytes = contiguous.view(torch.uint8).numpy().tobytes()
+    return hashlib.sha256(raw_bytes).hexdigest()
 
 
 def legacy_cache(past_key_values):
@@ -34,9 +40,18 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+    )
     args = parser.parse_args()
 
     import torch
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("--device cuda requested but CUDA is unavailable")
+    torch_dtype = getattr(torch, args.dtype)
 
     # Some older Windows research environments have a broken Linux-only
     # bitsandbytes package installed. Hide that optional package while
@@ -58,8 +73,8 @@ def main() -> int:
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
             local_files_only=True,
-            torch_dtype=torch.float32,
-        )
+            torch_dtype=torch_dtype,
+        ).to(args.device)
     finally:
         importlib.util.find_spec = original_find_spec
     model.eval()
@@ -93,9 +108,15 @@ def main() -> int:
     )
     if not segment_c:
         raise RuntimeError("tokenized shared segment is empty")
-    ids_current = torch.tensor([prefix_current + segment_c], dtype=torch.long)
-    ids_a = torch.tensor([prefix_a + segment_c], dtype=torch.long)
-    ids_b = torch.tensor([prefix_b + segment_c], dtype=torch.long)
+    ids_current = torch.tensor(
+        [prefix_current + segment_c], dtype=torch.long, device=args.device
+    )
+    ids_a = torch.tensor(
+        [prefix_a + segment_c], dtype=torch.long, device=args.device
+    )
+    ids_b = torch.tensor(
+        [prefix_b + segment_c], dtype=torch.long, device=args.device
+    )
 
     inference_started = time.perf_counter()
     with torch.inference_mode():
@@ -159,10 +180,12 @@ def main() -> int:
         )
         try:
             reloaded_payload = torch.load(
-                str(cache_path), map_location="cpu", weights_only=True
+                str(cache_path), map_location=args.device, weights_only=True
             )
         except TypeError:
-            reloaded_payload = torch.load(str(cache_path), map_location="cpu")
+            reloaded_payload = torch.load(
+                str(cache_path), map_location=args.device
+            )
     reloaded = reloaded_payload["segment_tensors"]
     reloaded_full_cache = tuple(reloaded_payload["full_cache"])
     exact_save_load = all(
@@ -218,7 +241,8 @@ def main() -> int:
         "python": platform.python_version(),
         "torch": torch.__version__,
         "transformers": __import__("transformers").__version__,
-        "device": "cpu",
+        "device": args.device,
+        "dtype": args.dtype,
         "load_seconds": load_seconds,
         "three_prefills_seconds": inference_seconds,
         "layers": layer_count,

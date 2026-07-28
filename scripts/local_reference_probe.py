@@ -1,4 +1,4 @@
-"""Real-model CPU smoke test for per-layer reference-state extraction."""
+"""Real-model smoke test for per-layer reference-state extraction."""
 
 from __future__ import annotations
 
@@ -16,15 +16,26 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+    )
     args = parser.parse_args()
 
     import torch
 
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("--device cuda requested but CUDA is unavailable")
     torch.set_num_threads(max(1, args.threads))
     torch.manual_seed(20260726)
     started = time.perf_counter()
     backend = HuggingFaceReferenceStateBackend.from_pretrained(
-        args.model, device="cpu", dtype="float32", local_files_only=True
+        args.model,
+        device=args.device,
+        dtype=args.dtype,
+        local_files_only=True,
     )
     load_seconds = time.perf_counter() - started
     tokenizer = backend.tokenizer
@@ -101,7 +112,8 @@ def main() -> int:
         "python": platform.python_version(),
         "torch": torch.__version__,
         "transformers": __import__("transformers").__version__,
-        "device": "cpu",
+        "device": args.device,
+        "dtype": args.dtype,
         "total_layers": total_layers,
         "captured_experiment_layers_1_based": [layer + 1 for layer in capture_layers],
         "segment_tokens": len(segment),
