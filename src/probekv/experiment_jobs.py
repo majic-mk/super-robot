@@ -211,6 +211,26 @@ def select_job_shard(
     return [job for job in jobs if job_shard(job.job_id, shard_count) == shard_index]
 
 
+def group_e1_jobs(
+    jobs: Sequence[E1Job],
+) -> List[Tuple[Tuple[str, str, int], Tuple[E1Job, ...]]]:
+    """Group work so a canonical source is staged once for an entire ratio grid."""
+
+    grouped: Dict[Tuple[str, str, int], List[E1Job]] = {}
+    for job in jobs:
+        job.validate()
+        key = (job.case_id, job.source_id, job.reuse_layer)
+        grouped.setdefault(key, []).append(job)
+    result = []
+    for key, members in sorted(grouped.items()):
+        ordered = tuple(sorted(members, key=lambda item: item.repair_ratio))
+        ratios = [member.repair_ratio for member in ordered]
+        if len(ratios) != len(set(ratios)):
+            raise ValueError("group contains duplicate repair ratios")
+        result.append((key, ordered))
+    return result
+
+
 @dataclass(frozen=True)
 class E1Result:
     job_id: str
@@ -221,13 +241,39 @@ class E1Result:
     token_f1: Optional[float] = None
     repair_latency_ms: Optional[float] = None
     full_remaining_ms: Optional[float] = None
+    requested_ratio: Optional[float] = None
+    eligible_segment_tokens: Optional[int] = None
+    selected_segment_tokens: Optional[int] = None
+    effective_ratio: Optional[float] = None
+    mandatory_suffix_tokens: Optional[int] = None
+    prefix_tokens: Optional[int] = None
+    selected_segment_indices: Tuple[int, ...] = ()
+    reuse_start_layer: Optional[int] = None
+    repair_gpu_ms: Optional[float] = None
+    repair_host_ms: Optional[float] = None
+    full_remaining_gpu_ms: Optional[float] = None
+    full_remaining_host_ms: Optional[float] = None
     source_digest_before: Optional[str] = None
     source_digest_after: Optional[str] = None
+    output_token_ids: Tuple[int, ...] = ()
+    output_hash: str = ""
+    output_text: str = ""
+    logit_relative_l2: Optional[float] = None
+    full_timing_scope: str = "remaining_layers"
     error_type: Optional[str] = None
     error_message: Optional[str] = None
     code_commit: str = ""
     environment_hash: str = ""
+    model_revision: str = ""
+    cacheblend_commit: str = ""
+    cacheblend_patch_sha256: str = ""
+    cacheblend_tree: str = ""
+    vllm_version: str = ""
+    torch_version: str = ""
+    cuda_version: str = ""
+    gpu_uuid: str = ""
     finished_at_utc: str = ""
+    evidence_class: str = "local_simulation"
     paper_evidence: bool = False
 
     def validate(self) -> None:
@@ -240,6 +286,17 @@ class E1Result:
                 self.token_f1,
                 self.repair_latency_ms,
                 self.full_remaining_ms,
+                self.requested_ratio,
+                self.eligible_segment_tokens,
+                self.selected_segment_tokens,
+                self.effective_ratio,
+                self.mandatory_suffix_tokens,
+                self.prefix_tokens,
+                self.reuse_start_layer,
+                self.repair_gpu_ms,
+                self.repair_host_ms,
+                self.full_remaining_gpu_ms,
+                self.full_remaining_host_ms,
                 self.source_digest_before,
                 self.source_digest_after,
             )
@@ -255,6 +312,12 @@ class E1Result:
                 self.token_f1,
                 self.repair_latency_ms,
                 self.full_remaining_ms,
+                self.requested_ratio,
+                self.effective_ratio,
+                self.repair_gpu_ms,
+                self.repair_host_ms,
+                self.full_remaining_gpu_ms,
+                self.full_remaining_host_ms,
             )
             if not all(math.isfinite(float(value)) for value in numeric):
                 raise ValueError("completed measurements must be finite")
@@ -262,14 +325,104 @@ class E1Result:
                 raise ValueError("task_score_drop must be in [-1, 1]")
             if float(self.repair_latency_ms) < 0 or float(self.full_remaining_ms) < 0:
                 raise ValueError("latencies must be non-negative")
+            if any(
+                float(value) < 0
+                for value in (
+                    self.repair_gpu_ms,
+                    self.repair_host_ms,
+                    self.full_remaining_gpu_ms,
+                    self.full_remaining_host_ms,
+                )
+            ):
+                raise ValueError("GPU and host timings must be non-negative")
+            if not 0.0 <= float(self.requested_ratio) <= 1.0:
+                raise ValueError("requested_ratio must be in [0, 1]")
+            if not 0.0 <= float(self.effective_ratio) <= 1.0:
+                raise ValueError("effective_ratio must be in [0, 1]")
+            if int(self.eligible_segment_tokens) <= 0:
+                raise ValueError("eligible_segment_tokens must be positive")
+            if not 0 <= int(self.selected_segment_tokens) <= int(
+                self.eligible_segment_tokens
+            ):
+                raise ValueError("selected_segment_tokens is outside C")
+            expected_effective = int(self.selected_segment_tokens) / float(
+                self.eligible_segment_tokens
+            )
+            if abs(float(self.effective_ratio) - expected_effective) > 1e-12:
+                raise ValueError("effective_ratio does not match token counts")
+            if int(self.mandatory_suffix_tokens) < 0:
+                raise ValueError("mandatory_suffix_tokens must be non-negative")
+            if int(self.prefix_tokens) < 0:
+                raise ValueError("prefix_tokens must be non-negative")
+            if self.selected_segment_indices:
+                if len(self.selected_segment_indices) != int(
+                    self.selected_segment_tokens
+                ):
+                    raise ValueError(
+                        "selected_segment_indices count does not match"
+                    )
+                lower = int(self.prefix_tokens)
+                upper = lower + int(self.eligible_segment_tokens)
+                if any(
+                    not lower <= index < upper
+                    for index in self.selected_segment_indices
+                ):
+                    raise ValueError(
+                        "selected_segment_indices contains a token outside C"
+                    )
+            if int(self.reuse_start_layer) < 1:
+                raise ValueError("reuse_start_layer must be 1-based")
             if self.source_digest_before != self.source_digest_after:
                 raise ValueError("canonical source was mutated")
+            if self.logit_relative_l2 is not None and (
+                not math.isfinite(float(self.logit_relative_l2))
+                or float(self.logit_relative_l2) < 0
+            ):
+                raise ValueError("logit_relative_l2 must be finite and non-negative")
+            if not self.full_timing_scope:
+                raise ValueError("full_timing_scope is required")
         elif not self.error_type:
             raise ValueError("failed result must retain an error_type")
+        if self.evidence_class not in {
+            "local_simulation",
+            "server_pilot",
+            "paper_measurement",
+        }:
+            raise ValueError("unsupported result evidence_class")
+        if self.evidence_class == "server_pilot":
+            if self.paper_evidence:
+                raise ValueError("server_pilot results can never be paper evidence")
+            if self.status is ResultStatus.COMPLETED:
+                required_provenance = (
+                    self.output_hash,
+                    self.code_commit,
+                    self.environment_hash,
+                    self.model_revision,
+                    self.cacheblend_commit,
+                    self.cacheblend_patch_sha256,
+                    self.cacheblend_tree,
+                    self.vllm_version,
+                    self.torch_version,
+                    self.cuda_version,
+                    self.gpu_uuid,
+                    self.finished_at_utc,
+                )
+                if any(not value for value in required_provenance):
+                    raise ValueError(
+                        "server_pilot result is missing runtime provenance"
+                    )
+                if len(self.selected_segment_indices) != int(
+                    self.selected_segment_tokens
+                ):
+                    raise ValueError(
+                        "server_pilot must audit every selected C token index"
+                    )
         if self.paper_evidence and (
             not self.code_commit or not self.environment_hash or not self.finished_at_utc
         ):
             raise ValueError("paper result requires code, environment and timestamp provenance")
+        if self.paper_evidence and self.evidence_class != "paper_measurement":
+            raise ValueError("paper evidence requires paper_measurement class")
 
     def to_row(self) -> Dict[str, Any]:
         row = asdict(self)
@@ -287,13 +440,48 @@ class E1Result:
             token_f1=_optional_float(row.get("token_f1")),
             repair_latency_ms=_optional_float(row.get("repair_latency_ms")),
             full_remaining_ms=_optional_float(row.get("full_remaining_ms")),
+            requested_ratio=_optional_float(row.get("requested_ratio")),
+            eligible_segment_tokens=_optional_int(row.get("eligible_segment_tokens")),
+            selected_segment_tokens=_optional_int(row.get("selected_segment_tokens")),
+            effective_ratio=_optional_float(row.get("effective_ratio")),
+            mandatory_suffix_tokens=_optional_int(row.get("mandatory_suffix_tokens")),
+            prefix_tokens=_optional_int(row.get("prefix_tokens", 0)),
+            selected_segment_indices=tuple(
+                int(value)
+                for value in row.get("selected_segment_indices", ())
+            ),
+            reuse_start_layer=_optional_int(row.get("reuse_start_layer")),
+            repair_gpu_ms=_optional_float(row.get("repair_gpu_ms")),
+            repair_host_ms=_optional_float(row.get("repair_host_ms")),
+            full_remaining_gpu_ms=_optional_float(row.get("full_remaining_gpu_ms")),
+            full_remaining_host_ms=_optional_float(row.get("full_remaining_host_ms")),
             source_digest_before=_optional_string(row.get("source_digest_before")),
             source_digest_after=_optional_string(row.get("source_digest_after")),
+            output_token_ids=tuple(
+                int(value) for value in row.get("output_token_ids", ())
+            ),
+            output_hash=str(row.get("output_hash", "")),
+            output_text=str(row.get("output_text", "")),
+            logit_relative_l2=_optional_float(row.get("logit_relative_l2")),
+            full_timing_scope=str(
+                row.get("full_timing_scope", "remaining_layers")
+            ),
             error_type=_optional_string(row.get("error_type")),
             error_message=_optional_string(row.get("error_message")),
             code_commit=str(row.get("code_commit", "")),
             environment_hash=str(row.get("environment_hash", "")),
+            model_revision=str(row.get("model_revision", "")),
+            cacheblend_commit=str(row.get("cacheblend_commit", "")),
+            cacheblend_patch_sha256=str(
+                row.get("cacheblend_patch_sha256", "")
+            ),
+            cacheblend_tree=str(row.get("cacheblend_tree", "")),
+            vllm_version=str(row.get("vllm_version", "")),
+            torch_version=str(row.get("torch_version", "")),
+            cuda_version=str(row.get("cuda_version", "")),
+            gpu_uuid=str(row.get("gpu_uuid", "")),
             finished_at_utc=str(row.get("finished_at_utc", "")),
+            evidence_class=str(row.get("evidence_class", "local_simulation")),
             paper_evidence=bool(row.get("paper_evidence", False)),
         )
         result.validate()
@@ -306,6 +494,10 @@ def _optional_float(value: Any) -> Optional[float]:
 
 def _optional_string(value: Any) -> Optional[str]:
     return None if value is None else str(value)
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    return None if value is None else int(value)
 
 
 def merge_e1_results(
@@ -429,8 +621,14 @@ def simulate_e1_results(
             KVLocation.PINNED_CPU,
         )
         measurement = backend.repair(source, job.reuse_layer, job.repair_ratio)
+        full_remaining = backend.full_remaining(
+            job.segment_tokens, job.reuse_layer
+        )
         digest = hashlib.sha256(
             (job.content_hash + job.source_context_id).encode("utf-8")
+        ).hexdigest()
+        output_hash = hashlib.sha256(
+            ("%s:%.8f" % (job.job_id, measurement.token_f1)).encode("utf-8")
         ).hexdigest()
         results.append(
             E1Result(
@@ -441,14 +639,25 @@ def simulate_e1_results(
                 task_score_drop=1.0 - measurement.quality_score,
                 token_f1=measurement.token_f1,
                 repair_latency_ms=measurement.latency_ms,
-                full_remaining_ms=backend.full_remaining(
-                    job.segment_tokens, job.reuse_layer
-                ),
+                full_remaining_ms=full_remaining,
+                requested_ratio=measurement.requested_ratio,
+                eligible_segment_tokens=measurement.eligible_segment_tokens,
+                selected_segment_tokens=measurement.selected_segment_tokens,
+                effective_ratio=measurement.effective_ratio,
+                mandatory_suffix_tokens=measurement.mandatory_suffix_tokens,
+                prefix_tokens=0,
+                reuse_start_layer=measurement.reuse_start_layer,
+                repair_gpu_ms=measurement.repair_gpu_ms,
+                repair_host_ms=measurement.repair_host_ms,
+                full_remaining_gpu_ms=full_remaining,
+                full_remaining_host_ms=full_remaining,
                 source_digest_before=digest,
                 source_digest_after=digest,
+                output_hash=output_hash,
                 code_commit="local-simulation",
                 environment_hash="local-simulation",
                 finished_at_utc="deterministic",
+                evidence_class="local_simulation",
                 paper_evidence=False,
             )
         )

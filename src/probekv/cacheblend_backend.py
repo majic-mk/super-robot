@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Tuple
 
 from .backend import RepairBackend, RepairResult
 from .contracts import HistoricalSource, KVLocation
+from .repair_semantics import repaired_segment_token_count
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,17 @@ class RuntimeRepairMeasurement:
     latency_ms: float
     source_digest_before: str
     source_digest_after: str
+    requested_ratio: float = 0.0
+    eligible_segment_tokens: int = 0
+    selected_segment_tokens: int = 0
+    effective_ratio: float = 0.0
+    mandatory_suffix_tokens: int = 0
+    reuse_start_layer: int = 1
+    repair_gpu_ms: float = 0.0
+    repair_host_ms: float = 0.0
+    output_token_ids: Tuple[int, ...] = ()
+    output_hash: str = ""
+    output_text: str = ""
 
 
 class CacheBlendRuntime(Protocol):
@@ -60,7 +72,7 @@ class CacheBlendBackend(RepairBackend):
         self, source: HistoricalSource, start_layer: int, ratio: float
     ) -> RepairResult:
         source.validate_canonical()
-        if not 0 <= start_layer < self.total_layers:
+        if not 1 <= start_layer <= self.total_layers:
             raise ValueError("invalid start_layer")
         if not 0.0 <= ratio <= 1.0:
             raise ValueError("ratio must be in [0, 1]")
@@ -73,17 +85,52 @@ class CacheBlendBackend(RepairBackend):
             raise ValueError("quality score must be in [0, 1]")
         if not 0.0 <= measurement.token_f1 <= 1.0:
             raise ValueError("token F1 must be in [0, 1]")
+        eligible = measurement.eligible_segment_tokens or source.token_count
+        selected = measurement.selected_segment_tokens
+        expected_selected = repaired_segment_token_count(eligible, ratio)
+        if selected != expected_selected:
+            raise ValueError(
+                "runtime selected %d C tokens, expected %d"
+                % (selected, expected_selected)
+            )
+        effective = selected / float(eligible)
+        if abs(measurement.effective_ratio - effective) > 1e-12:
+            raise ValueError("runtime effective ratio does not match token counts")
+        if abs(measurement.requested_ratio - ratio) > 1e-12:
+            raise ValueError("runtime requested ratio does not match request")
+        if measurement.reuse_start_layer != start_layer:
+            raise ValueError("runtime reuse layer does not match request")
+        timing_values = (
+            measurement.repair_gpu_ms,
+            measurement.repair_host_ms,
+            measurement.latency_ms,
+        )
+        if any(value < 0 for value in timing_values):
+            raise ValueError("repair timings must be non-negative")
         return RepairResult(
             measurement.quality_score,
             measurement.token_f1,
             measurement.latency_ms,
-            ratio,
+            effective,
+            requested_ratio=ratio,
+            eligible_segment_tokens=eligible,
+            selected_segment_tokens=selected,
+            effective_ratio=effective,
+            mandatory_suffix_tokens=measurement.mandatory_suffix_tokens,
+            reuse_start_layer=start_layer,
+            repair_gpu_ms=measurement.repair_gpu_ms,
+            repair_host_ms=measurement.repair_host_ms,
+            source_digest_before=measurement.source_digest_before,
+            source_digest_after=measurement.source_digest_after,
+            output_token_ids=measurement.output_token_ids,
+            output_hash=measurement.output_hash,
+            output_text=measurement.output_text,
         )
 
     def full_remaining(self, token_count: int, start_layer: int) -> float:
         if token_count <= 0:
             raise ValueError("token_count must be positive")
-        if not 0 <= start_layer < self.total_layers:
+        if not 1 <= start_layer <= self.total_layers:
             raise ValueError("invalid start_layer")
         latency = float(self.runtime.dense_remaining_ms(token_count, start_layer))
         if latency < 0:
@@ -92,7 +139,14 @@ class CacheBlendBackend(RepairBackend):
 
     def provenance(self) -> Mapping[str, Any]:
         record = dict(self.runtime.provenance())
-        required = {"cacheblend_commit", "vllm", "torch", "cuda"}
+        required = {
+            "cacheblend_commit",
+            "cacheblend_patch_sha256",
+            "cacheblend_tree",
+            "vllm",
+            "torch",
+            "cuda",
+        }
         missing = sorted(required - set(record))
         if missing:
             raise ValueError("missing CacheBlend provenance: %s" % ", ".join(missing))

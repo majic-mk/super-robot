@@ -5,7 +5,6 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from .experiment_jobs import E1Job, E1Result, ResultStatus
-from .gates import gate_h1
 from .labeling import RatioMeasurement, safe_repair_ratio
 from .statistics import grouped_paired_bootstrap
 
@@ -83,6 +82,9 @@ def analyze_e1(
         safe_result = next(
             result for job, result in pairs if job.repair_ratio == safe
         )
+        safe_job = next(job for job, _ in pairs if job.repair_ratio == safe)
+        remaining_layers = total_layers - key[2] + 1
+        safe_cost = int(safe_result.selected_segment_tokens) * remaining_layers
         labels.append(
             {
                 "case_id": key[0],
@@ -90,6 +92,13 @@ def analyze_e1(
                 "reuse_layer": key[2],
                 "safe_repair_ratio": safe,
                 "repair_latency_ms": safe_result.repair_latency_ms,
+                "repair_gpu_ms": safe_result.repair_gpu_ms,
+                "repair_host_ms": safe_result.repair_host_ms,
+                "selected_segment_tokens": safe_result.selected_segment_tokens,
+                "eligible_segment_tokens": safe_result.eligible_segment_tokens,
+                "safe_token_layer_cost": safe_cost,
+                "dataset": safe_job.dataset,
+                "construction": safe_job.construction,
                 "quality_score": safe_result.quality_score,
                 "token_f1": safe_result.token_f1,
                 "label_status": "safe",
@@ -109,15 +118,29 @@ def analyze_e1(
     spreads = []
     s0_improvements = []
     last_source_improvements = []
-    improvement_groups = {}
+    s0_improvement_groups = {}
+    latest_improvement_groups = {}
+    case_metadata = {}
+    for job in jobs:
+        case_metadata.setdefault(
+            job.case_id,
+            {"dataset": job.dataset, "construction": job.construction},
+        )
     for case_id, rows in sorted(primary_by_case.items()):
         expected_sources = len(source_count_by_case[case_id])
         if len(rows) != expected_sources:
             continue
         ordered = sorted(rows, key=lambda row: _source_order(row["source_id"]))
         ratios = [float(row["safe_repair_ratio"]) for row in ordered]
-        costs = [float(row["repair_latency_ms"]) for row in ordered]
-        oracle_index = min(range(len(costs)), key=lambda index: costs[index])
+        costs = [float(row["safe_token_layer_cost"]) for row in ordered]
+        oracle_index = min(
+            range(len(costs)),
+            key=lambda index: (
+                costs[index],
+                float(ordered[index]["repair_gpu_ms"]),
+                _source_order(ordered[index]["source_id"]),
+            ),
+        )
         oracle_cost = costs[oracle_index]
         s0_cost = costs[0]
         last_source_cost = costs[-1]
@@ -133,35 +156,97 @@ def analyze_e1(
         spreads.append(spread)
         s0_improvements.append(s0_improvement)
         last_source_improvements.append(last_source_improvement)
-        improvement_groups[case_id] = [s0_improvement]
+        s0_improvement_groups[case_id] = [s0_improvement]
+        latest_improvement_groups[case_id] = [last_source_improvement]
         case_rows.append(
             {
                 "case_id": case_id,
+                "dataset": case_metadata[case_id]["dataset"],
+                "construction": case_metadata[case_id]["construction"],
                 "reuse_layer": primary_layer,
                 "source_spread": spread,
                 "oracle_source": ordered[oracle_index]["source_id"],
-                "oracle_cost_ms": oracle_cost,
+                "oracle_safe_token_layer_cost": oracle_cost,
                 "single_source_s0_improvement": s0_improvement,
-                "last_source_oracle_improvement": last_source_improvement,
+                "latest_source_oracle_improvement": last_source_improvement,
             }
         )
 
-    if improvement_groups:
-        interval = grouped_paired_bootstrap(
-            improvement_groups,
+    if s0_improvement_groups:
+        s0_interval = grouped_paired_bootstrap(
+            s0_improvement_groups,
             iterations=bootstrap_iterations,
             seed=seed,
         )
-        gate = gate_h1(spreads, s0_improvements, interval)
-        interval_row = asdict(interval)
-        gate_row = asdict(gate)
+        latest_interval = grouped_paired_bootstrap(
+            latest_improvement_groups,
+            iterations=bootstrap_iterations,
+            seed=seed + 1,
+        )
+        interval_row = {
+            "s0": asdict(s0_interval),
+            "latest": asdict(latest_interval),
+        }
     else:
         interval_row = None
-        gate_row = {
-            "gate": "H1",
-            "passed": False,
-            "summary": "no complete primary-layer source groups",
-        }
+    spread_fraction = (
+        sum(value >= 0.10 for value in spreads) / float(len(spreads))
+        if spreads
+        else 0.0
+    )
+    mean_s0 = statistics.mean(s0_improvements) if s0_improvements else 0.0
+    mean_latest = (
+        statistics.mean(last_source_improvements)
+        if last_source_improvements
+        else 0.0
+    )
+    completed_fraction = len(completed) / float(len(jobs)) if jobs else 0.0
+    runtime_endpoint_failures = []
+    for key, pairs in sorted(result_groups.items()):
+        full_ratio = next(
+            (
+                result
+                for job, result in pairs
+                if abs(job.repair_ratio - 1.0) <= 1e-12
+            ),
+            None,
+        )
+        if full_ratio is not None and (
+            float(full_ratio.task_score_drop) > 0.10
+            or float(full_ratio.token_f1) < 0.90
+        ):
+            runtime_endpoint_failures.append(
+                {
+                    "case_id": key[0],
+                    "source_id": key[1],
+                    "reuse_layer": key[2],
+                }
+            )
+    if not case_rows:
+        decision = "runtime_failure" if runtime_endpoint_failures else "incomplete"
+    elif runtime_endpoint_failures:
+        decision = "runtime_failure"
+    elif (
+        spread_fraction >= 0.25
+        and mean_s0 >= 0.10
+        and mean_latest >= 0.10
+        and completed_fraction >= 0.90
+    ):
+        decision = "pass"
+    elif spread_fraction < 0.10 and max(mean_s0, mean_latest) < 0.05:
+        decision = "stop_multi_source"
+    else:
+        decision = "conditional"
+    gate_row = {
+        "gate": "H1-pilot",
+        "passed": decision == "pass",
+        "decision": decision,
+        "spread_ge_10pp_fraction": spread_fraction,
+        "mean_s0_oracle_improvement": mean_s0,
+        "mean_latest_oracle_improvement": mean_latest,
+        "completed_fraction": completed_fraction,
+        "runtime_endpoint_failures": len(runtime_endpoint_failures),
+    }
     paper_claimable = (
         bool(results)
         and len(results) == len(jobs)
@@ -178,19 +263,17 @@ def analyze_e1(
         "incomplete_groups": incomplete_groups,
         "no_safe_groups": no_safe_groups,
         "analyzable_cases": len(case_rows),
-        "spread_ge_10pp_fraction": (
-            sum(value >= 0.10 for value in spreads) / float(len(spreads))
-            if spreads
-            else None
-        ),
+        "spread_ge_10pp_fraction": spread_fraction if spreads else None,
         "mean_s0_oracle_improvement": (
             statistics.mean(s0_improvements) if s0_improvements else None
         ),
-        "mean_last_source_oracle_improvement": (
+        "mean_latest_source_oracle_improvement": (
             statistics.mean(last_source_improvements)
             if last_source_improvements
             else None
         ),
+        "completed_fraction": completed_fraction,
+        "runtime_endpoint_failures": runtime_endpoint_failures,
         "improvement_ci": interval_row,
         "gate_diagnostic": gate_row,
         "paper_gate_claimable": paper_claimable,

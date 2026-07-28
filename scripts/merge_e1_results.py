@@ -26,13 +26,16 @@ def main() -> int:
     parser.add_argument("--result-dir")
     parser.add_argument("--output", required=True)
     parser.add_argument("--total-layers", type=int, default=32)
+    parser.add_argument("--bootstrap-iterations", type=int, default=10_000)
     parser.add_argument("--allow-test", action="store_true")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
     jobs = read_rows(Path(args.jobs), E1Job.from_row)
     paths = [Path(value) for value in args.result]
     if args.result_dir:
-        paths.extend(sorted(Path(args.result_dir).glob("shard-*.jsonl")))
+        result_dir = Path(args.result_dir)
+        paths.extend(sorted(result_dir.glob("shard-*.jsonl")))
+        paths.extend(sorted(result_dir.glob("results-*.jsonl")))
     unique_paths = []
     seen = set()
     for path in paths:
@@ -49,6 +52,7 @@ def main() -> int:
         latest,
         total_layers=args.total_layers,
         allow_test=args.allow_test,
+        bootstrap_iterations=args.bootstrap_iterations,
     )
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)

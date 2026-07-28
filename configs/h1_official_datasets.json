@@ -1,0 +1,20 @@
+{
+  "hotpotqa": {
+    "official_repository": "https://github.com/hotpotqa/hotpot",
+    "train_url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json",
+    "archive_member": "hotpot_train_v1.1.json",
+    "license": "CC-BY-SA-4.0"
+  },
+  "2wiki": {
+    "official_repository": "https://github.com/Alab-NII/2wikimultihop",
+    "train_url": "https://www.dropbox.com/scl/fi/32t7pv1dyf3o2pp0dl25u/data_ids_april7.zip?rlkey=u868q6h0jojw4djjg7ea65j46&dl=1",
+    "archive_member": "train.json",
+    "license": "Apache-2.0"
+  },
+  "musique": {
+    "official_repository": "https://github.com/stonybrooknlp/musique",
+    "train_url": "https://drive.google.com/uc?id=1tGdADlNjWFaHLeZZGShh2IRcpO6Lv24h",
+    "archive_member": "data/musique_ans_v1.0_train.jsonl",
+    "license": "CC-BY-4.0"
+  }
+}

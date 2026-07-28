@@ -18,6 +18,11 @@ class ConfigAndCliTests(unittest.TestCase):
         self.assertEqual(config.online_kmax, 4)
         self.assertEqual(config.probe_checkpoints[-1], 8)
 
+    def test_server_pilot_config_is_valid_and_non_paper(self):
+        config = load_config(str(ROOT / "configs" / "a800_h1_pilot.json"))
+        self.assertEqual(config.evidence_class, "server_pilot")
+        self.assertEqual(config.cases, 150)
+
     def test_probe_max_above_25_percent_is_rejected(self):
         raw = {
             "name": "bad",

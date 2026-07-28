@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Mapping, Sequence
+from typing import Mapping, Tuple
 
 from .contracts import HistoricalSource, KVLocation
+from .repair_semantics import repaired_segment_token_count
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,19 @@ class RepairResult:
     token_f1: float
     latency_ms: float
     repaired_ratio: float
+    requested_ratio: float = 0.0
+    eligible_segment_tokens: int = 0
+    selected_segment_tokens: int = 0
+    effective_ratio: float = 0.0
+    mandatory_suffix_tokens: int = 0
+    reuse_start_layer: int = 1
+    repair_gpu_ms: float = 0.0
+    repair_host_ms: float = 0.0
+    source_digest_before: str = ""
+    source_digest_after: str = ""
+    output_token_ids: Tuple[int, ...] = ()
+    output_hash: str = ""
+    output_text: str = ""
 
 
 class RepairBackend(ABC):
@@ -59,11 +73,11 @@ class DeterministicSimulationBackend(RepairBackend):
     def repair(
         self, source: HistoricalSource, start_layer: int, ratio: float
     ) -> RepairResult:
-        if not 0 <= start_layer < self.total_layers:
+        if not 1 <= start_layer <= self.total_layers:
             raise ValueError("invalid start_layer")
         if not 0.0 <= ratio <= 1.0:
             raise ValueError("ratio must be in [0, 1]")
-        remaining = self.total_layers - start_layer
+        remaining = self.total_layers - start_layer + 1
         latency = (
             remaining
             * self.layer_ms_per_1k_tokens
@@ -74,13 +88,28 @@ class DeterministicSimulationBackend(RepairBackend):
         deficit = max(0.0, threshold - ratio)
         token_f1 = max(0.0, 1.0 - deficit * 2.0)
         quality = max(0.0, 1.0 - deficit)
-        return RepairResult(quality, token_f1, latency, ratio)
+        selected = repaired_segment_token_count(source.token_count, ratio)
+        effective = selected / float(source.token_count)
+        return RepairResult(
+            quality,
+            token_f1,
+            latency,
+            effective,
+            requested_ratio=ratio,
+            eligible_segment_tokens=source.token_count,
+            selected_segment_tokens=selected,
+            effective_ratio=effective,
+            mandatory_suffix_tokens=0,
+            reuse_start_layer=start_layer,
+            repair_gpu_ms=latency,
+            repair_host_ms=latency,
+        )
 
     def full_remaining(self, token_count: int, start_layer: int) -> float:
-        if not 0 <= start_layer < self.total_layers:
+        if not 1 <= start_layer <= self.total_layers:
             raise ValueError("invalid start_layer")
         return (
-            (self.total_layers - start_layer)
+            (self.total_layers - start_layer + 1)
             * self.layer_ms_per_1k_tokens
             * (token_count / 1024.0)
         )

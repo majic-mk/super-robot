@@ -24,6 +24,9 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--model-signature", required=True)
+    parser.add_argument("--source-url", default="unspecified-local-fixture")
+    parser.add_argument("--source-revision", default="unspecified-local-fixture")
+    parser.add_argument("--license", default="unspecified-local-fixture")
     parser.add_argument(
         "--construction",
         choices=("controlled", "corpus-repeat", "both"),
@@ -96,6 +99,10 @@ def main() -> int:
             "seed": args.seed,
             "raw_input": str(input_path),
             "raw_input_sha256": sha256_file(input_path),
+            "official_source_url": args.source_url,
+            "official_source_revision": args.source_revision,
+            "dataset_license": args.license,
+            "source_split": "train",
             "manifest_digest": manifest_digest(cases) if cases else None,
             "corpus_repeat_is_production_trace": False,
             "evidence_class": "data_preparation",

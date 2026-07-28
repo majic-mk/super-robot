@@ -6,11 +6,14 @@ has several canonical historical KV variants, fresh early state from the
 current request selects only a conservatively safe and economically useful
 source; uncertain decisions abstain and fall back to full recomputation.
 
-This repository currently implements the complete local validation layer:
+This repository implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,
 conformal upper budgets, dynamic `L_reuse`, total-cost admission, P0-P4/Dynamic
 prefetch, A-only/B-only/Hybrid scheduling, grouped statistics, gates, audit
 output, deterministic simulation, and an offline Hugging Face model H0 check.
+It also contains the audited CacheBlend patchset, A800 CB0-CB3 gate runner,
+official-data pilot builder and resumable non-paper H1 server worker. Server
+measurements are not considered complete until their archived gate files pass.
 
 ## Quick start
 
@@ -34,10 +37,11 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `docs/LOCAL_VALIDATION.md`: commands and local/formal-server boundary.
 - `docs/A100_RUNBOOK.md`: formal-server timing and evidence collection rules
   (legacy filename retained for stable links).
+- `docs/A800_STAGE2_RUNBOOK.md`: exact CB0-CB3 and 150-case H1 pilot commands.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.
 - `docs/RAG_DATA.md`: real-dataset normalization and Source construction rules.
 - `docs/E1_JOBS.md`: deterministic repair-grid sharding and result audit.
-- `docs/CACHEBLEND_INTEGRATION.md`: the remaining pinned-runtime shim contract.
+- `docs/CACHEBLEND_INTEGRATION.md`: the pinned-runtime shim contract and gates.
 - `src/probekv/backend.py`: integration boundary for CacheBlend or SparseX.
 - `tests/`: executable invariants and decision-policy tests.
 

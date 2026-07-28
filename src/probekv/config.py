@@ -46,7 +46,11 @@ class ExperimentConfig:
         return result
 
     def validate(self) -> None:
-        if self.evidence_class not in {"local_simulation", "paper_measurement"}:
+        if self.evidence_class not in {
+            "local_simulation",
+            "server_pilot",
+            "paper_measurement",
+        }:
             raise ValueError("unsupported evidence_class")
         if self.cases <= 0:
             raise ValueError("cases must be positive")

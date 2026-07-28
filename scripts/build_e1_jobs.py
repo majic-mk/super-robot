@@ -34,6 +34,8 @@ def main() -> int:
     config = load_config(args.config)
     cases = read_cases(manifest_path)
     splits = tuple(value.strip() for value in args.splits.split(",") if value.strip())
+    if config.evidence_class == "server_pilot" and "test" in splits:
+        raise ValueError("server_pilot cannot read the locked test split")
     jobs = generate_e1_jobs(
         cases,
         config.total_layers,
@@ -62,6 +64,7 @@ def main() -> int:
         "layer_job_counts": layer_counts,
         "repair_ratios": list(config.repair_ratios),
         "seed": config.seed,
+        "evidence_class": config.evidence_class,
         "paper_evidence": False,
     }
     atomic_write_json(output / "audit.json", audit)

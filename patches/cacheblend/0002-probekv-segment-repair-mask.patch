@@ -1,0 +1,101 @@
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+index 9d35d6e..3c02757 100644
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -288,6 +288,14 @@ class LlamaModel(nn.Module):
+                                     "kv_cache_dtype": None,
+                                     "attn_bias": None,
+                                     "imp_indices": None,
++                                    "suffix_len": None,
++                                    "segment_start": None,
++                                    "segment_len": None,
++                                    "eligible_segment_tokens": None,
++                                    "selected_segment_tokens": None,
++                                    "effective_ratio": None,
++                                    "mandatory_suffix_tokens": None,
++                                    "capture_logits": False,
+                                     "org_seq_len": None,
+                                     "collect": False}
+ 
+@@ -394,6 +402,7 @@ class LlamaForCausalLM(nn.Module):
+         self.config = config
+         self.linear_method = linear_method
+         self.model = LlamaModel(config, linear_method, lora_config=lora_config)
++        self.probekv_logits_trace = []
+         self.unpadded_vocab_size = config.vocab_size
+         if lora_config:
+             self.unpadded_vocab_size += lora_config.lora_extra_vocab_size
+@@ -423,6 +432,9 @@ class LlamaForCausalLM(nn.Module):
+     def compute_logits(self, hidden_states: torch.Tensor,
+                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
+         logits = self.logits_processor(self.lm_head.weight, hidden_states,
+                                        sampling_metadata)
++        if self.model.cache_fuse_metadata.get("capture_logits", False):
++            self.probekv_logits_trace.append(
++                logits.detach().float().cpu())
+         return logits
+     def sample(
+         self,
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+index b98cc39..5702130 100644
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -182,16 +182,47 @@ class XFormersImpl(AttentionImpl):
+             value_old = old_kv[1].view(-1, self.num_kv_heads, self.head_size)
+ 
+         if status in [1]:
+-            last_len = cache_fuse_metadata['suffix_len']
++            last_len = int(cache_fuse_metadata['suffix_len'])
+             total_len = value.shape[0]
+-            last_indices = [total_len-last_len+l for l in range(last_len)]
+-            topk_num = int((total_len-last_len)*cache_fuse_metadata["recomp_ratio"])
+-            temp_diff = torch.sum((value[:-last_len,:,:]-value_old[:-last_len,:,:])**2, dim=[1,2])
+-            top_indices = torch.topk(temp_diff, k=topk_num).indices
+-
+-            top_indices, _ = torch.sort(top_indices)
+-            top_indices = torch.cat([top_indices,
+-                                        torch.tensor(last_indices, device=top_indices.device)])
++            segment_start = int(cache_fuse_metadata['segment_start'])
++            segment_len = int(cache_fuse_metadata['segment_len'])
++            segment_end = segment_start + segment_len
++            suffix_start = total_len - last_len
++            if segment_len <= 0:
++                raise ValueError("segment_len must be positive")
++            if segment_start < 0 or segment_end != suffix_start:
++                raise ValueError("P/C/S metadata does not cover the prompt")
++            ratio = float(cache_fuse_metadata["recomp_ratio"])
++            if ratio < 0.0 or ratio > 1.0:
++                raise ValueError("recomp_ratio must be in [0, 1]")
++            if ratio == 0.0:
++                topk_num = 0
++            elif ratio == 1.0:
++                topk_num = segment_len
++            else:
++                topk_num = int(segment_len * ratio)
++            temp_diff = torch.sum(
++                (
++                    value[segment_start:segment_end, :, :]
++                    - value_old[segment_start:segment_end, :, :]
++                ) ** 2,
++                dim=[1, 2],
++            )
++            ranking = torch.argsort(
++                temp_diff, descending=True, stable=True
++            )
++            segment_indices = ranking[:topk_num] + segment_start
++            segment_indices, _ = torch.sort(segment_indices)
++            suffix_indices = torch.arange(
++                suffix_start,
++                total_len,
++                dtype=torch.long,
++                device=segment_indices.device,
++            )
++            top_indices = torch.cat([segment_indices, suffix_indices])
++            cache_fuse_metadata["eligible_segment_tokens"] = segment_len
++            cache_fuse_metadata["selected_segment_tokens"] = topk_num
++            cache_fuse_metadata["effective_ratio"] = topk_num / float(segment_len)
++            cache_fuse_metadata["mandatory_suffix_tokens"] = last_len
++            cache_fuse_metadata["selected_segment_indices"] = segment_indices
+             query = query[top_indices]
+             cache_fuse_metadata["imp_indices"] = top_indices
+ 

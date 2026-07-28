@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/YaoJiayi/CacheBlend.git",
+  "base_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+  "patches": {
+    "cb0": [
+      "0001-cb0-fix-suffix-length.patch"
+    ],
+    "probekv": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch"
+    ]
+  },
+  "innovation_claim": false,
+  "ratio_denominator": "repeated segment C tokens only",
+  "suffix_policy": "mandatory dense suffix S is excluded from repair ratio"
+}

@@ -295,17 +295,54 @@ def build_controlled_cases(
     max_cases: int = 0,
 ) -> List[ManifestCase]:
     """Build transparent pair-regime controls from real dataset documents."""
+    document_pool = {}
+    for example in examples:
+        for document in example.documents:
+            document_pool.setdefault(document.document_id, document)
     results = []
     for example in examples:
         target = _target_document(example)
-        others = [document for document in example.documents if document.document_id != target.document_id]
+        in_example = [
+            document
+            for document in example.documents
+            if document.document_id != target.document_id
+        ]
+        seen_documents = {target.document_id}
+        others = []
+        for document in in_example:
+            if document.document_id not in seen_documents:
+                others.append(document)
+                seen_documents.add(document.document_id)
+        supplements = sorted(
+            (
+                document
+                for document in document_pool.values()
+                if document.document_id not in seen_documents
+            ),
+            key=lambda document: hashlib.sha256(
+                (
+                    "%d:%s:supplement:%s"
+                    % (seed, example.example_id, document.document_id)
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        others.extend(supplements[: max(0, 5 - len(others))])
         if len(others) < 5:
             continue
+        in_example_ids = {
+            document.document_id for document in in_example
+        }
         ordered = sorted(
             others,
-            key=lambda document: hashlib.sha256(
-                ("%d:%s:%s" % (seed, example.example_id, document.document_id)).encode("utf-8")
-            ).hexdigest(),
+            key=lambda document: (
+                0 if document.document_id in in_example_ids else 1,
+                hashlib.sha256(
+                    (
+                        "%d:%s:%s"
+                        % (seed, example.example_id, document.document_id)
+                    ).encode("utf-8")
+                ).hexdigest(),
+            ),
         )[:5]
         current_documents = tuple(ordered)
         plans = (
@@ -321,6 +358,7 @@ def build_controlled_cases(
         # controlled and corpus-repeat view of the same C can never diverge
         # into different splits.
         group_id = "%s:%s" % (example.dataset, content_hash)
+        current_context = render_preceding_context(current_documents)
         sources = tuple(
             ManifestSource(
                 "s%d" % index,
@@ -332,6 +370,14 @@ def build_controlled_cases(
             )
             for index, (regime, documents) in enumerate(plans)
         )
+        source_token_lengths = [
+            len(tuple(encoder(source.historical_context))) for source in sources
+        ]
+        current_token_length = len(tuple(encoder(current_context)))
+        if len(set(source_token_lengths)) != len(source_token_lengths):
+            continue
+        if current_token_length in set(source_token_lengths):
+            continue
         case = ManifestCase(
             case_id="%s:controlled" % example.example_id,
             dataset=example.dataset,
@@ -343,7 +389,7 @@ def build_controlled_cases(
             segment_text=repeated,
             segment_token_ids=token_ids,
             content_hash=content_hash,
-            current_context=render_preceding_context(current_documents),
+            current_context=current_context,
             sources=sources,
             question=example.question,
             answers=example.answers,

@@ -6,6 +6,7 @@ from probekv.experiment_jobs import (
     E1Result,
     ResultStatus,
     generate_e1_jobs,
+    group_e1_jobs,
     merge_e1_results,
     resumable_e1_jobs,
     select_job_shard,
@@ -57,6 +58,19 @@ class JobGenerationTests(unittest.TestCase):
         identifiers = [job.job_id for shard in shards for job in shard]
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertEqual(set(identifiers), {job.job_id for job in self.jobs})
+
+    def test_grouping_orders_ratios_and_preserves_all_jobs(self):
+        groups = group_e1_jobs(list(reversed(self.jobs)))
+        flattened = [job for _, members in groups for job in members]
+        self.assertEqual(
+            {job.job_id for job in flattened},
+            {job.job_id for job in self.jobs},
+        )
+        for _, members in groups:
+            self.assertEqual(
+                [job.repair_ratio for job in members],
+                sorted(job.repair_ratio for job in members),
+            )
 
 
 class ResultAuditTests(unittest.TestCase):
@@ -137,6 +151,15 @@ class ResultAuditTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "locked test"):
             analyze_e1(jobs, simulate_e1_results(jobs), total_layers=32)
+
+    def test_server_pilot_can_never_be_paper_evidence(self):
+        result = replace(
+            simulate_e1_results(self.jobs[:1])[0],
+            evidence_class="server_pilot",
+            paper_evidence=True,
+        )
+        with self.assertRaisesRegex(ValueError, "never"):
+            result.validate()
 
 
 if __name__ == "__main__":

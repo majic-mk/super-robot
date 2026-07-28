@@ -64,6 +64,23 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
             handle.write("\n")
 
 
+def append_jsonl_fsync(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
+    """Append complete JSONL rows and force them to disk for checkpoint safety."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(
+                json.dumps(row, ensure_ascii=False, default=_json_default)
+            )
+            handle.write("\n")
+            count += 1
+        handle.flush()
+        os.fsync(handle.fileno())
+    return count
+
+
 def git_commit(cwd: Path) -> str:
     try:
         return subprocess.check_output(
