@@ -48,6 +48,11 @@ class PaperEnvironmentTests(unittest.TestCase):
     def test_a800_environment_passes(self):
         self.assertEqual(evaluate_environment(contract(), valid_record()), [])
 
+    def test_official_torch_cuda_local_version_passes(self):
+        record = valid_record()
+        record["torch"] = "2.2.1+cu121"
+        self.assertEqual(evaluate_environment(contract(), record), [])
+
     def test_a100_cannot_be_reported_as_a800(self):
         record = valid_record()
         record["gpus"][0]["name"] = "NVIDIA A100-SXM4-80GB"

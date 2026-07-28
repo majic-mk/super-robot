@@ -36,6 +36,14 @@ def package_version(name: str) -> Optional[str]:
         return None
 
 
+def versions_match(expected: Any, observed: Any, allow_local_suffix: bool = False) -> bool:
+    expected_text = str(expected)
+    observed_text = str(observed)
+    if allow_local_suffix and "+" not in expected_text:
+        observed_text = observed_text.split("+", 1)[0]
+    return observed_text == expected_text
+
+
 def _torch_record() -> Dict[str, Any]:
     try:
         import torch
@@ -127,7 +135,11 @@ def evaluate_environment(
         failures.append("PyTorch GPU count does not match the hardware contract")
     for package in ("torch", "vllm", "xformers"):
         expected_key = "pytorch" if package == "torch" else package
-        if str(record.get(package)) != str(expected_stack[expected_key]):
+        if not versions_match(
+            expected_stack[expected_key],
+            record.get(package),
+            allow_local_suffix=(package == "torch"),
+        ):
             failures.append(
                 "expected %s==%s, found %s"
                 % (package, expected_stack[expected_key], record.get(package))
