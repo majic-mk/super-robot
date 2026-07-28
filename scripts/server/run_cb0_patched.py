@@ -12,6 +12,25 @@ from pathlib import Path
 from probekv.io import atomic_write_json
 
 
+FORBIDDEN_ERROR_SIGNATURES = (
+    "CUDA error:",
+    "CUDA out of memory",
+    "torch.cuda.OutOfMemoryError",
+    "illegal memory access",
+    "KeyError:",
+    "Traceback (most recent call last)",
+)
+
+
+def detect_forbidden_errors(log: str) -> list[str]:
+    lowered = log.lower()
+    return [
+        signature
+        for signature in FORBIDDEN_ERROR_SIGNATURES
+        if signature.lower() in lowered
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cacheblend", required=True)
@@ -33,27 +52,19 @@ def main() -> int:
     (output / "cb0_patched.log").write_text(log, encoding="utf-8")
     cached = log.count("Cached generation:")
     full = log.count("Normal generation:")
-    forbidden = (
-        "CUDA error",
-        "out of memory",
-        "illegal memory access",
-        "KeyError",
-        "Traceback (most recent call last)",
-    )
+    forbidden_errors = detect_forbidden_errors(log)
     payload = {
         "gate": "CB0-patched",
         "passed": (
             process.returncode == 0
             and cached == 10
             and full == 10
-            and not any(value.lower() in log.lower() for value in forbidden)
+            and not forbidden_errors
         ),
         "returncode": process.returncode,
         "cached_outputs": cached,
         "full_outputs": full,
-        "forbidden_errors": [
-            value for value in forbidden if value.lower() in log.lower()
-        ],
+        "forbidden_errors": forbidden_errors,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "original_cb0_status": "failed_and_preserved_in_stage1",
         "paper_evidence": False,
