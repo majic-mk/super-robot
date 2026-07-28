@@ -131,7 +131,9 @@ def main() -> int:
             ]
             for source_id, rows in source_drifts.items()
         },
-        "evidence_class": "local_correctness",
+        "evidence_class": (
+            "server_correctness" if args.device == "cuda" else "local_correctness"
+        ),
         "paper_performance_evidence": False,
         "passed": (
             self_comparison_zero

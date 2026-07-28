@@ -255,7 +255,9 @@ def main() -> int:
 
     result = {
         "check": "local_hf_h0",
-        "evidence_class": "local_correctness",
+        "evidence_class": (
+            "server_correctness" if args.device == "cuda" else "local_correctness"
+        ),
         "paper_performance_evidence": False,
         "model_path": str(Path(args.model).resolve()),
         "python": platform.python_version(),
