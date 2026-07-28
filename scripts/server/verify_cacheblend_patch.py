@@ -45,6 +45,7 @@ def main() -> int:
                 "-C",
                 str(cacheblend),
                 "apply",
+                "--unidiff-zero",
                 "--reverse",
                 "--check",
                 str(patch_path),

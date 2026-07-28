@@ -62,8 +62,8 @@ for patch_name in "${patches[@]}"; do
     echo "missing tracked CacheBlend patch: $patch_path" >&2
     exit 1
   fi
-  git -C "$target" apply --check "$patch_path"
-  git -C "$target" apply "$patch_path"
+  git -C "$target" apply --unidiff-zero --check "$patch_path"
+  git -C "$target" apply --unidiff-zero "$patch_path"
 done
 
 git -C "$target" diff --check
