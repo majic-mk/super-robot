@@ -182,6 +182,44 @@ class ConstructionTests(unittest.TestCase):
         ]
         self.assertEqual(shared_controlled[0].group_id, shared_corpus[0].group_id)
 
+    def test_corpus_repeat_tokenizes_each_unique_document_once(self):
+        examples = [
+            RAGExample(
+                "fixture",
+                "e%d" % index,
+                "Distinct question %d?" % index,
+                ("Answer",),
+                documents(shared="Exactly repeated document", prefix_tag=str(index)),
+            )
+            for index in range(5)
+        ]
+        calls = []
+
+        def counting_encode(text):
+            calls.append(text)
+            return encode(text)
+
+        build_corpus_repeat_cases(examples, counting_encode, "model@revision")
+        # Five examples contribute five unique non-shared documents each and
+        # all five share one exact repeated document: 5 * 5 + 1.
+        self.assertEqual(len(calls), 26)
+
+    def test_controlled_construction_stops_without_scanning_case_outputs(self):
+        examples = [
+            RAGExample(
+                "fixture",
+                "e%d" % index,
+                "Question %d?" % index,
+                ("Answer",),
+                documents(prefix_tag=str(index)),
+            )
+            for index in range(50)
+        ]
+        cases = build_controlled_cases(
+            examples, encode, "model@revision", max_cases=3
+        )
+        self.assertEqual(len(cases), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

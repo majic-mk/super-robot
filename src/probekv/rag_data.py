@@ -299,6 +299,18 @@ def build_controlled_cases(
     for example in examples:
         for document in example.documents:
             document_pool.setdefault(document.document_id, document)
+    # Freeze one deterministic fallback order for the whole dataset.  The old
+    # implementation re-sorted the complete document pool for every example,
+    # making full-train construction quadratic.  Only the first few documents
+    # not already present in an example are needed, so a single global order
+    # preserves deterministic sampling while reducing the common case to a
+    # short prefix scan.
+    supplement_order = sorted(
+        document_pool.values(),
+        key=lambda document: hashlib.sha256(
+            ("%d:supplement:%s" % (seed, document.document_id)).encode("utf-8")
+        ).hexdigest(),
+    )
     results = []
     for example in examples:
         target = _target_document(example)
@@ -313,20 +325,15 @@ def build_controlled_cases(
             if document.document_id not in seen_documents:
                 others.append(document)
                 seen_documents.add(document.document_id)
-        supplements = sorted(
-            (
-                document
-                for document in document_pool.values()
-                if document.document_id not in seen_documents
-            ),
-            key=lambda document: hashlib.sha256(
-                (
-                    "%d:%s:supplement:%s"
-                    % (seed, example.example_id, document.document_id)
-                ).encode("utf-8")
-            ).hexdigest(),
-        )
-        others.extend(supplements[: max(0, 5 - len(others))])
+        supplement_count = max(0, 5 - len(others))
+        if supplement_count:
+            for document in supplement_order:
+                if document.document_id in seen_documents:
+                    continue
+                others.append(document)
+                seen_documents.add(document.document_id)
+                if len(others) >= 5:
+                    break
         if len(others) < 5:
             continue
         in_example_ids = {
@@ -429,11 +436,17 @@ def build_corpus_repeat_cases(
     occurrences and one current occurrence of the exact same tokenized segment.
     """
     groups: Dict[str, List[RetrievalEvent]] = {}
+    segment_cache: Dict[str, Tuple[str, Tuple[int, ...], str]] = {}
     for example in examples:
         for position, target in enumerate(example.documents):
-            repeated = segment_text(target)
-            token_ids = tuple(int(token) for token in encoder(repeated))
-            content_hash = token_content_hash(token_ids)
+            cached_segment = segment_cache.get(target.document_id)
+            if cached_segment is None:
+                repeated = segment_text(target)
+                token_ids = tuple(int(token) for token in encoder(repeated))
+                content_hash = token_content_hash(token_ids)
+                cached_segment = (repeated, token_ids, content_hash)
+                segment_cache[target.document_id] = cached_segment
+            repeated, token_ids, content_hash = cached_segment
             preceding = tuple(example.documents[max(0, position - max_preceding_documents) : position])
             context = render_preceding_context(preceding)
             event = RetrievalEvent(
