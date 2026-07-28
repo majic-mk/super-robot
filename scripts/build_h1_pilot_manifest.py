@@ -83,7 +83,7 @@ def main() -> int:
         natural_target=args.natural_target,
         seed=args.seed,
     )
-    expected_datasets = {"MuSiQue", "2WikiMultiHopQA", "HotpotQA"}
+    expected_datasets = {"MuSiQue", "2WikiMultiHopQA", "HotPotQA"}
     observed_datasets = {case.dataset for case in pilot}
     if observed_datasets != expected_datasets:
         raise ValueError(

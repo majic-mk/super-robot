@@ -32,7 +32,7 @@ def main() -> int:
     by_dataset = {}
     for case in sorted(cases, key=lambda item: item.case_id):
         by_dataset.setdefault(case.dataset, case)
-    expected = {"MuSiQue", "2WikiMultiHopQA", "HotpotQA"}
+    expected = {"MuSiQue", "2WikiMultiHopQA", "HotPotQA"}
     if set(by_dataset) != expected:
         raise ValueError("CB gates require all three datasets")
     selected = [by_dataset[name] for name in sorted(by_dataset)]

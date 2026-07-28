@@ -9,7 +9,7 @@ from probekv.pilot_manifest import pilot_manifest_audit, select_h1_pilot
 class PilotManifestTests(unittest.TestCase):
     def test_selects_exact_train_only_stratified_pilot(self):
         base = synthetic_manifest(180, 20260726)
-        datasets = ("MuSiQue", "2WikiMultiHopQA", "HotpotQA")
+        datasets = ("MuSiQue", "2WikiMultiHopQA", "HotPotQA")
         cases = []
         for index, case in enumerate(base):
             dataset = datasets[index // 60]
