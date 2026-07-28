@@ -5,7 +5,7 @@ core_claim: >-
   historical KV variants of the same exact non-prefix segment, using
   variant-specific conservative safe total-reuse cost bounds and abstention
 frozen_at: 2026-07-26
-amended_at: 2026-07-27
+amended_at: 2026-07-28
 amendment_note: >-
   Following the pre-experiment design review, every layer through the 25%
   ceiling is the main probe policy. The original sparse checkpoints remain a
@@ -16,7 +16,9 @@ amendment_note: >-
   controlled current and historical prefixes to be independently constructed
   with unequal natural lengths; the question remains after retrieved chunks.
   Natural corpus traces are not filtered solely for equal token counts. No test
-  result motivated these amendments.
+  result motivated these amendments. Before any formal server performance data
+  was collected, the provisioned NVIDIA A800-SXM4-80GB was frozen as the
+  matched primary hardware for ProbeKV and every same-stack baseline.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -60,6 +62,18 @@ profile_segment_tokens: [256, 512, 1024, 2048, 4096, 8192]
 main_segment_tokens: [512, 1024, 2048, 4096]
 concurrency: [1, 2, 4, 8, 16]
 seeds: [20260726, 20260727, 20260728]
+
+hardware:
+  primary:
+    role: formal_matched_primary
+    gpu_name_regex: "^NVIDIA A800.*80GB$"
+    gpu_count: 1
+    minimum_memory_mib: 80000
+    compute_capability: "8.0"
+  optional_portability:
+    gpu_name_regex: "^NVIDIA A100.*80GB$"
+    paper_tables_required: false
+  matched_hardware_required_for_all_direct_baselines: true
 
 models:
   primary:
@@ -178,6 +192,7 @@ stacks:
     commit: b72d7945e6d6306f12be66520196e0f081fa2b0c
     vllm: 0.4.1
     pytorch: 2.2.1
+    xformers: 0.0.25
     cuda: "12.1"
   compatibility_smoke:
     vllm: 0.25.1
@@ -185,4 +200,5 @@ stacks:
 evidence_policy:
   local_simulation_is_paper_evidence: false
   local_correctness_is_paper_performance_evidence: false
-  a100_measurements_required_for_timing_claims: true
+  primary_hardware_measurements_required_for_timing_claims: true
+  stage1_cb0_h0_performance_is_paper_evidence: false

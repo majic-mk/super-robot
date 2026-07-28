@@ -15,7 +15,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "local config validation failed" }
 
     python -m probekv validate-config --config configs/a100_e0.json
-    if ($LASTEXITCODE -ne 0) { throw "A100 config validation failed" }
+    if ($LASTEXITCODE -ne 0) { throw "formal server config validation failed" }
 
     python -m probekv validate-config --config configs/local_e1e2.json
     if ($LASTEXITCODE -ne 0) { throw "local E1/E2 config validation failed" }

@@ -59,7 +59,7 @@ def main() -> int:
         record["framework_supports_gpu"] = False
     record["paper_performance_ready"] = False
     record["note"] = (
-        "Local hardware is for correctness/smoke tests only; paper timing requires A100."
+        "Local hardware is for correctness/smoke tests only; paper timing requires the config-frozen A800."
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

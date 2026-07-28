@@ -23,7 +23,7 @@ python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
 Simulation artifacts are always marked `paper_evidence: false`. Formal timing
-claims require the pinned CacheBlend stack on A100.
+claims require the pinned CacheBlend stack on the config-frozen A800.
 
 ## Key files
 
@@ -31,8 +31,9 @@ claims require the pinned CacheBlend stack on A100.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.
-- `docs/LOCAL_VALIDATION.md`: commands and local/A100 boundary.
-- `docs/A100_RUNBOOK.md`: timing and evidence collection rules.
+- `docs/LOCAL_VALIDATION.md`: commands and local/formal-server boundary.
+- `docs/A100_RUNBOOK.md`: formal-server timing and evidence collection rules
+  (legacy filename retained for stable links).
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.
 - `docs/RAG_DATA.md`: real-dataset normalization and Source construction rules.
 - `docs/E1_JOBS.md`: deterministic repair-grid sharding and result audit.
@@ -56,14 +57,15 @@ commit and should not contain uncommitted code edits.
 1. Develop and test on a feature branch.
 2. Push the branch and let the CPU correctness workflow pass.
 3. Record the selected commit SHA in the frozen experiment configuration.
-4. On the A100 server, fetch and checkout that exact SHA.
+4. On the formal A800 server, fetch and checkout that exact SHA.
 5. Keep datasets, model weights, papers, credentials and raw experiment output
    outside Git. Every result row already records the code and environment hash.
 
-Before an A100 paper run:
+Before a formal paper run:
 
 ```bash
-python scripts/server/verify_a100_environment.py
+python scripts/server/verify_paper_environment.py \
+  --contract configs/experiment_contract.yaml
 git rev-parse HEAD
 git status --short
 ```

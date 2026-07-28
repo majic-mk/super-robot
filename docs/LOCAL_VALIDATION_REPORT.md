@@ -67,7 +67,7 @@ PyTorch is 2.4.1+cu121 and its compiled architecture list ends at `sm_90`.
 WSL has no pip/PyTorch, passwordless sudo is unavailable, and outbound WSL
 package download timed out. A modern isolated CUDA 12.8 PyTorch environment is
 therefore still needed for local GPU tensor execution. This does not change the
-paper rule: A100 measurements must use the pinned CacheBlend stack.
+paper rule: formal A800 measurements must use the pinned CacheBlend stack.
 
 ## Interpretation of synthetic gates
 

@@ -16,4 +16,6 @@ python -m probekv local-e1e2 \
   --resume
 python scripts/server/capture_environment.py \
   --output artifacts/server_preflight/environment.json
-python scripts/server/verify_a100_environment.py
+python scripts/server/verify_paper_environment.py \
+  --contract configs/experiment_contract.yaml \
+  --output artifacts/server_preflight/paper_environment.json

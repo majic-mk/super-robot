@@ -1,4 +1,4 @@
-# A100 execution runbook
+# Formal server execution runbook
 
 ## Stop before expensive runs
 
@@ -13,11 +13,13 @@ CB0-CB3 milestones in `CACHEBLEND_INTEGRATION.md` before claiming E0 complete.
 
 1. Clone CacheBlend and checkout
    `b72d7945e6d6306f12be66520196e0f081fa2b0c`.
-2. Preserve its vLLM 0.4.1 / PyTorch 2.2.1 / CUDA 12.1 stack.
+2. Preserve its vLLM 0.4.1 / PyTorch 2.2.1 / xFormers 0.0.25 /
+   CUDA 12.1 stack.
 3. Record `nvidia-smi`, package lock, model revision, tokenizer revision and
    repository dirty state.
-4. Use pinned CPU memory. Add SSD only after measuring sequential read bandwidth
-   of at least 3 GB/s.
+4. Use the config-frozen single NVIDIA A800-SXM4-80GB for ProbeKV and every
+   directly compared baseline. Use pinned CPU memory. Add SSD only after
+   measuring sequential read bandwidth of at least 3 GB/s.
 
 Initial server preparation:
 

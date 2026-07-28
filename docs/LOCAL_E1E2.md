@@ -2,7 +2,7 @@
 
 ## Scope
 
-This workflow validates experiment plumbing before A100 allocation. It covers
+This workflow validates experiment plumbing before formal server allocation. It covers
 group-isolated manifests, repair-grid labeling, per-layer probe observations,
 train/calibration/test discipline, quantile budget prediction, conformal cost
 intervals, dynamic early exit, abstention, audit artifacts and resume.

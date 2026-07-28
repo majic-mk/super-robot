@@ -36,6 +36,18 @@ def main() -> int:
         errors.append("main probe checkpoints exceed the 25% ceiling")
     if max(contract["repair_ratios"]) != 1.0 or min(contract["repair_ratios"]) != 0.0:
         errors.append("repair grid must cover [0, 1]")
+    hardware = contract["hardware"]
+    primary_hardware = hardware["primary"]
+    if primary_hardware["role"] != "formal_matched_primary":
+        errors.append("primary hardware must be the formal matched primary")
+    if primary_hardware["gpu_count"] != 1:
+        errors.append("primary experiment contract requires one GPU")
+    if primary_hardware["compute_capability"] != "8.0":
+        errors.append("primary A800 compute capability must be 8.0")
+    if not hardware["matched_hardware_required_for_all_direct_baselines"]:
+        errors.append("all direct baselines must use matched hardware")
+    if contract["evidence_policy"]["stage1_cb0_h0_performance_is_paper_evidence"]:
+        errors.append("stage1 CB0/H0 performance must remain non-paper evidence")
     tail_minimum = minimum_zero_violation_trials(
         contract["quality"]["tail_violation_upper_bound"], 0.95
     )

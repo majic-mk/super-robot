@@ -1,7 +1,7 @@
 # Local validation boundary
 
 Local validation proves software and small-model correctness. It does not
-produce A100 timing claims.
+produce formal server timing claims.
 
 ## Automated checks
 
@@ -52,11 +52,11 @@ The RTX 5070 Ti Laptop GPU reports compute capability `sm_120`. The installed
 PyTorch 2.4.1+cu121 exposes compiled architectures only through `sm_90`, so
 GPU tensor execution is not valid in this environment. CPU model checks remain
 valid. A separate modern environment can later be installed, but it must not
-replace the pinned CacheBlend/A100 paper environment.
+replace the pinned CacheBlend/A800 paper environment.
 
 ## Cannot be completed locally
 
 - CacheBlend's pinned vLLM/CUDA performance reproduction;
-- A100 TTFT, throughput, P95/P99, HBM and copy/compute interference;
+- A800 TTFT, throughput, P95/P99, HBM and copy/compute interference;
 - full 7B/8B dataset scans and paper gates H1-H5;
 - cross-framework baselines whose official artifact needs the server stack.
