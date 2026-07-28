@@ -24,3 +24,19 @@ events to this protocol.
 - CB4: current-state features and four-source selection run end to end.
 
 Do not begin E1 until CB0-CB3 and the H0 requirements in `A100_RUNBOOK.md` pass.
+
+## Pinned CB0 issue observed on A800
+
+On 2026-07-28, commit `b72d7945e6d6306f12be66520196e0f081fa2b0c`
+loaded Mistral and entered the xFormers backend, but its unmodified
+`example/blend.py` failed with `KeyError: suffix_len`. The same commit's
+`xformers.py` requires `cache_fuse_metadata["suffix_len"]` when `status == 1`,
+while `blend.py` never initializes that field.
+
+A diagnostic copy that added
+`cache_fuse_metadata["suffix_len"] = len(q_ids + s_end)` immediately before
+cached generation completed all 10 cached and full paths without an OOM, CUDA,
+or KV-shape error. This diagnostic is not accepted as an unmodified CB0 pass.
+Keep the original failure log and the one-line diagnostic log separate. Before
+CB1, either obtain an upstream-compatible invocation or pre-register a minimal
+fork patch and rerun every directly compared method on that same fork.
