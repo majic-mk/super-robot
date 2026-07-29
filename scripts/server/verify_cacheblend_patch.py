@@ -26,7 +26,11 @@ def _git(repo: Path, *args: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cacheblend", required=True)
-    parser.add_argument("--mode", required=True, choices=("cb0", "probekv"))
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=("cb0", "probekv", "probekv_closed_loop"),
+    )
     parser.add_argument("--manifest", default="patches/cacheblend/manifest.json")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

@@ -5,6 +5,21 @@ CacheBlend base commit, tracked patch hashes, Mistral revision and A800 UUID
 recorded in the artifact directory.  Never place SSH credentials in a command,
 configuration file, shell history, Git repository or artifact.
 
+The CB1-CB3/H1 commands below deliberately use `cacheblend_case_runner`; they
+do not satisfy protocol-v5 online closure. Before H4 or an end-to-end
+performance run, the A800 implementation must pass the
+`cacheblend_closed_loop` capability gate in
+`configs/a800_closed_loop_v5.json`. Its audit JSONL is checked with:
+
+```bash
+python scripts/server/validate_cacheblend_closed_loop.py \
+  --records artifacts/a800_closed_loop_v5/records.jsonl \
+  --output artifacts/a800_closed_loop_v5/gate.json
+```
+
+A whole-request `generate()` wrapper is rejected by that gate. CB4 requires
+real layer-boundary scheduler feedback and CUDA event timing.
+
 Protocol v4 preserves current-only chunks after C as `current_suffix_context`;
 that field is part of the case digest. Therefore every earlier 150-case
 manifest, CB job file, H1 job file and readiness artifact is stale even when

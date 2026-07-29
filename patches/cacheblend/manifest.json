@@ -8,7 +8,30 @@
     "probekv": [
       "0001-cb0-fix-suffix-length.patch",
       "0002-probekv-segment-repair-mask.patch"
+    ],
+    "probekv_closed_loop": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch"
     ]
+  },
+  "runtime_modes": {
+    "h1_case_runner": {
+      "patch_mode": "probekv",
+      "layer_resumable_prefill": false,
+      "async_source_loading": false,
+      "purpose": "CB1-CB3 and H1 source sensitivity only"
+    },
+    "closed_loop_v5": {
+      "patch_mode": "probekv_closed_loop",
+      "layer_resumable_prefill": true,
+      "async_source_loading": true,
+      "scheduler_feedback_required": true,
+      "cuda_event_timing_required": true,
+      "implementation": "ProbeKV CacheBlendOnlineEngine adapter",
+      "status": "adapter_complete_engine_pending_a800",
+      "paper_evidence": false,
+      "purpose": "selector to scheduler to refined admission to execution"
+    }
   },
   "innovation_claim": false,
   "patch_application": "exact base commit with git apply --unidiff-zero --check",

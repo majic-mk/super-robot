@@ -61,6 +61,9 @@ class CostValueKind(str, Enum):
     PREDICTED_LOWER = "predicted_lower"
     PREDICTED_UPPER = "predicted_upper"
     REFINED_ACTUAL = "refined_actual"
+    REFINED_ACTUAL_PAST_PROFILED_FUTURE = (
+        "refined_actual_past_profiled_future"
+    )
     LEGACY_AGGREGATE = "legacy_aggregate"
 
 

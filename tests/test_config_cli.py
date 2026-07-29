@@ -46,6 +46,46 @@ class ConfigAndCliTests(unittest.TestCase):
         config = load_config(str(ROOT / "configs" / "a800_h1_pilot.json"))
         self.assertEqual(config.evidence_class, "server_pilot")
         self.assertEqual(config.cases, 150)
+        self.assertEqual(
+            config.runtime_backend, "cacheblend_case_runner"
+        )
+        self.assertFalse(config.require_layer_resumable_prefill)
+
+    def test_a800_closed_loop_requires_real_runtime_capabilities(self):
+        config = load_config(
+            str(ROOT / "configs" / "a800_closed_loop_v5.json")
+        )
+        self.assertEqual(config.runtime_backend, "cacheblend_closed_loop")
+        self.assertTrue(config.require_async_source_loading)
+        self.assertTrue(config.require_layer_resumable_prefill)
+        self.assertTrue(config.require_cuda_event_timing)
+        self.assertEqual(
+            config.cost_accounting_policy,
+            CostAccountingPolicy.UNIFIED_COMPONENTS_V1,
+        )
+
+    def test_closed_loop_backend_cannot_silently_disable_resumption(self):
+        raw = {
+            "name": "bad-cacheblend-runtime",
+            "evidence_class": "server_pilot",
+            "cases": 1,
+            "total_layers": 32,
+            "online_kmax": 4,
+            "gamma": 0.8,
+            "probe_checkpoints": [1, 2],
+            "max_selection_layer": 2,
+            "selector_policy": "final_economic_min_cost",
+            "preliminary_economic_filter": True,
+            "closed_loop_policy": "two_stage_refined_admission",
+            "cost_accounting_policy": "unified_components_v1",
+            "runtime_backend": "cacheblend_closed_loop",
+            "require_async_source_loading": True,
+            "require_layer_resumable_prefill": False,
+            "require_cuda_event_timing": True,
+            "repair_ratios": [0, 1],
+        }
+        with self.assertRaisesRegex(ValueError, "resumable prefill"):
+            ExperimentConfig.from_mapping(raw)
 
     def test_v4_enables_refined_two_stage_closure_explicitly(self):
         config = load_config(

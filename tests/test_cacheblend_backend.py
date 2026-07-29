@@ -1,6 +1,7 @@
 import unittest
 
 from probekv.cacheblend_backend import CacheBlendBackend, RuntimeRepairMeasurement
+from probekv.cacheblend_server_runtime import CacheBlendCaseRuntime
 from probekv.contracts import KVLocation
 
 from tests.helpers import canonical_source
@@ -48,6 +49,14 @@ class FakeRuntime:
 
 
 class CacheBlendAdapterTests(unittest.TestCase):
+    def test_h1_case_runner_cannot_claim_online_closed_loop(self):
+        capabilities = CacheBlendCaseRuntime.capabilities()
+        self.assertFalse(capabilities.async_source_loading)
+        self.assertFalse(capabilities.layer_resumable_prefill)
+        self.assertFalse(capabilities.scheduler_feedback)
+        with self.assertRaisesRegex(RuntimeError, "closed-loop capable"):
+            capabilities.require_closed_loop()
+
     def test_valid_runtime_is_adapted(self):
         backend = CacheBlendBackend(FakeRuntime(), total_layers=32)
         self.assertEqual(

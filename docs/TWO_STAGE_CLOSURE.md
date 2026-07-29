@@ -40,6 +40,24 @@ It records later scheduling feedback but deliberately does not use it to
 change its already-final decision. New performance experiments must not use
 that policy.
 
+The concrete CacheBlend adapter is request-scoped and enforces the same order
+at its API boundary. It accepts only a runtime declaring all of:
+
+- asynchronous selected-Source loading;
+- layer-resumable prefill;
+- real scheduler feedback;
+- boundary-conditioned cost profiles;
+- immutable canonical Sources;
+- CUDA-event timing for the A800 server path.
+
+`CacheBlendCaseRuntime` deliberately fails this capability gate. It remains
+the H1 label generator and cannot be substituted for the online runtime.
+
+Before final execution, elapsed loading and scheduling are measured facts,
+while repair and remaining-layer work are conservative profile upper bounds
+at the scheduler-returned boundary. After execution, realized TTFT and Source
+digest evidence are appended to the audit record.
+
 ## Source lifecycle
 
 Canonical Source identity is `(model_signature, content_hash, source_id)`.

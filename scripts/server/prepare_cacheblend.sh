@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv]" >&2
+  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv|probekv_closed_loop]" >&2
   exit 2
 fi
 
@@ -18,14 +18,14 @@ case "$mode" in
   cb0)
     patches=("0001-cb0-fix-suffix-length.patch")
     ;;
-  probekv)
+  probekv|probekv_closed_loop)
     patches=(
       "0001-cb0-fix-suffix-length.patch"
       "0002-probekv-segment-repair-mask.patch"
     )
     ;;
   *)
-    echo "patch mode must be cb0 or probekv" >&2
+    echo "patch mode must be cb0, probekv, or probekv_closed_loop" >&2
     exit 2
     ;;
 esac

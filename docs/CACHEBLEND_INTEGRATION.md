@@ -62,3 +62,51 @@ call; TTFT covers prefill through the first token. They are explicitly tagged
 with `repair_timing_scope` and are pilot diagnostics, not repair-kernel-only
 timings. Exact remaining-layer timers are still required for v4 final
 admission and formal H4 performance evidence.
+
+## Runtime modes after protocol v5
+
+The same repair patch is used by two deliberately different runtime modes:
+
+- `cacheblend_case_runner` is the existing CB1-CB3/H1 worker. It builds all
+  case Sources and executes complete `generate()` calls for fixed
+  `(Source, layer, ratio)` jobs. It is valid for Source-sensitivity labels but
+  is not an online scheduler.
+- `cacheblend_closed_loop` uses `CacheBlendClosedLoopRuntime` and the
+  `CacheBlendOnlineEngine` contract. It requires asynchronous winner-only
+  Source loading, layer-resumable prefill, real scheduler feedback,
+  boundary-conditioned profiles, immutable canonical Sources and CUDA-event
+  timing.
+
+The case runner advertises these missing capabilities as `false`; the
+closed-loop adapter rejects it before any Source transfer. A complete
+`generate()` call may therefore never silently stand in for layer-resumable
+execution.
+
+The v5 request order is fixed:
+
+1. Probe checkpoints may select a Source before `L_probe_max`.
+2. The selected Source ID is locked.
+3. The preliminary component-cost upper bound is checked before loading.
+4. Only the winner begins asynchronous transfer.
+5. The real waiting-window scheduler returns Source-load start, Source-ready,
+   scheduled atomic-step finish, A resume, post-ready blocking, transferred
+   bytes and the evaluated 1-based reuse boundary.
+6. The boundary profiler supplies conservative future repair-selection,
+   repair and remaining-layer costs for that exact boundary.
+7. Final admission either calls CacheBlend selective reuse with the locked
+   Source or executes full recomputation. A rejected request records all
+   transferred Source bytes as wasted.
+
+Refined cost is not described as fully measured before execution. Its past
+components are real runtime events; its not-yet-executed repair and remaining
+components are conservative A800 boundary-profile values. Records use
+`refined_actual_past_profiled_future` and retain the exact profile key.
+Realized TTFT is recorded after reuse or full execution and must later be used
+to audit profile coverage.
+
+Configuration `a800_closed_loop_v5.json` refuses to run unless async loading,
+resumable prefill and CUDA-event timing are all required. The existing pinned
+CacheBlend model loop does not yet expose resumable prefill; implementing and
+validating that stack-specific engine hook on A800 is the remaining CB4
+hardware gate. Until CB4 passes, closed-loop records remain
+`server_pilot`/`paper_evidence:false`.

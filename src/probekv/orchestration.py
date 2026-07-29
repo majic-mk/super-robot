@@ -44,6 +44,9 @@ class SchedulingFeedback:
     load_interference_ms: float = 0.0
     useful_a_dense_ms: float = 0.0
     useful_other_request_work_ms: float = 0.0
+    source_load_start_ms: float = 0.0
+    source_load_bytes: int = 0
+    wasted_loaded_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not self.selected_source_id:
@@ -60,8 +63,22 @@ class SchedulingFeedback:
             self.load_interference_ms,
             self.useful_a_dense_ms,
             self.useful_other_request_work_ms,
+            self.source_load_start_ms,
         ) < 0:
             raise ValueError("scheduler measurements must be non-negative")
+        if self.source_load_bytes < 0 or self.wasted_loaded_bytes < 0:
+            raise ValueError("scheduler byte counts must be non-negative")
+        if self.wasted_loaded_bytes > self.source_load_bytes:
+            raise ValueError("wasted bytes cannot exceed loaded bytes")
+        if self.source_ready_ms + 1e-12 < self.source_load_start_ms:
+            raise ValueError("source-ready cannot precede source-load start")
+        if self.source_ready and abs(
+            self.load_ms
+            - (self.source_ready_ms - self.source_load_start_ms)
+        ) > 1e-6:
+            raise ValueError(
+                "load_ms must equal source-ready minus source-load start"
+            )
         if self.a_resume_ms + 1e-12 < self.source_ready_ms:
             raise ValueError("A cannot resume before source-ready")
         if abs(
@@ -86,6 +103,12 @@ class RefinedCostMeasurement:
     remaining_layer_ms: float = 0.0
     cost_origin: str = "request_arrival"
     cost_endpoint: str = "first_token_ready"
+    cost_value_kind: CostValueKind = (
+        CostValueKind.REFINED_ACTUAL_PAST_PROFILED_FUTURE
+    )
+    past_timing_source: str = "runtime_events"
+    future_timing_source: str = "boundary_profile_upper"
+    profile_key: str = ""
 
     def __post_init__(self) -> None:
         if not self.selected_source_id:
@@ -107,6 +130,13 @@ class RefinedCostMeasurement:
             raise ValueError("full recomputation time must be positive")
         if not self.cost_origin or not self.cost_endpoint:
             raise ValueError("refined cost scope must be explicit")
+        if self.cost_value_kind not in {
+            CostValueKind.REFINED_ACTUAL,
+            CostValueKind.REFINED_ACTUAL_PAST_PROFILED_FUTURE,
+        }:
+            raise ValueError("invalid refined cost value kind")
+        if not self.past_timing_source or not self.future_timing_source:
+            raise ValueError("refined timing provenance must be explicit")
 
 
 class ClosedLoopRuntime(Protocol):
@@ -155,7 +185,7 @@ class ClosedLoopResult:
     def to_audit_record(self) -> dict:
         timing = self.execution.timing
         predicted = self.selection.predicted_cost_breakdown
-        return {
+        record = {
             "closure_policy": self.closure_policy.value,
             "selection_state": self.execution.selection_state.value,
             "probe_admission_state": self.selection.admission_state.value,
@@ -229,6 +259,26 @@ class ClosedLoopResult:
                 if self.scheduling is not None
                 else None
             ),
+            "source_load_start_ms": (
+                self.scheduling.source_load_start_ms
+                if self.scheduling is not None
+                else None
+            ),
+            "source_load_bytes": (
+                self.scheduling.source_load_bytes
+                if self.scheduling is not None
+                else None
+            ),
+            "wasted_loaded_bytes": (
+                (
+                    self.scheduling.source_load_bytes
+                    if self.scheduling is not None
+                    and not self.execution.reuse_accepted
+                    else self.scheduling.wasted_loaded_bytes
+                )
+                if self.scheduling is not None
+                else 0
+            ),
             "scheduled_step_finish_ms": (
                 self.scheduling.scheduled_step_finish_ms
                 if self.scheduling is not None
@@ -277,7 +327,39 @@ class ClosedLoopResult:
             "refined_reuse_total_ms": (
                 timing.reuse_total_ms if timing is not None else None
             ),
+            "refined_cost_value_kind": (
+                self.refined_cost.cost_value_kind.value
+                if self.refined_cost is not None
+                else None
+            ),
+            "refined_past_timing_source": (
+                self.refined_cost.past_timing_source
+                if self.refined_cost is not None
+                else None
+            ),
+            "refined_future_timing_source": (
+                self.refined_cost.future_timing_source
+                if self.refined_cost is not None
+                else None
+            ),
+            "refined_profile_key": (
+                self.refined_cost.profile_key
+                if self.refined_cost is not None
+                else None
+            ),
         }
+        runtime_audit = getattr(
+            self.runtime_result, "to_audit_record", None
+        )
+        if callable(runtime_audit):
+            for key, value in dict(runtime_audit()).items():
+                if key in record:
+                    raise ValueError(
+                        "runtime audit key collides with controller audit: %s"
+                        % key
+                    )
+                record[key] = value
+        return record
 
 
 class TwoStageReuseController:
@@ -353,7 +435,7 @@ class TwoStageReuseController:
             remaining_layer_ms=refined.remaining_layer_ms,
             cost_origin=refined.cost_origin,
             cost_endpoint=refined.cost_endpoint,
-            cost_value_kind=CostValueKind.REFINED_ACTUAL,
+            cost_value_kind=refined.cost_value_kind,
         )
 
     def execute(
@@ -374,6 +456,19 @@ class TwoStageReuseController:
                 execution,
                 result,
                 self.policy,
+            )
+
+        if (
+            self.cost_accounting_policy
+            is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            and selection.predicted_cost_breakdown is None
+        ):
+            # Reject before the selected Source is loaded.  A missing
+            # preliminary component breakdown is a protocol error, not a
+            # reason to incur real transfer work and fail later.
+            raise ValueError(
+                "unified accounting requires the selected Source's "
+                "predicted cost breakdown before loading"
             )
 
         if self.policy is ClosedLoopPolicy.LEGACY_PRE_SCHEDULE_ADMISSION:

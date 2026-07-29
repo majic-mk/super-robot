@@ -19,11 +19,20 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertFalse(manifest["innovation_claim"])
         cb0 = patch_files_for_mode(MANIFEST, "cb0")
         probekv = patch_files_for_mode(MANIFEST, "probekv")
+        closed_loop = patch_files_for_mode(
+            MANIFEST, "probekv_closed_loop"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
+        self.assertEqual(closed_loop, probekv)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
+        )
+        self.assertTrue(
+            manifest["runtime_modes"]["closed_loop_v5"][
+                "layer_resumable_prefill"
+            ]
         )
 
     def test_runtime_patch_freezes_segment_only_denominator(self):

@@ -34,6 +34,10 @@ class ExperimentConfig:
     source_eviction_policy: SourceEvictionPolicy
     replica_eviction_policy: ReplicaEvictionPolicy
     fixed_resident_sources: bool
+    runtime_backend: str
+    require_async_source_loading: bool
+    require_layer_resumable_prefill: bool
+    require_cuda_event_timing: bool
     repair_ratios: Tuple[float, ...]
     output_dir: str
 
@@ -106,6 +110,18 @@ class ExperimentConfig:
             fixed_resident_sources=bool(
                 raw.get("fixed_resident_sources", False)
             ),
+            runtime_backend=str(
+                raw.get("runtime_backend", "simulation")
+            ),
+            require_async_source_loading=bool(
+                raw.get("require_async_source_loading", False)
+            ),
+            require_layer_resumable_prefill=bool(
+                raw.get("require_layer_resumable_prefill", False)
+            ),
+            require_cuda_event_timing=bool(
+                raw.get("require_cuda_event_timing", False)
+            ),
             repair_ratios=tuple(float(value) for value in raw["repair_ratios"]),
             output_dir=str(raw.get("output_dir", "artifacts/local_smoke")),
         )
@@ -174,6 +190,47 @@ class ExperimentConfig:
             )
         if any(not 0 <= ratio <= 1 for ratio in self.repair_ratios):
             raise ValueError("repair ratios must be in [0, 1]")
+        if self.runtime_backend not in {
+            "simulation",
+            "cacheblend_case_runner",
+            "cacheblend_closed_loop",
+        }:
+            raise ValueError("unsupported runtime_backend")
+        if self.runtime_backend == "cacheblend_closed_loop":
+            if (
+                self.closed_loop_policy
+                is not ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION
+            ):
+                raise ValueError(
+                    "CacheBlend closed loop requires refined admission"
+                )
+            if (
+                self.cost_accounting_policy
+                is not CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            ):
+                raise ValueError(
+                    "CacheBlend closed loop requires unified cost accounting"
+                )
+            if not (
+                self.require_async_source_loading
+                and self.require_layer_resumable_prefill
+                and self.require_cuda_event_timing
+            ):
+                raise ValueError(
+                    "CacheBlend closed loop must require async loading, "
+                    "resumable prefill, and CUDA event timing"
+                )
+        elif any(
+            (
+                self.require_async_source_loading,
+                self.require_layer_resumable_prefill,
+                self.require_cuda_event_timing,
+            )
+        ):
+            raise ValueError(
+                "runtime capability requirements are valid only for "
+                "cacheblend_closed_loop"
+            )
 
 
 def load_config(path: str) -> ExperimentConfig:

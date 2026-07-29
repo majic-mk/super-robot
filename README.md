@@ -13,6 +13,9 @@ remains available only for reproduction. Protocol v5 keeps checkpoint-level
 early Source selection and makes preliminary prediction and refined admission
 use one request-arrival-to-first-token component cost identity. Once selected,
 the Source is locked; refinement can only accept reuse or fall back to full.
+The real CacheBlend path is split into an H1-only case runner and a
+capability-gated online adapter; the case runner cannot silently satisfy the
+online closed-loop contract.
 
 This repository implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,

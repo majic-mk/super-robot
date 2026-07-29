@@ -67,8 +67,30 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
     ):
         raise ValueError("unexpected CacheBlend base commit")
     modes = manifest.get("patches")
-    if not isinstance(modes, dict) or not {"cb0", "probekv"}.issubset(modes):
-        raise ValueError("patch manifest must define cb0 and probekv modes")
+    required_modes = {"cb0", "probekv", "probekv_closed_loop"}
+    if not isinstance(modes, dict) or not required_modes.issubset(modes):
+        raise ValueError(
+            "patch manifest must define cb0, probekv, and "
+            "probekv_closed_loop modes"
+        )
+    runtime_modes = manifest.get("runtime_modes")
+    if (
+        not isinstance(runtime_modes, dict)
+        or "h1_case_runner" not in runtime_modes
+        or "closed_loop_v5" not in runtime_modes
+    ):
+        raise ValueError("patch manifest must define CacheBlend runtime modes")
+    closed_loop = runtime_modes["closed_loop_v5"]
+    for key in (
+        "layer_resumable_prefill",
+        "async_source_loading",
+        "scheduler_feedback_required",
+        "cuda_event_timing_required",
+    ):
+        if closed_loop.get(key) is not True:
+            raise ValueError(
+                "closed_loop_v5 must require %s" % key
+            )
     return manifest
 
 

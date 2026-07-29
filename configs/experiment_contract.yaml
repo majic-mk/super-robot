@@ -56,6 +56,9 @@ invariants:
   selected_source_locked_before_loading: true
   refined_admission_cannot_reselect_source: true
   preliminary_and_refined_share_cost_identity: true
+  cacheblend_case_runner_is_not_online_runtime: true
+  cacheblend_closed_loop_requires_layer_resumption: true
+  rejected_loaded_source_bytes_are_audited: true
 
 protocol_versions:
   v3_reproduction:
@@ -78,6 +81,15 @@ protocol_versions:
     early_checkpoint_selection_preserved: true
     selected_source_locked_during_refinement: true
     interference_accounting_mode: included_in_load
+    refined_cost_value_kind: refined_actual_past_profiled_future
+    runtime_backend: cacheblend_closed_loop
+    required_runtime_capabilities:
+      - async_source_loading
+      - layer_resumable_prefill
+      - scheduler_feedback
+      - boundary_conditioned_profiles
+      - canonical_sources_read_only
+      - cuda_event_timing
 
 probe_policy:
   objective: earliest_calibrated_safe_and_economical_decision

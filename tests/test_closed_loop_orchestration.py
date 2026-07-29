@@ -95,6 +95,19 @@ class FakeRuntime:
 
 
 class ClosedLoopTests(unittest.TestCase):
+    def test_unified_protocol_checks_preliminary_breakdown_before_load(self):
+        runtime = FakeRuntime(repair_ms=30)
+        controller = TwoStageReuseController(
+            0.8,
+            ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION,
+            CostAccountingPolicy.UNIFIED_COMPONENTS_V1,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "predicted cost breakdown before loading"
+        ):
+            controller.execute(selected(), runtime)
+        self.assertEqual(runtime.calls, [])
+
     def test_unified_protocol_selects_once_then_only_admits_or_rejects(self):
         controller = TwoStageReuseController(
             0.8,

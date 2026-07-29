@@ -13,6 +13,7 @@ from .experiment_jobs import E1Job, E1Result, ResultStatus
 from .manifest import ManifestCase, ManifestSource
 from .metrics import best_answer_f1, token_id_f1
 from .repair_semantics import repaired_segment_token_count
+from .cacheblend_closed_loop_runtime import CacheBlendRuntimeCapabilities
 
 
 DEFAULT_INSTRUCTION = (
@@ -44,7 +45,26 @@ class CacheBlendCaseRuntime:
 
     Heavy dependencies are supplied by the server worker so importing the
     ProbeKV package remains possible on a CPU-only development machine.
+
+    This class intentionally remains the CB1-CB3/H1 case runner.  It performs
+    complete ``generate()`` calls and must not be substituted for the v5
+    online runtime merely because both use the same CacheBlend repair patch.
     """
+
+    paper_evidence = False
+    runtime_mode = "h1_case_runner"
+
+    @staticmethod
+    def capabilities() -> CacheBlendRuntimeCapabilities:
+        return CacheBlendRuntimeCapabilities(
+            backend_name="cacheblend_case_runner",
+            async_source_loading=False,
+            layer_resumable_prefill=False,
+            scheduler_feedback=False,
+            boundary_conditioned_profiles=False,
+            canonical_sources_read_only=True,
+            cuda_event_timing=True,
+        )
 
     def __init__(
         self,
@@ -356,9 +376,27 @@ class CacheBlendCaseRuntime:
             denominator += float((right * right).sum().item())
         return math.sqrt(numerator / max(denominator, 1e-30))
 
-    def _stage_job_source(
-        self, canonical: CanonicalSourceKV, job: E1Job
-    ) -> None:
+    def stage_selected_source(
+        self,
+        source_id: str,
+        reuse_layer: int,
+        repair_ratio: float,
+    ) -> str:
+        """Stage one locked Source for the unchanged CacheBlend repair path.
+
+        This is the reusable repair primitive shared by the H1 worker and the
+        future A800 online engine. It does not perform Source selection,
+        loading/scheduling, or final admission.
+        """
+        if self._closed:
+            raise RuntimeError("CacheBlend case runtime is closed")
+        if source_id not in self.sources:
+            raise ValueError("unknown selected Source")
+        if not 1 <= reuse_layer <= len(self.layers):
+            raise ValueError("reuse_layer must be 1-based")
+        if not 0.0 <= repair_ratio <= 1.0:
+            raise ValueError("repair_ratio must be in [0, 1]")
+        canonical = self.sources[source_id]
         self.model.old_kvs = []
         for layer_index, (c_key, c_value) in enumerate(canonical.layers):
             p_key, p_value = self.prefix_kv[layer_index]
@@ -370,11 +408,31 @@ class CacheBlendCaseRuntime:
                 ]
             )
         metadata = self.model.cache_fuse_metadata
-        metadata["check_layers"] = [job.reuse_layer - 1]
-        metadata["recomp_ratio"] = job.repair_ratio
+        metadata["check_layers"] = [reuse_layer - 1]
+        metadata["recomp_ratio"] = repair_ratio
         metadata["suffix_len"] = len(self.suffix_ids)
         metadata["segment_start"] = len(self.prefix_ids)
         metadata["segment_len"] = len(self.segment_ids)
+        return canonical.digest
+
+    def execute_selected_repair(
+        self,
+        source_id: str,
+        reuse_layer: int,
+        repair_ratio: float,
+        capture_logits: bool = True,
+    ) -> GenerationMeasurement:
+        self.stage_selected_source(
+            source_id,
+            reuse_layer,
+            repair_ratio,
+        )
+        return self._generate(
+            self.current_ids,
+            self.max_new_tokens,
+            check=True,
+            capture_logits=capture_logits,
+        )
 
     @staticmethod
     def _median_measurement(
@@ -437,21 +495,19 @@ class CacheBlendCaseRuntime:
                     "job provenance does not bind to the loaded case/source"
                 )
             for _ in range(timing_warmup_runs):
-                self._stage_job_source(canonical, job)
-                self._generate(
-                    self.current_ids,
-                    self.max_new_tokens,
-                    check=True,
+                self.execute_selected_repair(
+                    canonical.source_id,
+                    job.reuse_layer,
+                    job.repair_ratio,
                     capture_logits=False,
                 )
             measurements = []
             for _ in range(timing_measurement_runs):
-                self._stage_job_source(canonical, job)
                 measurements.append(
-                    self._generate(
-                        self.current_ids,
-                        self.max_new_tokens,
-                        check=True,
+                    self.execute_selected_repair(
+                        canonical.source_id,
+                        job.reuse_layer,
+                        job.repair_ratio,
                         capture_logits=True,
                     )
                 )
