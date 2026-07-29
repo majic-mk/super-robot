@@ -49,6 +49,13 @@ def main() -> int:
             result.source_digest_before == result.source_digest_after
             for result in completed.values()
         )
+        and all(
+            result.source_k_representation == "pre_rope"
+            and result.rope_alignment_mode
+            == "cacheblend_current_org_pos"
+            and result.causal_mask_mode == "absolute_query_positions"
+            for result in completed.values()
+        )
         and len({job.dataset for job in jobs}) == 3
     )
     endpoint_failures = []
@@ -66,9 +73,13 @@ def main() -> int:
             endpoint_failures.append("%s:r0" % job.job_id)
         if job.repair_ratio == 1.0 and (
             result.selected_segment_tokens != result.eligible_segment_tokens
-            or abs(float(result.token_f1) - 1.0) > 1e-12
+            or not result.output_ids_exact_full
+            or tuple(result.output_token_ids)
+            != tuple(result.full_output_token_ids)
             or result.logit_relative_l2 is None
             or float(result.logit_relative_l2) > 1e-4
+            or result.logit_trace_mode != "matched_greedy_prefix"
+            or result.logit_positions_compared <= 0
         ):
             endpoint_failures.append("%s:r1" % job.job_id)
     cb2 = not missing and not endpoint_failures
@@ -102,6 +113,8 @@ def main() -> int:
         if any(
             float(result.repair_gpu_ms) < 0
             or float(result.repair_host_ms) < 0
+            or result.timing_warmup_runs < 2
+            or result.timing_measurement_runs < 5
             for _, result in pairs
         ):
             grid_failures.append("%s:timing" % (key,))

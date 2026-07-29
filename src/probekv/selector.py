@@ -20,6 +20,7 @@ class ProbePolicy:
     selector_policy: SelectorPolicy = SelectorPolicy.STRICT_INTERVAL
     gamma: float = 0.8
     reuse_ratio_tolerance: float = 0.02
+    preliminary_economic_filter: bool = False
 
     def __post_init__(self) -> None:
         if not self.checkpoints:
@@ -163,7 +164,21 @@ class DynamicProbeSelector:
                 if winner is None:
                     return self._abstained(layer, reason)
                 return self._selected(winner, layer, reason)
-            winner = self._confident_winner(candidates)
+            early_candidates = candidates
+            if self.policy.preliminary_economic_filter:
+                if full_recompute_ms is None or full_recompute_ms <= 0:
+                    raise ValueError(
+                        "preliminary economic filtering requires "
+                        "positive full_recompute_ms"
+                    )
+                early_candidates = tuple(
+                    candidate
+                    for candidate in candidates
+                    if candidate.quality_covered
+                    and candidate.cost_upper_ms
+                    <= self.policy.gamma * full_recompute_ms
+                )
+            winner = self._confident_winner(early_candidates)
             if winner is not None:
                 return self._selected(
                     winner, layer, SelectionReason.EARLY_CONFIDENT

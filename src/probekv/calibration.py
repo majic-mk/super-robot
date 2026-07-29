@@ -3,7 +3,7 @@ from __future__ import annotations
 import bisect
 import math
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Mapping, Sequence, Tuple
 
 class IsotonicRegressor:
     """Small dependency-free increasing isotonic regression (PAV)."""
@@ -121,6 +121,43 @@ class SplitConformalInterval:
             min(upper, max(lower, float(prediction) - self.radius)),
             min(upper, max(lower, float(prediction) + self.radius)),
         )
+
+
+@dataclass(frozen=True)
+class GroupedSimultaneousConformal:
+    """One correction valid across all candidates/checkpoints in a case.
+
+    Calibration uses one maximum residual per exchangeable case.  The bound
+    therefore covers the entire K-by-checkpoint selection family rather than
+    treating correlated Source rows and repeated early-exit checks as
+    independent trials.
+    """
+
+    miscoverage: float = 0.10
+    correction: float = 0.0
+    groups: int = 0
+
+    @classmethod
+    def fit(
+        cls,
+        residuals_by_group: Mapping[str, Sequence[float]],
+        miscoverage: float = 0.10,
+    ) -> "GroupedSimultaneousConformal":
+        if not 0.0 < miscoverage < 1.0:
+            raise ValueError("miscoverage must be in (0, 1)")
+        if not residuals_by_group:
+            raise ValueError("at least one calibration group is required")
+        maxima = []
+        for group, residuals in residuals_by_group.items():
+            if not residuals:
+                raise ValueError(
+                    "calibration group %s has no residuals" % group
+                )
+            maxima.append(max(0.0, *(float(value) for value in residuals)))
+        maxima.sort()
+        n = len(maxima)
+        rank = min(n, math.ceil((n + 1) * (1.0 - miscoverage)))
+        return cls(miscoverage, maxima[rank - 1], n)
 
 
 class CalibratedGradientBoostingIntervalPredictor:

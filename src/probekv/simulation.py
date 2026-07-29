@@ -9,6 +9,12 @@ from .config import ExperimentConfig
 from .contracts import CandidateBounds
 from .cost import DynamicReusePlanner, LayerOption, finalize_execution
 from .gates import gate_h1, gate_h2, gate_h4
+from .orchestration import (
+    ClosedLoopPolicy,
+    RefinedCostMeasurement,
+    SchedulingFeedback,
+    TwoStageReuseController,
+)
 from .prefetch import (
     PrefetchCandidate,
     PrefetchPolicy,
@@ -24,6 +30,33 @@ from .selector import DynamicProbeSelector, ProbePolicy, normalized_oracle_regre
 from .statistics import grouped_paired_bootstrap
 
 
+class _PreparedSimulationRuntime:
+    """Deterministic adapter that exercises the production closure state machine."""
+
+    def __init__(self, scheduling, refined) -> None:
+        self.scheduling = scheduling
+        self.refined = refined
+        self.action = None
+
+    def load_and_schedule(self, selection):
+        if self.scheduling is None:
+            raise RuntimeError("simulation has no selected-source schedule")
+        return self.scheduling
+
+    def measure_refined_cost(self, selection, scheduling):
+        if self.refined is None:
+            raise RuntimeError("simulation has no refined cost")
+        return self.refined
+
+    def execute_reuse(self, selection, decision):
+        self.action = "reuse"
+        return self.action
+
+    def execute_full(self, selection, decision):
+        self.action = "full_recompute"
+        return self.action
+
+
 def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
     """Exercise decision logic with deterministic latent costs.
 
@@ -37,6 +70,7 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             config.selector_policy,
             config.gamma,
             config.reuse_ratio_tolerance,
+            config.preliminary_economic_filter,
         )
     )
     planner = DynamicReusePlanner(config.gamma)
@@ -148,6 +182,15 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 )
             reuse_plan = planner.plan(layer_options)
         provisional_execution = finalize_execution(decision, reuse_plan)
+        refined_closure = (
+            config.closed_loop_policy
+            is ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION
+        )
+        source_load_allowed = (
+            selected_index is not None
+            if refined_closure
+            else provisional_execution.reuse_accepted
+        )
 
         inverse_costs = [1.0 / cost for cost in costs]
         inverse_total = sum(inverse_costs)
@@ -161,7 +204,7 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 )
                 for index, inverse_cost in enumerate(inverse_costs)
             ]
-            if provisional_execution.reuse_accepted
+            if source_load_allowed
             else []
         )
         prefetch = choose_prefetch(
@@ -172,7 +215,7 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
         )
         scheduler_policy = (
             config.scheduler_policy
-            if provisional_execution.reuse_accepted
+            if source_load_allowed
             else SchedulerPolicy.NO_OVERLAP
         )
         schedule = simulate_waiting_queue(
@@ -180,14 +223,16 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             SchedulerScenario(
                 load_ms=(
                     max(6.0, prefetch.expected_visible_load_ms + 4.0)
-                    if provisional_execution.reuse_accepted
+                    if source_load_allowed
                     else 0.0
                 ),
                 dense_layer_ms=1.2,
                 max_extra_dense_layers=4,
                 repair_ms=(
-                    provisional_execution.timing.repair_ms
-                    if provisional_execution.timing is not None
+                    min(
+                        option.repair_ms for option in layer_options
+                    )
+                    if source_load_allowed and layer_options
                     else full_ms
                 ),
                 decode_start_ms=1.0,
@@ -206,7 +251,69 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             a_layer=decision.probe_layer,
             hybrid_dense_budget=2,
         )
-        if provisional_execution.reuse_accepted:
+        closed_loop_result = None
+        if refined_closure:
+            scheduling_feedback = None
+            refined_cost = None
+            if selected_index is not None:
+                dense_layers = int(
+                    round(schedule.useful_a_dense_ms / 1.2)
+                )
+                evaluated_boundary = min(
+                    layer_options[-1].layer,
+                    decision.probe_layer + dense_layers,
+                )
+                selected_option = min(
+                    layer_options,
+                    key=lambda option: (
+                        abs(option.layer - evaluated_boundary),
+                        option.layer,
+                    ),
+                )
+                scheduling_feedback = SchedulingFeedback(
+                    selected_source_id=decision.selected_source_id,
+                    evaluated_reuse_boundary=selected_option.layer,
+                    source_ready=True,
+                    load_ms=schedule.source_ready_ms,
+                    overlap_ms=min(
+                        schedule.source_ready_ms,
+                        schedule.hidden_work_ms,
+                    ),
+                    source_ready_ms=schedule.source_ready_ms,
+                    scheduled_step_finish_ms=(
+                        schedule.scheduled_step_finish_ms
+                    ),
+                    a_resume_ms=schedule.a_resume_ms,
+                    post_ready_blocking_ms=(
+                        schedule.post_ready_blocking_ms
+                    ),
+                    load_interference_ms=schedule.load_interference_ms,
+                    useful_a_dense_ms=schedule.useful_a_dense_ms,
+                    useful_other_request_work_ms=(
+                        schedule.useful_other_request_work_ms
+                    ),
+                )
+                refined_cost = RefinedCostMeasurement(
+                    selected_source_id=decision.selected_source_id,
+                    evaluated_reuse_boundary=selected_option.layer,
+                    repair_ratio_upper=selected_option.repair_ratio_upper,
+                    probe_ms=selected_option.probe_ms,
+                    compare_ms=selected_option.compare_ms,
+                    repair_ms=max(
+                        0.0,
+                        selected_option.repair_ms
+                        - schedule.useful_a_dense_ms,
+                    ),
+                    full_ms=selected_option.full_ms,
+                )
+            runtime = _PreparedSimulationRuntime(
+                scheduling_feedback, refined_cost
+            )
+            closed_loop_result = TwoStageReuseController(
+                config.gamma, config.closed_loop_policy
+            ).execute(decision, runtime)
+            execution = closed_loop_result.execution
+        elif provisional_execution.reuse_accepted:
             selected_option = next(
                 option
                 for option in layer_options
@@ -224,11 +331,13 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 load_interference_ms=schedule.load_interference_ms,
             )
             reuse_plan = planner.plan([refined_option])
-        execution = finalize_execution(decision, reuse_plan)
+            execution = finalize_execution(decision, reuse_plan)
+        else:
+            execution = provisional_execution
         if execution.reuse_accepted and execution.timing is not None:
             admitted_reuse.append(execution.timing.reuse_total_ms)
             admitted_full.append(execution.timing.full_ms)
-        elif provisional_execution.reuse_accepted:
+        elif source_load_allowed:
             remaining_full = max(
                 0.0, full_ms - schedule.useful_a_dense_ms
             )
@@ -275,6 +384,23 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     schedule.useful_other_request_work_ms
                 ),
                 "load_interference_ms": schedule.load_interference_ms,
+                "closure_policy": config.closed_loop_policy.value,
+                "selection_state": execution.selection_state.value,
+                "probe_admission_state": decision.admission_state.value,
+                "admission_state": execution.admission_state.value,
+                "evaluated_reuse_boundary": (
+                    closed_loop_result.scheduling.evaluated_reuse_boundary
+                    if closed_loop_result is not None
+                    and closed_loop_result.scheduling is not None
+                    else (
+                        reuse_plan.evaluated_layer
+                        if reuse_plan is not None
+                        else None
+                    )
+                ),
+                "actual_reuse_boundary": (
+                    execution.actual_reuse_boundary
+                ),
                 "evidence_class": "local_simulation",
                 "paper_evidence": False,
             }

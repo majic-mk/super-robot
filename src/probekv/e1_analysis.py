@@ -119,6 +119,7 @@ def analyze_e1(
     spreads = []
     s0_improvements = []
     last_source_improvements = []
+    random_source_improvements = []
     s0_improvement_groups = {}
     latest_improvement_groups = {}
     case_metadata = {}
@@ -138,7 +139,6 @@ def analyze_e1(
             range(len(costs)),
             key=lambda index: (
                 costs[index],
-                float(ordered[index]["repair_gpu_ms"]),
                 _source_order(ordered[index]["source_id"]),
             ),
         )
@@ -153,10 +153,17 @@ def analyze_e1(
             if last_source_cost > 0
             else 0.0
         )
+        random_cost = statistics.mean(costs)
+        random_source_improvement = (
+            (random_cost - oracle_cost) / random_cost
+            if random_cost > 0
+            else 0.0
+        )
         spread = max(ratios) - min(ratios)
         spreads.append(spread)
         s0_improvements.append(s0_improvement)
         last_source_improvements.append(last_source_improvement)
+        random_source_improvements.append(random_source_improvement)
         s0_improvement_groups[case_id] = [s0_improvement]
         latest_improvement_groups[case_id] = [last_source_improvement]
         case_rows.append(
@@ -169,7 +176,10 @@ def analyze_e1(
                 "oracle_source": ordered[oracle_index]["source_id"],
                 "oracle_safe_token_layer_cost": oracle_cost,
                 "single_source_s0_improvement": s0_improvement,
-                "latest_source_oracle_improvement": last_source_improvement,
+                "last_source_oracle_improvement": last_source_improvement,
+                "random_source_expected_oracle_improvement": (
+                    random_source_improvement
+                ),
             }
         )
 
@@ -215,6 +225,17 @@ def analyze_e1(
         if full_ratio is not None and (
             float(full_ratio.task_score_drop) > 0.10
             or float(full_ratio.token_f1) < 0.90
+            or (
+                full_ratio.evidence_class == "server_pilot"
+                and not full_ratio.output_ids_exact_full
+            )
+            or (
+                full_ratio.evidence_class == "server_pilot"
+                and (
+                    full_ratio.logit_relative_l2 is None
+                    or float(full_ratio.logit_relative_l2) > 1e-4
+                )
+            )
         ):
             runtime_endpoint_failures.append(
                 {
@@ -244,7 +265,7 @@ def analyze_e1(
         "decision": decision,
         "spread_ge_10pp_fraction": spread_fraction,
         "mean_s0_oracle_improvement": mean_s0,
-        "mean_latest_oracle_improvement": mean_latest,
+        "mean_last_source_oracle_improvement": mean_latest,
         "completed_fraction": completed_fraction,
         "runtime_endpoint_failures": len(runtime_endpoint_failures),
     }
@@ -290,9 +311,21 @@ def analyze_e1(
         "mean_s0_oracle_improvement": (
             statistics.mean(s0_improvements) if s0_improvements else None
         ),
-        "mean_latest_source_oracle_improvement": (
+        "mean_last_source_oracle_improvement": (
             statistics.mean(last_source_improvements)
             if last_source_improvements
+            else None
+        ),
+        # Legacy alias retained for reading v3 reports. These manifests use
+        # pseudo-time, so this must not be described as a real Latest baseline.
+        "mean_latest_source_oracle_improvement_legacy_alias": (
+            statistics.mean(last_source_improvements)
+            if last_source_improvements
+            else None
+        ),
+        "mean_random_source_expected_oracle_improvement": (
+            statistics.mean(random_source_improvements)
+            if random_source_improvements
             else None
         ),
         "completed_fraction": completed_fraction,
@@ -306,9 +339,45 @@ def analyze_e1(
         "paper_evidence": publication_ready,
         "labels": labels,
         "case_rows": case_rows,
+        "stratified": _stratified_case_summary(case_rows),
     }
 
 
 def _source_order(source_id: str) -> Tuple[int, str]:
     suffix = source_id[1:] if source_id.startswith("s") else ""
     return (int(suffix), source_id) if suffix.isdigit() else (10 ** 9, source_id)
+
+
+def _stratified_case_summary(
+    rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in rows:
+        key = "%s|%s" % (row["dataset"], row["construction"])
+        grouped.setdefault(key, []).append(row)
+    return {
+        key: {
+            "cases": len(members),
+            "spread_ge_10pp_fraction": (
+                sum(float(row["source_spread"]) >= 0.10 for row in members)
+                / float(len(members))
+            ),
+            "mean_s0_oracle_improvement": statistics.mean(
+                float(row["single_source_s0_improvement"])
+                for row in members
+            ),
+            "mean_last_source_oracle_improvement": statistics.mean(
+                float(row["last_source_oracle_improvement"])
+                for row in members
+            ),
+            "mean_random_source_expected_oracle_improvement": (
+                statistics.mean(
+                    float(
+                        row["random_source_expected_oracle_improvement"]
+                    )
+                    for row in members
+                )
+            ),
+        }
+        for key, members in sorted(grouped.items())
+    }

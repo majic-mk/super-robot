@@ -258,8 +258,19 @@ class E1Result:
     output_token_ids: Tuple[int, ...] = ()
     output_hash: str = ""
     output_text: str = ""
+    full_output_token_ids: Tuple[int, ...] = ()
+    full_output_hash: str = ""
+    output_ids_exact_full: bool = False
     logit_relative_l2: Optional[float] = None
+    logit_trace_mode: str = "not_recorded"
+    logit_positions_compared: int = 0
+    source_k_representation: str = "unspecified"
+    rope_alignment_mode: str = "unspecified"
+    causal_mask_mode: str = "unspecified"
     full_timing_scope: str = "remaining_layers"
+    repair_timing_scope: str = "unspecified"
+    timing_warmup_runs: int = 0
+    timing_measurement_runs: int = 1
     error_type: Optional[str] = None
     error_message: Optional[str] = None
     code_commit: str = ""
@@ -381,6 +392,18 @@ class E1Result:
                 raise ValueError("logit_relative_l2 must be finite and non-negative")
             if not self.full_timing_scope:
                 raise ValueError("full_timing_scope is required")
+            if not self.repair_timing_scope:
+                raise ValueError("repair_timing_scope is required")
+            if self.timing_warmup_runs < 0 or self.timing_measurement_runs < 1:
+                raise ValueError("invalid timing repetition counts")
+            if self.logit_positions_compared < 0:
+                raise ValueError("logit_positions_compared must be non-negative")
+            if self.full_output_hash and self.output_ids_exact_full != (
+                self.output_token_ids == self.full_output_token_ids
+            ):
+                raise ValueError(
+                    "output_ids_exact_full does not match token IDs"
+                )
         elif not self.error_type:
             raise ValueError("failed result must retain an error_type")
         if self.evidence_class not in {
@@ -395,6 +418,10 @@ class E1Result:
             if self.status is ResultStatus.COMPLETED:
                 required_provenance = (
                     self.output_hash,
+                    self.full_output_hash,
+                    self.source_k_representation,
+                    self.rope_alignment_mode,
+                    self.causal_mask_mode,
                     self.code_commit,
                     self.environment_hash,
                     self.model_revision,
@@ -462,9 +489,38 @@ class E1Result:
             ),
             output_hash=str(row.get("output_hash", "")),
             output_text=str(row.get("output_text", "")),
+            full_output_token_ids=tuple(
+                int(value) for value in row.get("full_output_token_ids", ())
+            ),
+            full_output_hash=str(row.get("full_output_hash", "")),
+            output_ids_exact_full=bool(
+                row.get("output_ids_exact_full", False)
+            ),
             logit_relative_l2=_optional_float(row.get("logit_relative_l2")),
+            logit_trace_mode=str(
+                row.get("logit_trace_mode", "not_recorded")
+            ),
+            logit_positions_compared=int(
+                row.get("logit_positions_compared", 0)
+            ),
+            source_k_representation=str(
+                row.get("source_k_representation", "unspecified")
+            ),
+            rope_alignment_mode=str(
+                row.get("rope_alignment_mode", "unspecified")
+            ),
+            causal_mask_mode=str(
+                row.get("causal_mask_mode", "unspecified")
+            ),
             full_timing_scope=str(
                 row.get("full_timing_scope", "remaining_layers")
+            ),
+            repair_timing_scope=str(
+                row.get("repair_timing_scope", "unspecified")
+            ),
+            timing_warmup_runs=int(row.get("timing_warmup_runs", 0)),
+            timing_measurement_runs=int(
+                row.get("timing_measurement_runs", 1)
             ),
             error_type=_optional_string(row.get("error_type")),
             error_message=_optional_string(row.get("error_message")),

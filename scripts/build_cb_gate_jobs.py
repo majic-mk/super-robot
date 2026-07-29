@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from probekv.experiment_jobs import generate_e1_jobs
-from probekv.io import atomic_write_json, write_jsonl
+from probekv.io import atomic_write_json, sha256_file, write_jsonl
 from probekv.manifest import manifest_case_from_row, validate_manifest
 
 
@@ -20,10 +20,10 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=20260726)
     args = parser.parse_args()
+    manifest_path = Path(args.manifest).resolve()
     cases = [
         manifest_case_from_row(json.loads(line))
-        for line in Path(args.manifest)
-        .resolve()
+        for line in manifest_path
         .read_text(encoding="utf-8")
         .splitlines()
         if line.strip()
@@ -58,11 +58,14 @@ def main() -> int:
         raise RuntimeError("CB gate jobs contain duplicate identifiers")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    write_jsonl(output / "cb_gate_jobs.jsonl", [job.to_row() for job in jobs])
+    jobs_path = output / "cb_gate_jobs.jsonl"
+    write_jsonl(jobs_path, [job.to_row() for job in jobs])
     audit = {
         "cases": [case.case_id for case in selected],
         "datasets": sorted(by_dataset),
         "jobs": len(jobs),
+        "manifest_sha256": sha256_file(manifest_path),
+        "jobs_sha256": sha256_file(jobs_path),
         "primary_jobs": len(primary),
         "anchor_jobs": len(jobs) - len(primary),
         "repair_ratios": list(RATIOS),

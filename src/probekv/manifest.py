@@ -55,6 +55,7 @@ class ManifestCase:
     content_hash: str
     current_context: str
     sources: Tuple[ManifestSource, ...]
+    current_suffix_context: str = ""
     question: str = ""
     answers: Tuple[str, ...] = ()
     construction: str = "normalized_input"
@@ -160,6 +161,7 @@ def case_from_mapping(
         content_hash=content_hash,
         current_context=str(raw["current_context"]),
         sources=tuple(sources),
+        current_suffix_context=str(raw.get("current_suffix_context", "")),
     )
     result.validate()
     return result
@@ -193,6 +195,7 @@ def manifest_case_from_row(raw: Mapping[str, Any]) -> ManifestCase:
         content_hash=str(raw["content_hash"]),
         current_context=str(raw["current_context"]),
         sources=sources,
+        current_suffix_context=str(raw.get("current_suffix_context", "")),
         question=str(raw.get("question", "")),
         answers=tuple(str(answer) for answer in raw.get("answers", ())),
         construction=str(raw.get("construction", "normalized_input")),

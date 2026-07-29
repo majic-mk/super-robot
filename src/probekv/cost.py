@@ -27,6 +27,9 @@ class LayerOption:
     buffer_ready: bool = True
     post_ready_blocking_ms: float = 0.0
     load_interference_ms: float = 0.0
+    source_ready_ms: Optional[float] = None
+    a_resume_ms: Optional[float] = None
+    scheduled_step_finish_ms: Optional[float] = None
 
     def timing(self) -> TimingBreakdown:
         return TimingBreakdown(
@@ -38,6 +41,11 @@ class LayerOption:
             full_ms=self.full_ms,
             post_ready_blocking_ms=self.post_ready_blocking_ms,
             load_interference_ms=self.load_interference_ms,
+            source_ready_ms=self.source_ready_ms,
+            a_resume_ms=self.a_resume_ms,
+            scheduled_step_finish_ms=self.scheduled_step_finish_ms,
+            overlap_ms=self.overlap_ms,
+            evaluated_reuse_boundary=self.layer,
         )
 
 
@@ -48,6 +56,7 @@ class ReusePlan:
     repair_ratio_upper: Optional[float]
     timing: Optional[TimingBreakdown]
     reason: DecisionReason
+    evaluated_layer: Optional[int] = None
 
 
 class DynamicReusePlanner:
@@ -58,10 +67,14 @@ class DynamicReusePlanner:
 
     def plan(self, options: Sequence[LayerOption]) -> ReusePlan:
         feasible = []
+        evaluated = []
         for option in options:
+            timing = option.timing()
+            evaluated.append(
+                (timing.reuse_total_ms, option.layer, option, timing)
+            )
             if not option.buffer_ready:
                 continue
-            timing = option.timing()
             if timing.reuse_total_ms <= self.gamma * timing.full_ms:
                 feasible.append((timing.reuse_total_ms, option.layer, option, timing))
         if not feasible:
@@ -70,7 +83,19 @@ class DynamicReusePlanner:
                 if not any(option.buffer_ready for option in options)
                 else DecisionReason.ECONOMIC_REJECT
             )
-            return ReusePlan(False, None, None, None, reason)
+            if not evaluated:
+                return ReusePlan(False, None, None, None, reason)
+            _, evaluated_layer, _, observed_timing = min(
+                evaluated, key=lambda item: (item[0], item[1])
+            )
+            return ReusePlan(
+                False,
+                None,
+                None,
+                observed_timing,
+                reason,
+                evaluated_layer=evaluated_layer,
+            )
         _, _, selected, timing = min(feasible, key=lambda item: (item[0], item[1]))
         return ReusePlan(
             True,
@@ -78,6 +103,7 @@ class DynamicReusePlanner:
             selected.repair_ratio_upper,
             timing,
             DecisionReason.CONFIDENT,
+            evaluated_layer=selected.layer,
         )
 
 
@@ -115,6 +141,7 @@ def finalize_execution(
             reuse_layer=None,
             safe_repair_ratio_upper=None,
             timing=None,
+            selection_state=selection.selection_state,
         )
     if reuse_plan is None:
         raise ValueError("selected source requires a refined reuse plan")
@@ -129,6 +156,8 @@ def finalize_execution(
             reuse_layer=reuse_plan.layer,
             safe_repair_ratio_upper=reuse_plan.repair_ratio_upper,
             timing=reuse_plan.timing,
+            selection_state=selection.selection_state,
+            actual_reuse_boundary=reuse_plan.layer,
         )
     rejection = (
         RejectionReason.NO_FEASIBLE_REUSE_LAYER
@@ -145,6 +174,7 @@ def finalize_execution(
         reuse_layer=None,
         safe_repair_ratio_upper=selection.safe_repair_ratio_upper,
         timing=reuse_plan.timing,
+        selection_state=selection.selection_state,
     )
 
 

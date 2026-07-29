@@ -56,6 +56,17 @@ index bdbd951..0f69a76 100644
 +            cache_fuse_metadata["effective_ratio"] = topk_num / float(segment_len)
 +            cache_fuse_metadata["mandatory_suffix_tokens"] = last_len
 +            cache_fuse_metadata["selected_segment_indices"] = segment_indices
+@@ -219,2 +252,8 @@ class XFormersImpl(AttentionImpl):
+-            #attn_bias = _make_partial_bias_gqa(cache_fuse_metadata, query.device, self.num_kv_heads, self.num_queries_per_kv)
+-            attn_bias = LowerTriangularFromBottomRightMask()
++            # Repaired C queries are arbitrary absolute rows, followed by the
++            # mandatory dense suffix. Bottom-right masking is not equivalent.
++            attn_bias = _make_partial_bias_gqa(
++                cache_fuse_metadata,
++                query.device,
++                self.num_kv_heads,
++                self.num_queries_per_kv,
++            )
 diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
 index 22e7d53..0687854 100644
 --- a/vllm_blend/vllm/model_executor/models/llama.py

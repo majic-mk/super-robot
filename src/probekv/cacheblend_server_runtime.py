@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import statistics
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .experiment_jobs import E1Job, E1Result, ResultStatus
@@ -69,10 +71,25 @@ class CacheBlendCaseRuntime:
         self.outer_model, self.model = self._model_handles()
         self.layers = self.model.layers
         self.torch = self._torch()
-        self.prefix_ids = self._prefix_ids(case.current_context, instruction)
+        self.sources: Dict[str, CanonicalSourceKV] = {}
+        self._manifest_sources: Dict[str, ManifestSource] = {}
+        self.prefix_kv: Sequence[Tuple[Any, Any]] = ()
+        self.suffix_kv: Sequence[Tuple[Any, Any]] = ()
+        self._closed = False
+        try:
+            self._initialize_case()
+        except Exception:
+            self.close()
+            raise
+
+    def _initialize_case(self) -> None:
+        case = self.case
+        self.prefix_ids = self._prefix_ids(
+            case.current_context, self.instruction
+        )
         encoded_segment = tuple(
             int(value)
-            for value in tokenizer.encode(
+            for value in self.tokenizer.encode(
                 case.segment_text, add_special_tokens=False
             )
         )
@@ -83,8 +100,9 @@ class CacheBlendCaseRuntime:
         self.segment_ids = encoded_segment
         self.suffix_ids = tuple(
             int(value)
-            for value in tokenizer.encode(
-                "\n\nQuestion: %s\nAnswer briefly:" % case.question,
+            for value in self.tokenizer.encode(
+                "%s\n\nQuestion: %s\nAnswer briefly:"
+                % (case.current_suffix_context, case.question),
                 add_special_tokens=False,
             )
         )
@@ -103,6 +121,44 @@ class CacheBlendCaseRuntime:
             source.source_id: self._build_source(source)
             for source in case.sources
         }
+        self._manifest_sources = {
+            source.source_id: source for source in case.sources
+        }
+        self._case_digest = hashlib.sha256(
+            json.dumps(
+                case.to_row(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def __enter__(self) -> "CacheBlendCaseRuntime":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release every model-global reference retained by the patched stack."""
+        if self._closed:
+            return
+        metadata = self.model.cache_fuse_metadata
+        metadata["check"] = False
+        metadata["collect"] = False
+        metadata["capture_logits"] = False
+        metadata["imp_indices"] = None
+        metadata["attn_bias"] = None
+        metadata["selected_segment_indices"] = None
+        self.model.old_kvs = []
+        self.outer_model.probekv_logits_trace = []
+        for layer in self.layers:
+            if hasattr(layer.self_attn, "hack_kv"):
+                layer.self_attn.hack_kv = None
+        self.sources.clear()
+        self.prefix_kv = ()
+        self.suffix_kv = ()
+        self._closed = True
 
     @staticmethod
     def _torch() -> Any:
@@ -165,20 +221,23 @@ class CacheBlendCaseRuntime:
         host_start = time.perf_counter()
         start_event.record()
         try:
-            outputs = self.llm.generate(
-                prompt_token_ids=[list(prompt_token_ids)],
-                sampling_params=params,
-                use_tqdm=False,
-            )
-        except TypeError:
-            outputs = self.llm.generate(
-                prompts=None,
-                prompt_token_ids=[list(prompt_token_ids)],
-                sampling_params=params,
-                use_tqdm=False,
-            )
-        end_event.record()
-        self.torch.cuda.synchronize()
+            try:
+                outputs = self.llm.generate(
+                    prompt_token_ids=[list(prompt_token_ids)],
+                    sampling_params=params,
+                    use_tqdm=False,
+                )
+            except TypeError:
+                outputs = self.llm.generate(
+                    prompts=None,
+                    prompt_token_ids=[list(prompt_token_ids)],
+                    sampling_params=params,
+                    use_tqdm=False,
+                )
+            end_event.record()
+            self.torch.cuda.synchronize()
+        finally:
+            metadata["capture_logits"] = False
         host_ms = (time.perf_counter() - host_start) * 1000.0
         gpu_ms = float(start_event.elapsed_time(end_event))
         request = outputs[0]
@@ -199,7 +258,6 @@ class CacheBlendCaseRuntime:
             * 1000.0
         )
         logits = tuple(self.outer_model.probekv_logits_trace)
-        metadata["capture_logits"] = False
         return GenerationMeasurement(
             output_ids,
             output_text,
@@ -219,28 +277,32 @@ class CacheBlendCaseRuntime:
         metadata["capture_logits"] = False
         params = self.sampling_params_type(temperature=0, max_tokens=1)
         try:
-            self.llm.generate(
-                prompt_token_ids=[list(prompt_token_ids)],
-                sampling_params=params,
-                use_tqdm=False,
-            )
-        except TypeError:
-            self.llm.generate(
-                prompts=None,
-                prompt_token_ids=[list(prompt_token_ids)],
-                sampling_params=params,
-                use_tqdm=False,
-            )
-        collected = []
-        for layer in self.layers:
-            key, value = layer.self_attn.hack_kv
-            if key.shape[0] != len(prompt_token_ids):
-                raise RuntimeError(
-                    "collected KV length %d does not match prompt tokens %d"
-                    % (key.shape[0], len(prompt_token_ids))
+            try:
+                self.llm.generate(
+                    prompt_token_ids=[list(prompt_token_ids)],
+                    sampling_params=params,
+                    use_tqdm=False,
                 )
-            collected.append((key.detach().clone(), value.detach().clone()))
-        metadata["collect"] = False
+            except TypeError:
+                self.llm.generate(
+                    prompts=None,
+                    prompt_token_ids=[list(prompt_token_ids)],
+                    sampling_params=params,
+                    use_tqdm=False,
+                )
+            collected = []
+            for layer in self.layers:
+                key, value = layer.self_attn.hack_kv
+                if key.shape[0] != len(prompt_token_ids):
+                    raise RuntimeError(
+                        "collected KV length %d does not match prompt tokens %d"
+                        % (key.shape[0], len(prompt_token_ids))
+                    )
+                collected.append(
+                    (key.detach().clone(), value.detach().clone())
+                )
+        finally:
+            metadata["collect"] = False
         return tuple(collected)
 
     def _build_source(self, source: ManifestSource) -> CanonicalSourceKV:
@@ -294,15 +356,69 @@ class CacheBlendCaseRuntime:
             denominator += float((right * right).sum().item())
         return math.sqrt(numerator / max(denominator, 1e-30))
 
+    def _stage_job_source(
+        self, canonical: CanonicalSourceKV, job: E1Job
+    ) -> None:
+        self.model.old_kvs = []
+        for layer_index, (c_key, c_value) in enumerate(canonical.layers):
+            p_key, p_value = self.prefix_kv[layer_index]
+            s_key, s_value = self.suffix_kv[layer_index]
+            self.model.old_kvs.append(
+                [
+                    self.torch.cat((p_key, c_key, s_key), dim=0),
+                    self.torch.cat((p_value, c_value, s_value), dim=0),
+                ]
+            )
+        metadata = self.model.cache_fuse_metadata
+        metadata["check_layers"] = [job.reuse_layer - 1]
+        metadata["recomp_ratio"] = job.repair_ratio
+        metadata["suffix_len"] = len(self.suffix_ids)
+        metadata["segment_start"] = len(self.prefix_ids)
+        metadata["segment_len"] = len(self.segment_ids)
+
+    @staticmethod
+    def _median_measurement(
+        measurements: Sequence[GenerationMeasurement],
+    ) -> GenerationMeasurement:
+        if not measurements:
+            raise ValueError("at least one measurement is required")
+        final = measurements[-1]
+        if any(
+            measurement.token_ids != final.token_ids
+            for measurement in measurements
+        ):
+            raise RuntimeError(
+                "deterministic timing repetitions produced different outputs"
+            )
+        return replace(
+            final,
+            ttft_ms=statistics.median(
+                measurement.ttft_ms for measurement in measurements
+            ),
+            total_host_ms=statistics.median(
+                measurement.total_host_ms for measurement in measurements
+            ),
+            total_gpu_ms=statistics.median(
+                measurement.total_gpu_ms for measurement in measurements
+            ),
+        )
+
     def run_source_jobs(
         self,
         source_id: str,
         jobs: Sequence[E1Job],
         attempt_by_job: Mapping[str, int],
+        timing_warmup_runs: int = 0,
+        timing_measurement_runs: int = 1,
     ) -> Tuple[E1Result, ...]:
+        if self._closed:
+            raise RuntimeError("CacheBlend case runtime is closed")
+        if timing_warmup_runs < 0 or timing_measurement_runs < 1:
+            raise ValueError("invalid timing repetition counts")
         if source_id not in self.sources:
             raise ValueError("job references an unknown Source")
         canonical = self.sources[source_id]
+        manifest_source = self._manifest_sources[source_id]
         digest_before = canonical.digest
         pending_rows = []
         for job in sorted(
@@ -310,28 +426,37 @@ class CacheBlendCaseRuntime:
         ):
             if job.case_id != self.case.case_id or job.source_id != source_id:
                 raise ValueError("job group does not match case/source runtime")
-            self.model.old_kvs = []
-            for layer_index, (c_key, c_value) in enumerate(canonical.layers):
-                p_key, p_value = self.prefix_kv[layer_index]
-                s_key, s_value = self.suffix_kv[layer_index]
-                self.model.old_kvs.append(
-                    [
-                        self.torch.cat((p_key, c_key, s_key), dim=0),
-                        self.torch.cat((p_value, c_value, s_value), dim=0),
-                    ]
+            if (
+                job.case_digest != self._case_digest
+                or job.content_hash != self.case.content_hash
+                or job.model_signature != self.case.model_signature
+                or job.source_context_id != manifest_source.context_id
+                or job.segment_tokens != len(self.segment_ids)
+            ):
+                raise ValueError(
+                    "job provenance does not bind to the loaded case/source"
                 )
+            for _ in range(timing_warmup_runs):
+                self._stage_job_source(canonical, job)
+                self._generate(
+                    self.current_ids,
+                    self.max_new_tokens,
+                    check=True,
+                    capture_logits=False,
+                )
+            measurements = []
+            for _ in range(timing_measurement_runs):
+                self._stage_job_source(canonical, job)
+                measurements.append(
+                    self._generate(
+                        self.current_ids,
+                        self.max_new_tokens,
+                        check=True,
+                        capture_logits=True,
+                    )
+                )
+            generation = self._median_measurement(measurements)
             metadata = self.model.cache_fuse_metadata
-            metadata["check_layers"] = [job.reuse_layer - 1]
-            metadata["recomp_ratio"] = job.repair_ratio
-            metadata["suffix_len"] = len(self.suffix_ids)
-            metadata["segment_start"] = len(self.prefix_ids)
-            metadata["segment_len"] = len(self.segment_ids)
-            generation = self._generate(
-                self.current_ids,
-                self.max_new_tokens,
-                check=True,
-                capture_logits=True,
-            )
             selected = int(metadata["selected_segment_tokens"])
             expected = repaired_segment_token_count(
                 len(self.segment_ids), job.repair_ratio
@@ -375,10 +500,30 @@ class CacheBlendCaseRuntime:
                     output_token_ids=generation.token_ids,
                     output_hash=generation.output_hash,
                     output_text=generation.text,
+                    full_output_token_ids=self.full.token_ids,
+                    full_output_hash=self.full.output_hash,
+                    output_ids_exact_full=(
+                        generation.token_ids == self.full.token_ids
+                    ),
                     logit_relative_l2=self._relative_l2(
                         generation.logits_trace, self.full.logits_trace
                     ),
+                    logit_trace_mode="matched_greedy_prefix",
+                    logit_positions_compared=min(
+                        32,
+                        len(generation.logits_trace),
+                        len(self.full.logits_trace),
+                    ),
+                    source_k_representation="pre_rope",
+                    rope_alignment_mode="cacheblend_current_org_pos",
+                    causal_mask_mode="absolute_query_positions",
                     full_timing_scope="full_prefill_total_proxy",
+                    repair_timing_scope=(
+                        "ttft_is_prefill_to_first_token;"
+                        "gpu_and_host_include_full_decode"
+                    ),
+                    timing_warmup_runs=timing_warmup_runs,
+                    timing_measurement_runs=timing_measurement_runs,
                     code_commit=self.provenance["code_commit"],
                     environment_hash=self.provenance["environment_hash"],
                     model_revision=self.provenance["model_revision"],
@@ -391,7 +536,7 @@ class CacheBlendCaseRuntime:
                     torch_version=self.provenance["torch_version"],
                     cuda_version=self.provenance["cuda_version"],
                     gpu_uuid=self.provenance["gpu_uuid"],
-                    finished_at_utc=self.provenance["finished_at_utc"],
+                    finished_at_utc=datetime.now(timezone.utc).isoformat(),
                     evidence_class="server_pilot",
                     paper_evidence=False,
                 )
@@ -399,6 +544,7 @@ class CacheBlendCaseRuntime:
         digest_after = self._kv_digest(canonical.layers)
         if digest_after != digest_before:
             raise RuntimeError("canonical full-prefill Source was mutated")
+        self.model.old_kvs = []
         return tuple(
             E1Result(
                 **{

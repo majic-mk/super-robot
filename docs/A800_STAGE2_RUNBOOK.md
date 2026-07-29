@@ -5,12 +5,12 @@ CacheBlend base commit, tracked patch hashes, Mistral revision and A800 UUID
 recorded in the artifact directory.  Never place SSH credentials in a command,
 configuration file, shell history, Git repository or artifact.
 
-The 150-case H1 Source-sensitivity manifest and its 9,720 repair jobs are
-selector- and scheduler-neutral. System-contract v3 therefore does not change
-their semantic job IDs. It does change the ProbeKV code SHA, so the server must
-checkout the new exact commit, rerun the full test suite and regenerate
-`stage2_readiness.json` before CB1-CB3 or H1 resumes. Existing readiness
-artifacts remain historical records and must not be overwritten in place.
+Protocol v4 preserves current-only chunks after C as `current_suffix_context`;
+that field is part of the case digest. Therefore every earlier 150-case
+manifest, CB job file, H1 job file and readiness artifact is stale even when
+its case IDs look unchanged. Regenerate all of them from the prepared official
+train files under a new artifact directory. Do not resume v3 rows into a v4
+job manifest.
 
 ## Local freeze
 
@@ -121,6 +121,8 @@ python scripts/server/run_cacheblend_h1_pilot.py \
   --patch-provenance "$ARTIFACTS/probekv_patch.json" \
   --revision c170c708c41dac9275d15a8fff4eca08d52bab71 \
   --pass all \
+  --timing-warmup-runs 2 \
+  --timing-measurement-runs 5 \
   --max-hours 3
 
 python scripts/server/validate_cb1_cb3.py \
@@ -157,6 +159,8 @@ python scripts/server/run_cacheblend_h1_pilot.py \
   --patch-provenance "$ARTIFACTS/probekv_patch.json" \
   --revision c170c708c41dac9275d15a8fff4eca08d52bab71 \
   --pass primary \
+  --timing-warmup-runs 0 \
+  --timing-measurement-runs 1 \
   --max-hours 5
 
 python scripts/server/run_cacheblend_h1_pilot.py \

@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from .backend import DeterministicSimulationBackend
 from .calibration import (
     CalibratedGradientBoostingIntervalPredictor,
+    GroupedSimultaneousConformal,
     QuantileGradientBoostingBudgetPredictor,
+    SplitConformalInterval,
+    SplitConformalUpper,
 )
 from .config import ExperimentConfig
 from .contracts import CandidateBounds, ProbeObservation
@@ -26,7 +29,7 @@ from .statistics import kendall_tau, spearman_correlation
 
 PRIMARY_REUSE_FRACTION = 0.15
 REUSE_FRACTIONS = (0.10, 0.15, 0.22, 0.30, 0.40)
-PIPELINE_REVISION = "local-e1e2-v2"
+PIPELINE_REVISION = "local-e1e2-v3-joint-conformal"
 
 
 def _stable_unit(*parts: object) -> float:
@@ -297,11 +300,62 @@ def run_local_e1e2(
                 "test_labels_accessed_during_fit": False,
             }
         )
+    upper_residuals: Dict[str, List[float]] = {}
+    interval_residuals: Dict[str, List[float]] = {}
+    for case in cases:
+        if case.split != "calibration":
+            continue
+        for source in case.sources:
+            target = primary_labels[(case.case_id, source.source_id)]
+            for layer in config.probe_checkpoints:
+                feature = _feature(
+                    observations[
+                        (case.case_id, source.source_id, layer)
+                    ],
+                    case,
+                )
+                upper_point = float(
+                    upper_models[layer].model.predict([feature])[0]
+                )
+                interval_point = float(
+                    interval_models[layer].model.predict([feature])[0]
+                )
+                upper_residuals.setdefault(case.case_id, []).append(
+                    target - upper_point
+                )
+                interval_residuals.setdefault(case.case_id, []).append(
+                    abs(target - interval_point)
+                )
+    simultaneous_upper = GroupedSimultaneousConformal.fit(
+        upper_residuals
+    )
+    simultaneous_interval = GroupedSimultaneousConformal.fit(
+        interval_residuals
+    )
+    for layer in config.probe_checkpoints:
+        upper_models[layer].calibrator = SplitConformalUpper(
+            simultaneous_upper.miscoverage,
+            simultaneous_upper.correction,
+        )
+        interval_models[layer].calibrator = SplitConformalInterval(
+            simultaneous_interval.miscoverage,
+            simultaneous_interval.correction,
+        )
+    for row in model_rows:
+        row["upper_correction"] = simultaneous_upper.correction
+        row["interval_radius"] = simultaneous_interval.correction
+        row["calibration_scope"] = "max_over_case_sources_and_checkpoints"
     atomic_write_json(
         output / "calibration_report.json",
         {
             "models": model_rows,
             "thresholds_frozen_before_test": True,
+            "simultaneous_calibration_groups": (
+                simultaneous_upper.groups
+            ),
+            "simultaneous_scope": (
+                "case-wise max residual over every Source and checkpoint"
+            ),
             "feature_order": [
                 "k_drift",
                 "v_drift",
@@ -329,6 +383,7 @@ def run_local_e1e2(
             config.selector_policy,
             config.gamma,
             config.reuse_ratio_tolerance,
+            config.preliminary_economic_filter,
         )
     )
     decision_rows: List[Dict[str, Any]] = []

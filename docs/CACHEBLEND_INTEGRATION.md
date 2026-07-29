@@ -14,6 +14,9 @@ patchset and the case-scoped worker in `cacheblend_server_runtime.py`:
 
 The adapter and server result schema reject a mutated canonical source, invalid
 ratio counts, negative timings, non-1-based layers and incomplete provenance.
+Intermediate repair ratios use causal rows from each selected token's absolute
+position. The former bottom-right triangular mask was invalid for arbitrary
+non-contiguous C queries and is not an accepted CB3 runtime.
 The H1 pilot uses repaired-token-layer cost as its primary source-sensitivity
 metric. Its `full_remaining_*` fields are explicitly marked
 `full_prefill_total_proxy`; exact remaining-layer timing is still required
@@ -25,7 +28,8 @@ before H4 admission or any performance claim.
 - CB0-patched: the one-line suffix compatibility patch runs all ten examples.
 - CB1: shim stages and hashes one full-prefill source without repair.
 - CB2: ratios 0 and 1 match expected endpoints on one case.
-- CB3: all repair-grid ratios emit quality and separated timing fields.
+- CB3: all repair-grid ratios emit quality, absolute-position causal-mask
+  provenance and timing medians from two warmups plus five measurements.
 - CB4: current-state features and four-source selection run end to end.
 
 Do not begin H1 jobs until CB0-patched through CB3 and the H0 requirements in
@@ -52,3 +56,9 @@ The selected policy is now frozen in `patches/cacheblend/manifest.json`.
 `0002-probekv-segment-repair-mask.patch` adds P/C/S boundaries and logit
 instrumentation without changing CacheBlend's V-drift ranking algorithm.
 All same-stack methods must use the same patched runtime.
+
+`repair_gpu_ms` and `repair_host_ms` currently cover the complete generation
+call; TTFT covers prefill through the first token. They are explicitly tagged
+with `repair_timing_scope` and are pilot diagnostics, not repair-kernel-only
+timings. Exact remaining-layer timers are still required for v4 final
+admission and formal H4 performance evidence.

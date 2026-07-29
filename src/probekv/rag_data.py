@@ -453,7 +453,9 @@ class RetrievalEvent:
     example: RAGExample
     target: RAGDocument
     preceding: Tuple[RAGDocument, ...]
+    following: Tuple[RAGDocument, ...]
     context: str
+    suffix_context: str
     token_ids: Tuple[int, ...]
     content_hash: str
 
@@ -552,7 +554,9 @@ def build_streaming_pilot_cases(
             preceding = tuple(
                 example.documents[max(0, position - 5) : position]
             )
+            following = tuple(example.documents[position + 1 :])
             context = render_preceding_context(preceding)
+            suffix_context = render_preceding_context(following)
             event_id = "%s:%s" % (example.example_id, target.document_id)
             cached_segment = segment_cache.get(target.document_id)
             if cached_segment is None:
@@ -570,7 +574,9 @@ def build_streaming_pilot_cases(
                 example,
                 target,
                 preceding,
+                following,
                 context,
+                suffix_context,
                 token_ids,
                 content_hash,
             )
@@ -627,6 +633,7 @@ def build_streaming_pilot_cases(
             content_hash=content_hash,
             current_context=current.context,
             sources=sources,
+            current_suffix_context=current.suffix_context,
             question=current.example.question,
             answers=current.example.answers,
             construction="corpus_repeat_pseudotime",
@@ -679,13 +686,17 @@ def build_corpus_repeat_cases(
                 segment_cache[target.document_id] = cached_segment
             repeated, token_ids, content_hash = cached_segment
             preceding = tuple(example.documents[max(0, position - max_preceding_documents) : position])
+            following = tuple(example.documents[position + 1 :])
             context = render_preceding_context(preceding)
+            suffix_context = render_preceding_context(following)
             event = RetrievalEvent(
                 "%s:%s" % (example.example_id, target.document_id),
                 example,
                 target,
                 preceding,
+                following,
                 context,
+                suffix_context,
                 token_ids,
                 content_hash,
             )
@@ -735,6 +746,7 @@ def build_corpus_repeat_cases(
             content_hash=content_hash,
             current_context=current.context,
             sources=sources,
+            current_suffix_context=current.suffix_context,
             question=current.example.question,
             answers=current.example.answers,
             construction="corpus_repeat_pseudotime",

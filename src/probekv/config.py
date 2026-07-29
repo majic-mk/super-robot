@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
+from .orchestration import ClosedLoopPolicy
 from .scheduler import SchedulerPolicy
 from .selector import SelectorPolicy, default_probe_checkpoints
+from .source_store import ReplicaEvictionPolicy, SourceEvictionPolicy
 
 
 @dataclass(frozen=True)
@@ -22,9 +24,14 @@ class ExperimentConfig:
     max_selection_layer: int
     selector_policy: SelectorPolicy
     reuse_ratio_tolerance: float
+    preliminary_economic_filter: bool
     scheduler_policy: SchedulerPolicy
     max_post_ready_overrun_ms: float
     load_interference_ms: float
+    closed_loop_policy: ClosedLoopPolicy
+    source_eviction_policy: SourceEvictionPolicy
+    replica_eviction_policy: ReplicaEvictionPolicy
+    fixed_resident_sources: bool
     repair_ratios: Tuple[float, ...]
     output_dir: str
 
@@ -55,6 +62,9 @@ class ExperimentConfig:
             reuse_ratio_tolerance=float(
                 raw.get("reuse_ratio_tolerance", 0.02)
             ),
+            preliminary_economic_filter=bool(
+                raw.get("preliminary_economic_filter", False)
+            ),
             scheduler_policy=SchedulerPolicy(
                 str(raw.get("scheduler_policy", "hybrid_strict"))
             ),
@@ -63,6 +73,33 @@ class ExperimentConfig:
             ),
             load_interference_ms=float(
                 raw.get("load_interference_ms", 0.0)
+            ),
+            closed_loop_policy=ClosedLoopPolicy(
+                str(
+                    raw.get(
+                        "closed_loop_policy",
+                        "legacy_pre_schedule_admission",
+                    )
+                )
+            ),
+            source_eviction_policy=SourceEvictionPolicy(
+                str(
+                    raw.get(
+                        "source_eviction_policy",
+                        "reject_when_full",
+                    )
+                )
+            ),
+            replica_eviction_policy=ReplicaEvictionPolicy(
+                str(
+                    raw.get(
+                        "replica_eviction_policy",
+                        "reject_when_full",
+                    )
+                )
+            ),
+            fixed_resident_sources=bool(
+                raw.get("fixed_resident_sources", False)
             ),
             repair_ratios=tuple(float(value) for value in raw["repair_ratios"]),
             output_dir=str(raw.get("output_dir", "artifacts/local_smoke")),

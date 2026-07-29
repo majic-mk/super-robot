@@ -1,6 +1,7 @@
 import unittest
 
 from probekv.calibration import (
+    GroupedSimultaneousConformal,
     CalibratedGradientBoostingIntervalPredictor,
     ConservativeRatioPredictor,
     IsotonicRegressor,
@@ -49,6 +50,18 @@ class CalibrationTests(unittest.TestCase):
         lower, upper = calibrator.bounds(0.4)
         self.assertLessEqual(lower, 0.4)
         self.assertGreaterEqual(upper, 0.4)
+
+    def test_simultaneous_conformal_uses_one_maximum_per_case(self):
+        calibrator = GroupedSimultaneousConformal.fit(
+            {
+                "case-a": [0.1, 0.8, 0.2],
+                "case-b": [0.3, 0.4],
+                "case-c": [0.2, 0.5],
+            },
+            miscoverage=0.25,
+        )
+        self.assertEqual(calibrator.groups, 3)
+        self.assertEqual(calibrator.correction, 0.8)
 
     def test_conservative_predictor_returns_bounded_ratio(self):
         predictor = ConservativeRatioPredictor().fit(

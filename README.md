@@ -7,6 +7,9 @@ current request selects only a conservatively safe and economically useful
 source; uncertain decisions abstain and fall back to full recomputation.
 Legacy strict abstention remains reproducible, while new final-layer selector
 policies and bounded-overrun scheduling must be enabled explicitly.
+Protocol v4 additionally enforces the runtime order
+`selection -> load/schedule -> refined cost -> final admission`; protocol v3
+remains available only for reproduction.
 
 This repository implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,
@@ -25,6 +28,7 @@ python -m unittest discover -s tests -v
 python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_system_v3.json
+python -m probekv simulate --config configs/local_system_v4.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -45,6 +49,7 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `docs/RAG_DATA.md`: real-dataset normalization and Source construction rules.
 - `docs/E1_JOBS.md`: deterministic repair-grid sharding and result audit.
 - `docs/CACHEBLEND_INTEGRATION.md`: the pinned-runtime shim contract and gates.
+- `docs/TWO_STAGE_CLOSURE.md`: v4 state machine, timing feedback and Source lifecycle.
 - `src/probekv/backend.py`: integration boundary for CacheBlend or SparseX.
 - `tests/`: executable invariants and decision-policy tests.
 

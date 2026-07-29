@@ -113,6 +113,32 @@ class SelectorTests(unittest.TestCase):
         )
         self.assertEqual(decision.selected_source_id, "s2")
 
+    def test_v4_preliminary_filter_never_selects_uneconomic_early_winner(self):
+        selector = DynamicProbeSelector(
+            ProbePolicy(
+                (1, 2),
+                2,
+                SelectorPolicy.FINAL_ECONOMIC_MIN_COST,
+                gamma=0.8,
+                preliminary_economic_filter=True,
+            )
+        )
+        decision = selector.select(
+            {
+                1: (
+                    CandidateBounds("s1", 0.1, 10, 90),
+                    CandidateBounds("s2", 0.2, 95, 100),
+                ),
+                2: (
+                    CandidateBounds("s1", 0.1, 10, 90),
+                    CandidateBounds("s2", 0.2, 20, 40),
+                ),
+            },
+            full_recompute_ms=100,
+        )
+        self.assertEqual(decision.selected_source_id, "s2")
+        self.assertEqual(decision.probe_layer, 2)
+
     def test_final_abstains_when_quality_or_economic_set_is_empty(self):
         policy = ProbePolicy(
             (1,),

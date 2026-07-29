@@ -231,6 +231,40 @@ class ResultAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "never"):
             result.validate()
 
+    def test_server_endpoint_exactness_is_audited_from_token_ids(self):
+        base = simulate_e1_results(self.jobs[:1])[0]
+        token_ids = (10, 20, 30)
+        server = replace(
+            base,
+            output_token_ids=token_ids,
+            output_hash="reuse-hash",
+            full_output_token_ids=token_ids,
+            full_output_hash="full-hash",
+            output_ids_exact_full=True,
+            source_k_representation="pre_rope",
+            rope_alignment_mode="cacheblend_current_org_pos",
+            causal_mask_mode="absolute_query_positions",
+            code_commit="commit",
+            environment_hash="environment",
+            model_revision="revision",
+            cacheblend_commit="cacheblend",
+            cacheblend_patch_sha256="patch",
+            cacheblend_tree="tree",
+            vllm_version="0.4.1",
+            torch_version="2.2.1",
+            cuda_version="12.1",
+            gpu_uuid="GPU-fixture",
+            evidence_class="server_pilot",
+            paper_evidence=False,
+        )
+        server.validate()
+        with self.assertRaisesRegex(ValueError, "output_ids_exact_full"):
+            replace(
+                server,
+                output_token_ids=(10, 20),
+                output_ids_exact_full=True,
+            ).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

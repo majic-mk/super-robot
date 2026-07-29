@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 project: ProbeKV
 core_claim: >-
   target-model current-early-state-guided selection among multiple canonical
@@ -23,6 +23,14 @@ amendment_note: >-
   final reuse admission, retained strict interval selection for reproduction,
   added explicit final economic selector policies, made scheduler work atomic,
   and required complete expected-job accounting before publication evidence.
+  Protocol version 4, frozen before the next GPU run, makes actual
+  load/scheduler feedback a mandatory input to final reuse admission, adds
+  independent selection/admission states, preserves selector abstention as a
+  direct full-recompute path, and defines auditable Source version/replica
+  lifecycle policies. It also corrects arbitrary-query causal masking in the
+  CacheBlend compatibility patch and preserves post-C retrieved chunks as the
+  current-only suffix. Version 3 remains reproducible and is not silently
+  reinterpreted.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -38,6 +46,22 @@ invariants:
   legacy_force_selection_at_probe_max: false
   selected_source_none_implies_reuse_rejected: true
   full_recompute_implies_reuse_rejected: true
+  selector_abstention_forbids_source_loading: true
+  scheduler_feedback_precedes_final_admission: true
+
+protocol_versions:
+  v3_reproduction:
+    closed_loop_policy: legacy_pre_schedule_admission
+  v4_main:
+    closed_loop_policy: two_stage_refined_admission
+    final_admission_inputs:
+      - actual_reuse_boundary
+      - source_ready_ms
+      - scheduled_step_finish_ms
+      - a_resume_ms
+      - post_ready_blocking_ms
+      - measured_load_and_interference
+      - refined_repair_and_full_time
 
 probe_policy:
   objective: earliest_calibrated_safe_and_economical_decision
@@ -46,6 +70,7 @@ probe_policy:
   ablation_policy: final_economic_max_reuse
   final_selection_requires_quality_coverage: true
   final_selection_requires_predicted_gamma_admission: true
+  v4_preliminary_economic_filter_at_every_checkpoint: true
   final_max_reuse_tolerance: 0.02
   final_timing_rejection_retains_selected_source: true
   main_32_layer_checkpoints: [1, 2, 3, 4, 5, 6, 7, 8]
@@ -57,7 +82,8 @@ probe_policy:
 
 repair_policy:
   ratio_unit: recomputed_segment_tokens_over_segment_tokens_per_active_layer
-  token_ranking: cachecraft_style_historical_inter_attention
+  token_ranking: cacheblend_v_drift_within_segment_c
+  nonendpoint_token_count: floor_ratio_times_segment_tokens
   nested_topn_sets_required: true
   safe_label_requires_all_higher_tested_ratios_to_pass: true
   report_effective_token_layer_work_ratio: true
@@ -177,6 +203,14 @@ scheduler:
   charge_post_ready_blocking_to_request_a: true
   report_useful_other_request_work: true
   load_interference_must_be_explicit: true
+
+source_lifecycle:
+  canonical_identity: [model_signature, content_hash, source_id]
+  online_version_policy: fifo_unleased
+  h1_pilot_policy: fixed_resident_four_sources
+  replica_policy: byte_aware_lru_unleased
+  selector_signals_may_affect_eviction: false
+  eviction_events_required: true
 
 statistics:
   bootstrap_iterations: 10000

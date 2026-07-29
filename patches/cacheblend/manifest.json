@@ -13,5 +13,7 @@
   "innovation_claim": false,
   "patch_application": "exact base commit with git apply --unidiff-zero --check",
   "ratio_denominator": "repeated segment C tokens only",
-  "suffix_policy": "mandatory dense suffix S is excluded from repair ratio"
+  "suffix_policy": "mandatory dense suffix S is excluded from repair ratio",
+  "causal_mask_policy": "absolute rows of arbitrary selected query positions",
+  "source_k_representation": "pre-RoPE; rotate at current org_pos"
 }

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from probekv.config import ExperimentConfig, load_config
+from probekv.orchestration import ClosedLoopPolicy
 from probekv.scheduler import SchedulerPolicy
 from probekv.selector import SelectorPolicy
 
@@ -44,6 +45,23 @@ class ConfigAndCliTests(unittest.TestCase):
         config = load_config(str(ROOT / "configs" / "a800_h1_pilot.json"))
         self.assertEqual(config.evidence_class, "server_pilot")
         self.assertEqual(config.cases, 150)
+
+    def test_v4_enables_refined_two_stage_closure_explicitly(self):
+        config = load_config(
+            str(ROOT / "configs" / "local_system_v4.json")
+        )
+        self.assertEqual(
+            config.closed_loop_policy,
+            ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION,
+        )
+        self.assertTrue(config.preliminary_economic_filter)
+        legacy = load_config(
+            str(ROOT / "configs" / "local_system_v3.json")
+        )
+        self.assertEqual(
+            legacy.closed_loop_policy,
+            ClosedLoopPolicy.LEGACY_PRE_SCHEDULE_ADMISSION,
+        )
 
     def test_probe_max_above_25_percent_is_rejected(self):
         raw = {

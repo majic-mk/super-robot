@@ -45,6 +45,20 @@ class CacheBlendPatchTests(unittest.TestCase):
         for path in patch_files_for_mode(MANIFEST, "probekv"):
             validate_unified_diff(path)
 
+    def test_partial_repair_uses_absolute_query_causal_rows(self):
+        patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(
+            encoding="utf-8"
+        )
+        additions = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertIn("attn_bias = _make_partial_bias_gqa", additions)
+        self.assertNotIn(
+            "attn_bias = LowerTriangularFromBottomRightMask", additions
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

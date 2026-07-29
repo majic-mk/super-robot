@@ -14,10 +14,15 @@ class Stage2ReadinessTests(unittest.TestCase):
             "all_split_pilot": True,
             "locked_test_accessed": False,
             "paper_evidence": False,
+            "manifest_sha256": "a" * 64,
         }
-        self.cb_jobs = {"jobs": 252}
+        self.cb_jobs = {
+            "jobs": 252,
+            "manifest_sha256": "a" * 64,
+        }
         self.h1_jobs = {
             "jobs": 9720,
+            "manifest_sha256": "a" * 64,
             "layer_job_counts": {
                 "5": 5400,
                 "3": 1080,

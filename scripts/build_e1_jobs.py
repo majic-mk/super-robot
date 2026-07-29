@@ -47,6 +47,7 @@ def main() -> int:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     write_jsonl(output / "jobs.jsonl", [job.to_row() for job in jobs])
+    jobs_path = output / "jobs.jsonl"
     selected_cases = {job.case_id for job in jobs}
     layer_counts = {}
     for job in jobs:
@@ -61,6 +62,7 @@ def main() -> int:
         "cases": len(selected_cases),
         "sources": len({(job.case_id, job.source_id) for job in jobs}),
         "jobs": len(jobs),
+        "jobs_sha256": sha256_file(jobs_path),
         "layer_job_counts": layer_counts,
         "repair_ratios": list(config.repair_ratios),
         "seed": config.seed,

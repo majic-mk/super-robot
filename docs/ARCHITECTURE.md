@@ -16,8 +16,9 @@
    `L_probe_max`, the configured selector policy either preserves strict
    abstention or applies an explicit quality-safe, predicted-economic fallback.
 6. Source selection and reuse admission are separate states. A selected source
-   is prefetched, then the reuse planner checks layer-by-layer buffer readiness
-   and refined full cost:
+   is prefetched, then the scheduler returns actual source-ready, A-resume and
+   boundary events. Only after those events exist does the reuse planner check
+   the refined full cost:
 
    `probe + compare + visible_load + post_ready_blocking + repair <= gamma * full_recompute`.
 
@@ -32,6 +33,15 @@
    execution switches to full recomputation.
 9. Repaired output is consumed by the request but is never registered as a new
    source.
+
+The enforced v4 call order is:
+
+`selector -> load_and_schedule -> measured/refined cost -> final admission -> reuse/full`.
+
+If the selector abstains, the controller calls full recomputation before any
+Source load. It is illegal to substitute a latest or default Source. If final
+admission rejects, the selected Source and evaluated boundary remain in the
+audit, but `actual_reuse_boundary` is null because reuse did not execute.
 
 ## Probe depth objective
 
@@ -85,7 +95,8 @@ this profile"; it is not a claim that copy and compute cannot interfere.
 
 The corresponding configuration keys are `max_selection_layer`,
 `selector_policy`, `reuse_ratio_tolerance`, `gamma`, `scheduler_policy`,
-`max_post_ready_overrun_ms` and `load_interference_ms`. Positive overrun is
+`max_post_ready_overrun_ms`, `load_interference_ms` and
+`closed_loop_policy`. Positive overrun is
 valid only with `hybrid_bounded_overrun`; all other policies reject such a
 configuration instead of silently ignoring it.
 
@@ -96,9 +107,10 @@ layer-wise repair ratio is
 
 `r_l = number of C tokens recomputed at layer l / number of tokens in C`.
 
-The Cache-Craft-style repair backend ranks tokens by historical prefix-to-token
-inter-attention. For a requested ratio `r`, it recomputes the top
-`ceil(r * |C|)` tokens. Ratio grids must use nested sets: a token repaired at
+The pinned CacheBlend backend ranks C tokens by its V-drift rule. For a
+requested ratio `r`, it recomputes zero tokens at `r=0`, all C tokens at
+`r=1`, and otherwise `floor(r * |C|)` tokens. Ratio grids must use nested
+sets: a token repaired at
 10% is also repaired at 20%. Thus `r=0` means reuse all token KVs, while `r=1`
 means recompute all `C` tokens at every active repair layer.
 
@@ -116,9 +128,9 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 
 | Component | Implementation | Contract |
 |---|---|---|
-| Canonical store | `source_store.py` | exact full-prefill only, Kmax=4 |
+| Canonical store | `source_store.py` | exact full-prefill only; model-scoped Kmax; explicit FIFO/version and LRU/replica lifecycle |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |
-| Budget calibration | `calibration.py` | isotonic baseline + split conformal upper |
+| Budget calibration | `calibration.py` | isotonic baseline + case-grouped simultaneous conformal bounds |
 | Case manifest | `manifest.py` | token hash plus content/document split isolation |
 | RAG normalization | `rag_data.py` | three schemas; controlled and corpus-repeat kept separate |
 | E1 orchestration | `experiment_jobs.py`, `e1_analysis.py` | deterministic shards, failure audit, safe labels |
@@ -126,6 +138,7 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Local E1/E2 loop | `local_e1e2.py` | labels, fit/calibration, locked evaluation, resume |
 | Repair label | `labeling.py` | suffix-monotone safe ratio |
 | Reuse planner | `cost.py` | refined total-cost admission; selection retained on rejection |
+| Closed-loop controller | `orchestration.py` | selector abstention guard and scheduler-before-admission state machine |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
 | Scheduler | `scheduler.py` | strict atomic and bounded-overrun policies |
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |

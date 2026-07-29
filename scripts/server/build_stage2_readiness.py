@@ -48,6 +48,11 @@ def validate_stage2_audits(
         raise ValueError("H1 layer distribution does not match the frozen plan")
     if not cb0.get("passed") or cb0.get("cached_outputs") != 10 or cb0.get("full_outputs") != 10:
         raise ValueError("patched CB0 gate is not complete")
+    manifest_sha = manifest.get("manifest_sha256")
+    if cb_jobs.get("manifest_sha256") != manifest_sha:
+        raise ValueError("CB jobs were not built from the frozen manifest")
+    if h1_jobs.get("manifest_sha256") != manifest_sha:
+        raise ValueError("H1 jobs were not built from the frozen manifest")
 
 
 def build_readiness(
@@ -66,6 +71,31 @@ def build_readiness(
     cb0 = _read_json(cb0_gate_path)
     patch = _read_json(patch_path)
     validate_stage2_audits(manifest, cb_jobs, h1_jobs, cb0)
+    manifest_file = manifest_audit_path.with_name("h1_pilot_cases.jsonl")
+    cb_jobs_file = cb_jobs_audit_path.with_name("cb_gate_jobs.jsonl")
+    h1_jobs_file = h1_jobs_audit_path.with_name("jobs.jsonl")
+    actual_manifest_sha = sha256_file(manifest_file)
+    actual_cb_jobs_sha = sha256_file(cb_jobs_file)
+    actual_h1_jobs_sha = sha256_file(h1_jobs_file)
+    if manifest["manifest_sha256"] != actual_manifest_sha:
+        raise ValueError("frozen manifest hash does not match its audit")
+    if cb_jobs.get("jobs_sha256") != actual_cb_jobs_sha:
+        raise ValueError("CB job hash does not match its audit")
+    if h1_jobs.get("jobs_sha256") != actual_h1_jobs_sha:
+        raise ValueError("H1 job hash does not match its audit")
+    expected_base = "b72d7945e6d6306f12be66520196e0f081fa2b0c"
+    if patch.get("cacheblend_commit") != expected_base:
+        raise ValueError("CacheBlend patch provenance has the wrong base")
+    for key in ("cacheblend_patch_sha256", "cacheblend_tree"):
+        if not patch.get(key):
+            raise ValueError("CacheBlend patch provenance is missing %s" % key)
+    if cb0.get("cacheblend_commit", expected_base) != expected_base:
+        raise ValueError("CB0 and ProbeKV patch use different CacheBlend bases")
+    if (
+        cb0.get("cacheblend_tree")
+        and cb0["cacheblend_tree"] != patch["cacheblend_tree"]
+    ):
+        raise ValueError("CB0 and ProbeKV patch trees do not match")
 
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=str(repo), text=True
@@ -99,24 +129,26 @@ def build_readiness(
         "code_commit": commit,
         "git_clean": clean,
         "gpu_present": gpu_present,
-        "gpu_ready": True,
+        "artifact_ready_for_gpu": True,
+        "gpu_rental_ready": True,
+        "gpu_runtime_ready": bool(gpu_present),
         "gpu_runtime_complete": False,
         "next_required_gates": ["CB1", "CB2", "CB3", "H1-pilot"],
         "manifest": {
             "cases": manifest["cases"],
             "datasets": manifest["datasets"],
-            "sha256": manifest["manifest_sha256"],
+            "sha256": actual_manifest_sha,
             "locked_test_accessed": manifest["locked_test_accessed"],
         },
         "cb_gate_jobs": {
             "jobs": cb_jobs["jobs"],
-            "sha256": sha256_file(cb_jobs_audit_path.with_name("cb_gate_jobs.jsonl")),
+            "sha256": actual_cb_jobs_sha,
             "audit_sha256": sha256_file(cb_jobs_audit_path),
         },
         "h1_jobs": {
             "jobs": h1_jobs["jobs"],
             "layer_job_counts": h1_jobs["layer_job_counts"],
-            "sha256": sha256_file(h1_jobs_audit_path.with_name("jobs.jsonl")),
+            "sha256": actual_h1_jobs_sha,
             "audit_sha256": sha256_file(h1_jobs_audit_path),
         },
         "cb0_patched": cb0,

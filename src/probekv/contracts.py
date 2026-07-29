@@ -46,6 +46,17 @@ class ExecutionMode(str, Enum):
     FULL_RECOMPUTE = "full_recompute"
 
 
+class SourceSelectionState(str, Enum):
+    NOT_SELECTED = "not_selected"
+    SELECTED = "selected"
+
+
+class ReuseAdmissionState(str, Enum):
+    NOT_EVALUATED = "not_evaluated"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 @dataclass(frozen=True)
 class HistoricalSource:
     source_id: str
@@ -93,12 +104,21 @@ class CaseSpec:
         ids = [source.source_id for source in self.sources]
         if len(ids) != len(set(ids)):
             raise ValueError("source_id values must be unique within a case")
+        context_ids = [source.context_id for source in self.sources]
+        if len(context_ids) != len(set(context_ids)):
+            raise ValueError(
+                "historical Source contexts must be independently identified"
+            )
         for source in self.sources:
             source.validate_canonical()
             if source.content_hash != self.content_hash:
                 raise ValueError("all sources must represent the exact same segment")
             if source.model_signature != self.model_signature:
                 raise ValueError("source and current model signatures must match")
+            if source.token_count != self.segment_length:
+                raise ValueError(
+                    "source token count must match the repeated segment"
+                )
 
 
 @dataclass(frozen=True)
@@ -167,19 +187,44 @@ class SourceDecision:
     prefetch_m: int
     selection_reason: SelectionReason
     predicted_cost_upper_ms: Optional[float] = None
+    selection_state: Optional[SourceSelectionState] = None
+    admission_state: ReuseAdmissionState = (
+        ReuseAdmissionState.NOT_EVALUATED
+    )
 
     def __post_init__(self) -> None:
+        if self.selection_state is None:
+            object.__setattr__(
+                self,
+                "selection_state",
+                (
+                    SourceSelectionState.NOT_SELECTED
+                    if self.selected_source_id is None
+                    else SourceSelectionState.SELECTED
+                ),
+            )
         if self.probe_layer < 1:
             raise ValueError("probe_layer must be 1-based")
+        if self.admission_state is not ReuseAdmissionState.NOT_EVALUATED:
+            raise ValueError(
+                "probe-stage SourceDecision cannot finalize reuse admission"
+            )
         if self.selected_source_id is None:
+            if self.selection_state is not SourceSelectionState.NOT_SELECTED:
+                raise ValueError("abstention requires NOT_SELECTED state")
             if self.safe_repair_ratio_upper is not None:
                 raise ValueError("abstention cannot retain a repair ratio")
             if self.prefetch_m != 0:
                 raise ValueError("abstention cannot prefetch a winner")
             if self.predicted_cost_upper_ms is not None:
                 raise ValueError("abstention cannot retain a winner cost")
-        elif self.safe_repair_ratio_upper is None:
-            raise ValueError("selected source requires a safe repair upper bound")
+        else:
+            if self.selection_state is not SourceSelectionState.SELECTED:
+                raise ValueError("selected source requires SELECTED state")
+            if self.safe_repair_ratio_upper is None:
+                raise ValueError(
+                    "selected source requires a safe repair upper bound"
+                )
 
     @property
     def abstained(self) -> bool:
@@ -211,6 +256,11 @@ class TimingBreakdown:
     full_ms: float
     post_ready_blocking_ms: float = 0.0
     load_interference_ms: float = 0.0
+    source_ready_ms: Optional[float] = None
+    a_resume_ms: Optional[float] = None
+    scheduled_step_finish_ms: Optional[float] = None
+    overlap_ms: float = 0.0
+    evaluated_reuse_boundary: Optional[int] = None
 
     def __post_init__(self) -> None:
         if min(
@@ -222,8 +272,39 @@ class TimingBreakdown:
             self.full_ms,
             self.post_ready_blocking_ms,
             self.load_interference_ms,
+            self.overlap_ms,
         ) < 0:
             raise ValueError("timing values must be non-negative")
+        for value in (
+            self.source_ready_ms,
+            self.a_resume_ms,
+            self.scheduled_step_finish_ms,
+        ):
+            if value is not None and value < 0:
+                raise ValueError("event times must be non-negative")
+        if (
+            self.source_ready_ms is not None
+            and self.a_resume_ms is not None
+            and self.a_resume_ms + 1e-12 < self.source_ready_ms
+        ):
+            raise ValueError("A cannot resume before the source is ready")
+        if (
+            self.source_ready_ms is not None
+            and self.a_resume_ms is not None
+            and abs(
+                self.post_ready_blocking_ms
+                - (self.a_resume_ms - self.source_ready_ms)
+            )
+            > 1e-6
+        ):
+            raise ValueError(
+                "post_ready_blocking_ms must match A resume minus source ready"
+            )
+        if (
+            self.evaluated_reuse_boundary is not None
+            and self.evaluated_reuse_boundary < 1
+        ):
+            raise ValueError("evaluated reuse boundary must be 1-based")
 
     @property
     def reuse_total_ms(self) -> float:
@@ -247,8 +328,40 @@ class ExecutionDecision:
     reuse_layer: Optional[int]
     safe_repair_ratio_upper: Optional[float]
     timing: Optional[TimingBreakdown]
+    selection_state: Optional[SourceSelectionState] = None
+    admission_state: Optional[ReuseAdmissionState] = None
+    actual_reuse_boundary: Optional[int] = None
 
     def __post_init__(self) -> None:
+        if self.selection_state is None:
+            object.__setattr__(
+                self,
+                "selection_state",
+                (
+                    SourceSelectionState.NOT_SELECTED
+                    if self.selected_source_id is None
+                    else SourceSelectionState.SELECTED
+                ),
+            )
+        if self.admission_state is None:
+            object.__setattr__(
+                self,
+                "admission_state",
+                (
+                    ReuseAdmissionState.ACCEPTED
+                    if self.reuse_accepted
+                    else ReuseAdmissionState.REJECTED
+                ),
+            )
+        if self.reuse_accepted and self.actual_reuse_boundary is None:
+            object.__setattr__(
+                self, "actual_reuse_boundary", self.reuse_layer
+            )
+        if self.selected_source_id is None:
+            if self.selection_state is not SourceSelectionState.NOT_SELECTED:
+                raise ValueError("missing source requires NOT_SELECTED state")
+        elif self.selection_state is not SourceSelectionState.SELECTED:
+            raise ValueError("retained source requires SELECTED state")
         if self.selected_source_id is None and self.reuse_accepted:
             raise ValueError("reuse cannot be accepted without a selected source")
         if self.reuse_accepted and self.execution_mode is not ExecutionMode.REUSE:
@@ -261,10 +374,24 @@ class ExecutionDecision:
             raise ValueError("accepted reuse cannot have a rejection reason")
         if not self.reuse_accepted and self.rejection_reason is None:
             raise ValueError("rejected reuse requires a rejection reason")
+        if self.reuse_accepted:
+            if self.admission_state is not ReuseAdmissionState.ACCEPTED:
+                raise ValueError("accepted reuse requires ACCEPTED admission")
+        elif self.admission_state is not ReuseAdmissionState.REJECTED:
+            raise ValueError("fallback requires REJECTED admission")
         if self.reuse_accepted and (
             self.reuse_layer is None or self.timing is None
         ):
             raise ValueError("accepted reuse requires a layer and timing")
+        if self.reuse_accepted:
+            if self.actual_reuse_boundary != self.reuse_layer:
+                raise ValueError(
+                    "accepted reuse boundary must match the admitted layer"
+                )
+        elif self.actual_reuse_boundary is not None:
+            raise ValueError(
+                "rejected reuse cannot expose an admitted reuse boundary"
+            )
 
     @property
     def abstained(self) -> bool:

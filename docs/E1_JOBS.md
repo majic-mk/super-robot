@@ -38,8 +38,12 @@ python scripts/merge_e1_results.py `
   --require-complete
 ```
 
-The simulator is always non-paper evidence. The pinned CacheBlend worker will
-write the same `E1Result` schema.
+The simulator is always non-paper evidence. The pinned CacheBlend worker writes
+the same `E1Result` schema. It durably appends and fsyncs each completed
+`case x Source` group, not an entire case at once, then releases model-global
+KV references. CB gate timing uses two warmup and five measured repetitions;
+H1 quality scans may use one deterministic run and never enter a paper
+performance table.
 
 ## Failure policy
 
@@ -69,6 +73,11 @@ The generic E1 analysis reports `s0` (K=1) and `last-source` baselines. It does
 not call the latter `Latest`: controlled construction has no real timestamp,
 and corpus-repeat ordering is only explicitly documented pseudo-time. A true
 Latest baseline requires timestamped production traces.
+
+The analysis also reports the deterministic expected Random baseline (the
+arithmetic mean cost across all Source choices) and stratifies results by
+dataset and construction. Oracle ties are resolved only by stable Source ID;
+measured GPU timing is not used to choose the offline Oracle.
 
 ## Locked test protection
 

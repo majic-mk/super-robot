@@ -72,16 +72,40 @@ def _runtime_provenance(
     }
 
 
-def _failure_result(job: E1Job, attempt: int, error: Exception) -> E1Result:
+def _failure_result(
+    job: E1Job,
+    attempt: int,
+    error: Exception,
+    provenance: dict,
+) -> E1Result:
     message = "%s: %s" % (type(error).__name__, error)
     lowered = message.lower()
-    status = ResultStatus.OOM if "out of memory" in lowered else ResultStatus.DATA_ERROR
+    if "out of memory" in lowered:
+        status = ResultStatus.OOM
+    elif "gpu reset" in lowered or "xid" in lowered:
+        status = ResultStatus.GPU_RESET
+    elif "connection" in lowered or "temporar" in lowered:
+        status = ResultStatus.TRANSIENT_IO
+    else:
+        status = ResultStatus.DATA_ERROR
     return E1Result(
         job_id=job.job_id,
         attempt=attempt,
         status=status,
         error_type=status.value.upper(),
         error_message=message[:2000],
+        code_commit=provenance["code_commit"],
+        environment_hash=provenance["environment_hash"],
+        model_revision=provenance["model_revision"],
+        cacheblend_commit=provenance["cacheblend_commit"],
+        cacheblend_patch_sha256=provenance[
+            "cacheblend_patch_sha256"
+        ],
+        cacheblend_tree=provenance["cacheblend_tree"],
+        vllm_version=provenance["vllm_version"],
+        torch_version=provenance["torch_version"],
+        cuda_version=provenance["cuda_version"],
+        gpu_uuid=provenance["gpu_uuid"],
         finished_at_utc=_now(),
         evidence_class="server_pilot",
         paper_evidence=False,
@@ -108,11 +132,15 @@ def main() -> int:
     parser.add_argument("--max-hours", type=float, default=8.0)
     parser.add_argument("--case-limit", type=int, default=0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.65)
+    parser.add_argument("--timing-warmup-runs", type=int, default=0)
+    parser.add_argument("--timing-measurement-runs", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     if args.max_hours <= 0:
         raise ValueError("max-hours must be positive")
+    if args.timing_warmup_runs < 0 or args.timing_measurement_runs < 1:
+        raise ValueError("invalid timing repetition counts")
     session_start = time.monotonic()
     deadline = session_start + args.max_hours * 3600.0
     manifest_path = Path(args.manifest).resolve()
@@ -177,6 +205,7 @@ def main() -> int:
     llm.set_tokenizer(tokenizer)
 
     completed_cases = 0
+    completed_source_groups = 0
     appended_rows = 0
     case_durations = []
     for case_id in ordered_case_ids:
@@ -184,40 +213,77 @@ def main() -> int:
             break
         case_start = time.monotonic()
         case_jobs = pending_by_case[case_id]
+        processed_job_ids = set()
+        case_finished = True
         try:
-            runtime = CacheBlendCaseRuntime(
+            with CacheBlendCaseRuntime(
                 llm,
                 tokenizer,
                 SamplingParams,
                 case_by_id[case_id],
                 provenance,
                 max_new_tokens=64,
-            )
-            rows = []
-            source_ids = sorted({job.source_id for job in case_jobs})
-            for source_id in source_ids:
-                source_jobs = [
-                    job for job in case_jobs if job.source_id == source_id
-                ]
-                rows.extend(
-                    runtime.run_source_jobs(
-                        source_id, source_jobs, attempt_by_job
+            ) as runtime:
+                source_ids = sorted({job.source_id for job in case_jobs})
+                for source_id in source_ids:
+                    if time.monotonic() >= deadline:
+                        case_finished = False
+                        break
+                    source_jobs = [
+                        job
+                        for job in case_jobs
+                        if job.source_id == source_id
+                    ]
+                    try:
+                        rows = runtime.run_source_jobs(
+                            source_id,
+                            source_jobs,
+                            attempt_by_job,
+                            timing_warmup_runs=args.timing_warmup_runs,
+                            timing_measurement_runs=(
+                                args.timing_measurement_runs
+                            ),
+                        )
+                    except Exception as error:
+                        rows = tuple(
+                            _failure_result(
+                                job,
+                                attempt_by_job.get(job.job_id, 0),
+                                error,
+                                provenance,
+                            )
+                            for job in source_jobs
+                        )
+                    appended_rows += append_jsonl_fsync(
+                        result_path, [row.to_row() for row in rows]
                     )
-                )
-            del runtime
+                    processed_job_ids.update(job.job_id for job in source_jobs)
+                    completed_source_groups += 1
+                    # Bound live references after every durable Source group.
+                    runtime.model.old_kvs = []
+                    gc.collect()
+                    torch.cuda.empty_cache()
         except Exception as error:
+            remaining_jobs = [
+                job for job in case_jobs if job.job_id not in processed_job_ids
+            ]
             rows = [
                 _failure_result(
                     job,
                     attempt_by_job.get(job.job_id, 0),
                     error,
+                    provenance,
                 )
-                for job in case_jobs
+                for job in remaining_jobs
             ]
-        appended_rows += append_jsonl_fsync(
-            result_path, [row.to_row() for row in rows]
-        )
-        completed_cases += 1
+            if rows:
+                appended_rows += append_jsonl_fsync(
+                    result_path, [row.to_row() for row in rows]
+                )
+                processed_job_ids.update(job.job_id for job in remaining_jobs)
+            case_finished = True
+        if case_finished and len(processed_job_ids) == len(case_jobs):
+            completed_cases += 1
         case_durations.append(time.monotonic() - case_start)
         gc.collect()
         torch.cuda.empty_cache()
@@ -229,6 +295,7 @@ def main() -> int:
             "assigned_jobs": len(jobs),
             "pending_jobs_at_start": len(pending),
             "completed_cases_this_run": completed_cases,
+            "completed_source_groups_this_run": completed_source_groups,
             "appended_rows_this_run": appended_rows,
             "elapsed_seconds": elapsed,
             "mean_case_seconds": mean_case,
@@ -247,6 +314,7 @@ def main() -> int:
         "assigned_jobs": len(jobs),
         "pending_jobs_at_start": len(pending),
         "completed_cases_this_run": 0,
+        "completed_source_groups_this_run": completed_source_groups,
         "appended_rows_this_run": 0,
         "deadline_reached": time.monotonic() >= deadline,
         "paper_evidence": False,

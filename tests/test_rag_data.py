@@ -178,6 +178,14 @@ class ConstructionTests(unittest.TestCase):
         self.assertEqual(len(repeated), 1)
         self.assertEqual(len(repeated[0].sources), 4)
         self.assertEqual(len({source.origin_example_id for source in repeated[0].sources}), 4)
+        self.assertIn(
+            "Document text",
+            repeated[0].current_suffix_context,
+        )
+        self.assertNotIn(
+            repeated[0].question,
+            repeated[0].current_suffix_context,
+        )
 
     def test_controlled_and_corpus_views_share_split_group(self):
         examples = [

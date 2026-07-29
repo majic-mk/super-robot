@@ -24,10 +24,11 @@ question. For a target repeated chunk `C`, the manifest represents:
 
 `current: P_new | C | remaining current chunks | U_new`
 
-`source s: P_old,s | C | remaining old chunks | U_old,s`
+`source s: P_old,s | C`
 
 Only the prefix causally preceding `C` determines its cached state. Therefore
-the manifest stores `P_new`, every `P_old,s`, exact `C`, and `U_new` separately;
+the manifest stores `P_new`, `remaining current chunks`, every `P_old,s`, exact
+`C`, and `U_new` separately;
 it does not prepend the current question to `C`. Every `P_old,s` must be
 different from `P_new` and from every other historical prefix. "High overlap"
 means many common prefix chunks in the same order, not an identical prefix.
