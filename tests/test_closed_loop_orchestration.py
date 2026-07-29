@@ -1,11 +1,14 @@
 import unittest
 
 from probekv.contracts import (
+    CostAccountingPolicy,
+    CostValueKind,
     ExecutionMode,
     RejectionReason,
     SelectionReason,
     SourceDecision,
 )
+from probekv.cost import cost_breakdown_from_total
 from probekv.orchestration import (
     ClosedLoopPolicy,
     RefinedCostMeasurement,
@@ -23,6 +26,24 @@ def selected():
         prefetch_m=1,
         selection_reason=SelectionReason.FINAL_ECONOMIC_MIN_COST,
         predicted_cost_upper_ms=55,
+    )
+
+
+def selected_with_unified_cost():
+    return SourceDecision(
+        selected_source_id="s1",
+        probe_layer=4,
+        reuse_layer=None,
+        safe_repair_ratio_upper=0.2,
+        prefetch_m=1,
+        selection_reason=SelectionReason.FINAL_ECONOMIC_MIN_COST,
+        predicted_cost_upper_ms=55,
+        predicted_cost_breakdown=cost_breakdown_from_total(
+            55,
+            100,
+            4,
+            CostValueKind.PREDICTED_UPPER,
+        ),
     )
 
 
@@ -74,6 +95,28 @@ class FakeRuntime:
 
 
 class ClosedLoopTests(unittest.TestCase):
+    def test_unified_protocol_selects_once_then_only_admits_or_rejects(self):
+        controller = TwoStageReuseController(
+            0.8,
+            ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION,
+            CostAccountingPolicy.UNIFIED_COMPONENTS_V1,
+        )
+        accepted = controller.execute(
+            selected_with_unified_cost(), FakeRuntime(repair_ms=30)
+        )
+        self.assertEqual(accepted.execution.selected_source_id, "s1")
+        self.assertTrue(accepted.execution.reuse_accepted)
+        rejected = controller.execute(
+            selected_with_unified_cost(), FakeRuntime(repair_ms=75)
+        )
+        self.assertEqual(rejected.execution.selected_source_id, "s1")
+        self.assertFalse(rejected.execution.reuse_accepted)
+        self.assertEqual(rejected.runtime_result, "full-output")
+        audit = rejected.to_audit_record()
+        self.assertEqual(audit["source_locked_at_probe"], "s1")
+        self.assertEqual(audit["refined_source_id"], "s1")
+        self.assertFalse(audit["refined_source_changed"])
+
     def test_scheduler_feedback_precedes_final_admission_and_reuse(self):
         runtime = FakeRuntime(repair_ms=30)
         result = TwoStageReuseController(0.8).execute(
@@ -151,6 +194,53 @@ class ClosedLoopTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "reuse boundary"):
             TwoStageReuseController().execute(selected(), BadRuntime())
+
+    def test_refined_stage_cannot_switch_to_a_cheaper_source(self):
+        class SourceSwitchingRuntime(FakeRuntime):
+            def measure_refined_cost(self, selection, scheduling):
+                value = super().measure_refined_cost(selection, scheduling)
+                return RefinedCostMeasurement(
+                    "s2",
+                    value.evaluated_reuse_boundary,
+                    value.repair_ratio_upper,
+                    value.probe_ms,
+                    value.compare_ms,
+                    1,
+                    value.full_ms,
+                )
+
+        with self.assertRaisesRegex(ValueError, "another source"):
+            TwoStageReuseController().execute(
+                selected(), SourceSwitchingRuntime()
+            )
+
+    def test_unified_protocol_rejects_mismatched_cost_scope(self):
+        class MismatchedScopeRuntime(FakeRuntime):
+            def measure_refined_cost(self, selection, scheduling):
+                value = super().measure_refined_cost(selection, scheduling)
+                return RefinedCostMeasurement(
+                    selected_source_id=value.selected_source_id,
+                    evaluated_reuse_boundary=(
+                        value.evaluated_reuse_boundary
+                    ),
+                    repair_ratio_upper=value.repair_ratio_upper,
+                    probe_ms=value.probe_ms,
+                    compare_ms=value.compare_ms,
+                    repair_ms=value.repair_ms,
+                    full_ms=value.full_ms,
+                    cost_origin="selection_complete",
+                    cost_endpoint="first_token_ready",
+                )
+
+        controller = TwoStageReuseController(
+            0.8,
+            ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION,
+            CostAccountingPolicy.UNIFIED_COMPONENTS_V1,
+        )
+        with self.assertRaisesRegex(ValueError, "different accounting"):
+            controller.execute(
+                selected_with_unified_cost(), MismatchedScopeRuntime()
+            )
 
 
 if __name__ == "__main__":

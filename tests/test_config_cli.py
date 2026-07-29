@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from probekv.config import ExperimentConfig, load_config
+from probekv.contracts import CostAccountingPolicy
 from probekv.orchestration import ClosedLoopPolicy
 from probekv.scheduler import SchedulerPolicy
 from probekv.selector import SelectorPolicy
@@ -62,6 +63,20 @@ class ConfigAndCliTests(unittest.TestCase):
             legacy.closed_loop_policy,
             ClosedLoopPolicy.LEGACY_PRE_SCHEDULE_ADMISSION,
         )
+
+    def test_v5_uses_one_component_cost_identity_for_both_stages(self):
+        config = load_config(
+            str(ROOT / "configs" / "local_system_v5.json")
+        )
+        self.assertEqual(
+            config.cost_accounting_policy,
+            CostAccountingPolicy.UNIFIED_COMPONENTS_V1,
+        )
+        self.assertEqual(
+            config.closed_loop_policy,
+            ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION,
+        )
+        self.assertTrue(config.preliminary_economic_filter)
 
     def test_probe_max_above_25_percent_is_rejected(self):
         raw = {

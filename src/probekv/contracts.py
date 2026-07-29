@@ -57,6 +57,23 @@ class ReuseAdmissionState(str, Enum):
     REJECTED = "rejected"
 
 
+class CostValueKind(str, Enum):
+    PREDICTED_LOWER = "predicted_lower"
+    PREDICTED_UPPER = "predicted_upper"
+    REFINED_ACTUAL = "refined_actual"
+    LEGACY_AGGREGATE = "legacy_aggregate"
+
+
+class InterferenceAccountingMode(str, Enum):
+    INCLUDED_IN_LOAD = "included_in_load"
+    EXPLICIT_PENALTY = "explicit_penalty"
+
+
+class CostAccountingPolicy(str, Enum):
+    LEGACY_AGGREGATE = "legacy_aggregate"
+    UNIFIED_COMPONENTS_V1 = "unified_components_v1"
+
+
 @dataclass(frozen=True)
 class HistoricalSource:
     source_id: str
@@ -168,6 +185,8 @@ class CandidateBounds:
     cost_upper_ms: float
     quality_covered: bool = True
     cost_scope: str = "predicted_total_reuse"
+    cost_lower_breakdown: Optional["TimingBreakdown"] = None
+    cost_upper_breakdown: Optional["TimingBreakdown"] = None
 
     def __post_init__(self) -> None:
         if self.cost_lower_ms > self.cost_upper_ms:
@@ -176,6 +195,32 @@ class CandidateBounds:
             raise ValueError("repair ratio upper bound must be in [0, 1]")
         if not self.cost_scope:
             raise ValueError("candidate cost scope must be explicit")
+        if (self.cost_lower_breakdown is None) != (
+            self.cost_upper_breakdown is None
+        ):
+            raise ValueError(
+                "predicted lower and upper cost breakdowns must be paired"
+            )
+        if self.cost_lower_breakdown is not None:
+            lower = self.cost_lower_breakdown
+            upper = self.cost_upper_breakdown
+            assert upper is not None
+            if lower.cost_value_kind is not CostValueKind.PREDICTED_LOWER:
+                raise ValueError("lower breakdown must be predicted_lower")
+            if upper.cost_value_kind is not CostValueKind.PREDICTED_UPPER:
+                raise ValueError("upper breakdown must be predicted_upper")
+            if lower.accounting_identity != upper.accounting_identity:
+                raise ValueError(
+                    "predicted cost bounds must share one accounting identity"
+                )
+            if abs(lower.reuse_total_ms - self.cost_lower_ms) > 1e-6:
+                raise ValueError(
+                    "lower aggregate cost does not match its breakdown"
+                )
+            if abs(upper.reuse_total_ms - self.cost_upper_ms) > 1e-6:
+                raise ValueError(
+                    "upper aggregate cost does not match its breakdown"
+                )
 
 
 @dataclass(frozen=True)
@@ -187,6 +232,7 @@ class SourceDecision:
     prefetch_m: int
     selection_reason: SelectionReason
     predicted_cost_upper_ms: Optional[float] = None
+    predicted_cost_breakdown: Optional["TimingBreakdown"] = None
     selection_state: Optional[SourceSelectionState] = None
     admission_state: ReuseAdmissionState = (
         ReuseAdmissionState.NOT_EVALUATED
@@ -218,6 +264,10 @@ class SourceDecision:
                 raise ValueError("abstention cannot prefetch a winner")
             if self.predicted_cost_upper_ms is not None:
                 raise ValueError("abstention cannot retain a winner cost")
+            if self.predicted_cost_breakdown is not None:
+                raise ValueError(
+                    "abstention cannot retain a winner cost breakdown"
+                )
         else:
             if self.selection_state is not SourceSelectionState.SELECTED:
                 raise ValueError("selected source requires SELECTED state")
@@ -225,6 +275,25 @@ class SourceDecision:
                 raise ValueError(
                     "selected source requires a safe repair upper bound"
                 )
+            if self.predicted_cost_breakdown is not None:
+                if (
+                    self.predicted_cost_breakdown.cost_value_kind
+                    is not CostValueKind.PREDICTED_UPPER
+                ):
+                    raise ValueError(
+                        "selected Source requires a predicted upper breakdown"
+                    )
+                if self.predicted_cost_upper_ms is None:
+                    raise ValueError(
+                        "cost breakdown requires predicted_cost_upper_ms"
+                    )
+                if abs(
+                    self.predicted_cost_breakdown.reuse_total_ms
+                    - self.predicted_cost_upper_ms
+                ) > 1e-6:
+                    raise ValueError(
+                        "selected Source aggregate and component costs disagree"
+                    )
 
     @property
     def abstained(self) -> bool:
@@ -261,6 +330,14 @@ class TimingBreakdown:
     scheduled_step_finish_ms: Optional[float] = None
     overlap_ms: float = 0.0
     evaluated_reuse_boundary: Optional[int] = None
+    repair_selection_ms: float = 0.0
+    remaining_layer_ms: float = 0.0
+    cost_origin: str = "request_arrival"
+    cost_endpoint: str = "first_token_ready"
+    cost_value_kind: CostValueKind = CostValueKind.REFINED_ACTUAL
+    interference_accounting_mode: InterferenceAccountingMode = (
+        InterferenceAccountingMode.INCLUDED_IN_LOAD
+    )
 
     def __post_init__(self) -> None:
         if min(
@@ -273,8 +350,12 @@ class TimingBreakdown:
             self.post_ready_blocking_ms,
             self.load_interference_ms,
             self.overlap_ms,
+            self.repair_selection_ms,
+            self.remaining_layer_ms,
         ) < 0:
             raise ValueError("timing values must be non-negative")
+        if not self.cost_origin or not self.cost_endpoint:
+            raise ValueError("cost origin and endpoint must be explicit")
         for value in (
             self.source_ready_ms,
             self.a_resume_ms,
@@ -307,13 +388,44 @@ class TimingBreakdown:
             raise ValueError("evaluated reuse boundary must be 1-based")
 
     @property
+    def accounting_identity(self) -> Tuple[str, str, str]:
+        return (
+            self.cost_origin,
+            self.cost_endpoint,
+            self.interference_accounting_mode.value,
+        )
+
+    @property
+    def interference_charge_ms(self) -> float:
+        if (
+            self.interference_accounting_mode
+            is InterferenceAccountingMode.EXPLICIT_PENALTY
+        ):
+            return self.load_interference_ms
+        return 0.0
+
+    @property
+    def remaining_reuse_path_ms(self) -> float:
+        return (
+            self.repair_selection_ms
+            + self.repair_ms
+            + self.remaining_layer_ms
+        )
+
+    @property
+    def full_total_ms(self) -> float:
+        """Explicit v5 name; ``full_ms`` is retained for old artifacts."""
+        return self.full_ms
+
+    @property
     def reuse_total_ms(self) -> float:
         return (
             self.probe_ms
             + self.compare_ms
             + self.visible_load_ms
             + self.post_ready_blocking_ms
-            + self.repair_ms
+            + self.interference_charge_ms
+            + self.remaining_reuse_path_ms
         )
 
 

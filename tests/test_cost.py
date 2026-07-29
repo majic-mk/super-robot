@@ -1,9 +1,11 @@
 import unittest
 
 from probekv.contracts import (
+    CostValueKind,
     DecisionReason,
     ExecutionDecision,
     ExecutionMode,
+    InterferenceAccountingMode,
     RejectionReason,
     SelectionReason,
     SourceDecision,
@@ -13,6 +15,7 @@ from probekv.cost import (
     LayerOption,
     bandwidth_sufficient,
     conservative_ratio_for_layer,
+    cost_breakdown_from_total,
     finalize_execution,
 )
 
@@ -22,6 +25,60 @@ def option(layer, load, overlap, repair, full=100, ready=True):
 
 
 class CostTests(unittest.TestCase):
+    def test_predicted_and_refined_cost_share_one_accounting_identity(self):
+        predicted = cost_breakdown_from_total(
+            65,
+            100,
+            4,
+            CostValueKind.PREDICTED_UPPER,
+            visible_load_ms=10,
+            post_ready_blocking_ms=5,
+            repair_selection_ms=20,
+            interference_accounting_mode=(
+                InterferenceAccountingMode.EXPLICIT_PENALTY
+            ),
+        )
+        refined = LayerOption(
+            layer=6,
+            repair_ratio_upper=0.2,
+            probe_ms=0,
+            compare_ms=0,
+            load_ms=18,
+            overlap_ms=0,
+            repair_ms=0,
+            full_ms=100,
+            post_ready_blocking_ms=20,
+            load_interference_ms=8,
+            repair_selection_ms=25,
+            remaining_layer_ms=35,
+            interference_accounting_mode=(
+                InterferenceAccountingMode.EXPLICIT_PENALTY
+            ),
+        ).timing()
+        self.assertEqual(predicted.reuse_total_ms, 65)
+        self.assertEqual(refined.reuse_total_ms, 106)
+        self.assertEqual(
+            predicted.accounting_identity, refined.accounting_identity
+        )
+
+    def test_interference_is_not_double_charged_when_included_in_load(self):
+        timing = LayerOption(
+            layer=4,
+            repair_ratio_upper=0.2,
+            probe_ms=4,
+            compare_ms=1,
+            load_ms=20,
+            overlap_ms=5,
+            repair_ms=10,
+            full_ms=100,
+            load_interference_ms=8,
+            interference_accounting_mode=(
+                InterferenceAccountingMode.INCLUDED_IN_LOAD
+            ),
+        ).timing()
+        self.assertEqual(timing.interference_charge_ms, 0)
+        self.assertEqual(timing.reuse_total_ms, 30)
+
     def test_total_reuse_cost_includes_all_components(self):
         plan = DynamicReusePlanner(0.8).plan([option(4, 20, 5, 55)])
         self.assertTrue(plan.accepted)

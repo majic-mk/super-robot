@@ -9,7 +9,10 @@ Legacy strict abstention remains reproducible, while new final-layer selector
 policies and bounded-overrun scheduling must be enabled explicitly.
 Protocol v4 additionally enforces the runtime order
 `selection -> load/schedule -> refined cost -> final admission`; protocol v3
-remains available only for reproduction.
+remains available only for reproduction. Protocol v5 keeps checkpoint-level
+early Source selection and makes preliminary prediction and refined admission
+use one request-arrival-to-first-token component cost identity. Once selected,
+the Source is locked; refinement can only accept reuse or fall back to full.
 
 This repository implements the complete local validation layer:
 source invariants, RoPE round-trip, safe-ratio labeling, dynamic `L_probe`,
@@ -29,6 +32,7 @@ python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_system_v3.json
 python -m probekv simulate --config configs/local_system_v4.json
+python -m probekv simulate --config configs/local_system_v5.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -38,6 +42,7 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 ## Key files
 
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
+- `docs/UNIFIED_COST_ACCOUNTING.md`: v5 shared-cost and Source-lock protocol.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.

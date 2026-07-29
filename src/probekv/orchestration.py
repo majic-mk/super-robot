@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Protocol
 
-from .contracts import ExecutionDecision, SourceDecision
+from .contracts import (
+    CostAccountingPolicy,
+    CostValueKind,
+    ExecutionDecision,
+    SourceDecision,
+)
 from .cost import (
     DynamicReusePlanner,
     LayerOption,
@@ -77,6 +82,10 @@ class RefinedCostMeasurement:
     compare_ms: float
     repair_ms: float
     full_ms: float
+    repair_selection_ms: float = 0.0
+    remaining_layer_ms: float = 0.0
+    cost_origin: str = "request_arrival"
+    cost_endpoint: str = "first_token_ready"
 
     def __post_init__(self) -> None:
         if not self.selected_source_id:
@@ -90,10 +99,14 @@ class RefinedCostMeasurement:
             self.compare_ms,
             self.repair_ms,
             self.full_ms,
+            self.repair_selection_ms,
+            self.remaining_layer_ms,
         ) < 0:
             raise ValueError("refined cost measurements must be non-negative")
         if self.full_ms <= 0:
             raise ValueError("full recomputation time must be positive")
+        if not self.cost_origin or not self.cost_endpoint:
+            raise ValueError("refined cost scope must be explicit")
 
 
 class ClosedLoopRuntime(Protocol):
@@ -141,12 +154,20 @@ class ClosedLoopResult:
 
     def to_audit_record(self) -> dict:
         timing = self.execution.timing
+        predicted = self.selection.predicted_cost_breakdown
         return {
             "closure_policy": self.closure_policy.value,
             "selection_state": self.execution.selection_state.value,
             "probe_admission_state": self.selection.admission_state.value,
             "admission_state": self.execution.admission_state.value,
             "selected_source_id": self.execution.selected_source_id,
+            "source_locked_at_probe": self.selection.selected_source_id,
+            "refined_source_id": (
+                self.refined_cost.selected_source_id
+                if self.refined_cost is not None
+                else None
+            ),
+            "refined_source_changed": False,
             "selection_reason": self.execution.selection_reason.value,
             "reuse_accepted": self.execution.reuse_accepted,
             "execution_mode": self.execution.execution_mode.value,
@@ -157,6 +178,35 @@ class ClosedLoopResult:
             ),
             "predicted_cost_upper_ms": (
                 self.selection.predicted_cost_upper_ms
+            ),
+            "predicted_cost_origin": (
+                predicted.cost_origin if predicted is not None else None
+            ),
+            "predicted_cost_endpoint": (
+                predicted.cost_endpoint if predicted is not None else None
+            ),
+            "predicted_visible_load_ms": (
+                predicted.visible_load_ms if predicted is not None else None
+            ),
+            "predicted_post_ready_blocking_ms": (
+                predicted.post_ready_blocking_ms
+                if predicted is not None
+                else None
+            ),
+            "predicted_load_interference_ms": (
+                predicted.load_interference_ms
+                if predicted is not None
+                else None
+            ),
+            "predicted_repair_selection_ms": (
+                predicted.repair_selection_ms
+                if predicted is not None
+                else None
+            ),
+            "predicted_remaining_layer_ms": (
+                predicted.remaining_layer_ms
+                if predicted is not None
+                else None
             ),
             "predicted_repair_ratio_upper": (
                 self.selection.safe_repair_ratio_upper
@@ -203,7 +253,27 @@ class ClosedLoopResult:
                 timing.load_interference_ms if timing is not None else None
             ),
             "repair_ms": timing.repair_ms if timing is not None else None,
+            "repair_selection_ms": (
+                timing.repair_selection_ms if timing is not None else None
+            ),
+            "remaining_layer_ms": (
+                timing.remaining_layer_ms if timing is not None else None
+            ),
             "full_ms": timing.full_ms if timing is not None else None,
+            "full_total_ms": (
+                timing.full_total_ms if timing is not None else None
+            ),
+            "cost_origin": (
+                timing.cost_origin if timing is not None else None
+            ),
+            "cost_endpoint": (
+                timing.cost_endpoint if timing is not None else None
+            ),
+            "interference_accounting_mode": (
+                timing.interference_accounting_mode.value
+                if timing is not None
+                else None
+            ),
             "refined_reuse_total_ms": (
                 timing.reuse_total_ms if timing is not None else None
             ),
@@ -219,9 +289,21 @@ class TwoStageReuseController:
         policy: ClosedLoopPolicy = (
             ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION
         ),
+        cost_accounting_policy: CostAccountingPolicy = (
+            CostAccountingPolicy.LEGACY_AGGREGATE
+        ),
     ) -> None:
         self.planner = DynamicReusePlanner(gamma)
         self.policy = policy
+        self.cost_accounting_policy = cost_accounting_policy
+        if (
+            cost_accounting_policy
+            is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            and policy is not ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION
+        ):
+            raise ValueError(
+                "unified component accounting requires refined admission"
+            )
 
     @staticmethod
     def _validate_feedback(
@@ -267,6 +349,11 @@ class TwoStageReuseController:
             scheduled_step_finish_ms=(
                 scheduling.scheduled_step_finish_ms
             ),
+            repair_selection_ms=refined.repair_selection_ms,
+            remaining_layer_ms=refined.remaining_layer_ms,
+            cost_origin=refined.cost_origin,
+            cost_endpoint=refined.cost_endpoint,
+            cost_value_kind=CostValueKind.REFINED_ACTUAL,
         )
 
     def execute(
@@ -319,9 +406,26 @@ class TwoStageReuseController:
         scheduling = runtime.load_and_schedule(selection)
         refined = runtime.measure_refined_cost(selection, scheduling)
         self._validate_feedback(selection, scheduling, refined)
-        plan = self.planner.plan(
-            [self._refined_option(scheduling, refined)]
-        )
+        refined_option = self._refined_option(scheduling, refined)
+        if (
+            self.cost_accounting_policy
+            is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+        ):
+            predicted = selection.predicted_cost_breakdown
+            if predicted is None:
+                raise ValueError(
+                    "unified accounting requires the selected Source's "
+                    "predicted cost breakdown"
+                )
+            if (
+                predicted.accounting_identity
+                != refined_option.timing().accounting_identity
+            ):
+                raise ValueError(
+                    "predicted and refined costs use different accounting "
+                    "origins, endpoints, or interference modes"
+                )
+        plan = self.planner.plan([refined_option])
         execution = finalize_execution(selection, plan)
         if execution.reuse_accepted:
             result = runtime.execute_reuse(selection, execution)

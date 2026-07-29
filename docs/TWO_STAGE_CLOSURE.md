@@ -1,5 +1,8 @@
 # Protocol v4: Source selection and final reuse admission
 
+Protocol v5 preserves this state machine and adds the shared component
+accounting contract in `UNIFIED_COST_ACCOUNTING.md`.
+
 Protocol v4 treats two decisions as independent state:
 
 - Source selection: `not_selected` or `selected`.

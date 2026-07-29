@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
+from .contracts import CostAccountingPolicy
 from .orchestration import ClosedLoopPolicy
 from .scheduler import SchedulerPolicy
 from .selector import SelectorPolicy, default_probe_checkpoints
@@ -28,6 +29,7 @@ class ExperimentConfig:
     scheduler_policy: SchedulerPolicy
     max_post_ready_overrun_ms: float
     load_interference_ms: float
+    cost_accounting_policy: CostAccountingPolicy
     closed_loop_policy: ClosedLoopPolicy
     source_eviction_policy: SourceEvictionPolicy
     replica_eviction_policy: ReplicaEvictionPolicy
@@ -73,6 +75,9 @@ class ExperimentConfig:
             ),
             load_interference_ms=float(
                 raw.get("load_interference_ms", 0.0)
+            ),
+            cost_accounting_policy=CostAccountingPolicy(
+                str(raw.get("cost_accounting_policy", "legacy_aggregate"))
             ),
             closed_loop_policy=ClosedLoopPolicy(
                 str(
@@ -142,6 +147,23 @@ class ExperimentConfig:
             raise ValueError("max_post_ready_overrun_ms must be non-negative")
         if self.load_interference_ms < 0:
             raise ValueError("load_interference_ms must be non-negative")
+        if (
+            self.cost_accounting_policy
+            is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            and self.closed_loop_policy
+            is not ClosedLoopPolicy.TWO_STAGE_REFINED_ADMISSION
+        ):
+            raise ValueError(
+                "unified cost accounting requires two-stage refined admission"
+            )
+        if (
+            self.cost_accounting_policy
+            is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            and not self.preliminary_economic_filter
+        ):
+            raise ValueError(
+                "unified cost accounting requires preliminary economic filtering"
+            )
         if (
             self.scheduler_policy
             is not SchedulerPolicy.HYBRID_BOUNDED_OVERRUN

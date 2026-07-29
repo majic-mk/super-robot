@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .contracts import (
+    CostValueKind,
     DecisionReason,
     ExecutionDecision,
     ExecutionMode,
+    InterferenceAccountingMode,
     RejectionReason,
     SelectionReason,
     SourceDecision,
@@ -30,6 +32,14 @@ class LayerOption:
     source_ready_ms: Optional[float] = None
     a_resume_ms: Optional[float] = None
     scheduled_step_finish_ms: Optional[float] = None
+    repair_selection_ms: float = 0.0
+    remaining_layer_ms: float = 0.0
+    cost_origin: str = "request_arrival"
+    cost_endpoint: str = "first_token_ready"
+    cost_value_kind: CostValueKind = CostValueKind.REFINED_ACTUAL
+    interference_accounting_mode: InterferenceAccountingMode = (
+        InterferenceAccountingMode.INCLUDED_IN_LOAD
+    )
 
     def timing(self) -> TimingBreakdown:
         return TimingBreakdown(
@@ -46,6 +56,14 @@ class LayerOption:
             scheduled_step_finish_ms=self.scheduled_step_finish_ms,
             overlap_ms=self.overlap_ms,
             evaluated_reuse_boundary=self.layer,
+            repair_selection_ms=self.repair_selection_ms,
+            remaining_layer_ms=self.remaining_layer_ms,
+            cost_origin=self.cost_origin,
+            cost_endpoint=self.cost_endpoint,
+            cost_value_kind=self.cost_value_kind,
+            interference_accounting_mode=(
+                self.interference_accounting_mode
+            ),
         )
 
 
@@ -105,6 +123,67 @@ class DynamicReusePlanner:
             DecisionReason.CONFIDENT,
             evaluated_layer=selected.layer,
         )
+
+
+def cost_breakdown_from_total(
+    total_ms: float,
+    full_total_ms: float,
+    boundary: int,
+    value_kind: CostValueKind,
+    *,
+    probe_ms: float = 0.0,
+    compare_ms: float = 0.0,
+    visible_load_ms: float = 0.0,
+    post_ready_blocking_ms: float = 0.0,
+    repair_selection_ms: float = 0.0,
+    load_interference_ms: float = 0.0,
+    interference_accounting_mode: InterferenceAccountingMode = (
+        InterferenceAccountingMode.INCLUDED_IN_LOAD
+    ),
+    cost_origin: str = "request_arrival",
+    cost_endpoint: str = "first_token_ready",
+) -> TimingBreakdown:
+    """Build one canonical accounting identity from an aggregate estimate.
+
+    The unexplained remainder is deliberately assigned to
+    ``remaining_layer_ms``.  This helper is intended for legacy predictors
+    during migration; new hardware predictors should populate every component
+    directly.
+    """
+
+    known = (
+        probe_ms
+        + compare_ms
+        + visible_load_ms
+        + post_ready_blocking_ms
+        + repair_selection_ms
+        + (
+            load_interference_ms
+            if interference_accounting_mode
+            is InterferenceAccountingMode.EXPLICIT_PENALTY
+            else 0.0
+        )
+    )
+    if total_ms + 1e-12 < known:
+        raise ValueError("aggregate total is smaller than known components")
+    return TimingBreakdown(
+        probe_ms=probe_ms,
+        compare_ms=compare_ms,
+        load_ms=visible_load_ms,
+        visible_load_ms=visible_load_ms,
+        repair_ms=0.0,
+        full_ms=full_total_ms,
+        post_ready_blocking_ms=post_ready_blocking_ms,
+        load_interference_ms=load_interference_ms,
+        overlap_ms=0.0,
+        evaluated_reuse_boundary=boundary,
+        repair_selection_ms=repair_selection_ms,
+        remaining_layer_ms=max(0.0, total_ms - known),
+        cost_origin=cost_origin,
+        cost_endpoint=cost_endpoint,
+        cost_value_kind=value_kind,
+        interference_accounting_mode=interference_accounting_mode,
+    )
 
 
 def finalize_execution(

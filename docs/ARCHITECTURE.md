@@ -20,7 +20,7 @@
    boundary events. Only after those events exist does the reuse planner check
    the refined full cost:
 
-   `probe + compare + visible_load + post_ready_blocking + repair <= gamma * full_recompute`.
+   `probe + compare + visible_load + post_ready_blocking + interference_charge + repair_selection + repair + remaining_layers <= gamma * full_total`.
 
 7. While the source is loading, the scheduler may compute more dense layers of
    request A and/or run complete, non-preemptible dense steps or microbatches
@@ -34,7 +34,7 @@
 9. Repaired output is consumed by the request but is never registered as a new
    source.
 
-The enforced v4 call order is:
+The enforced v4/v5 call order is:
 
 `selector -> load_and_schedule -> measured/refined cost -> final admission -> reuse/full`.
 
@@ -42,6 +42,9 @@ If the selector abstains, the controller calls full recomputation before any
 Source load. It is illegal to substitute a latest or default Source. If final
 admission rejects, the selected Source and evaluated boundary remain in the
 audit, but `actual_reuse_boundary` is null because reuse did not execute.
+Protocol v5 additionally requires preliminary and refined values to use the
+same origin, endpoint and interference accounting mode. A Source selected at
+any early checkpoint is locked before loading; refinement cannot reselect.
 
 ## Probe depth objective
 
@@ -80,6 +83,9 @@ enforced by the data model:
 - accepted reuse implies a selected Source;
 - full-recompute mode implies reuse is rejected;
 - refined time rejection retains the selected Source for audit.
+- a Source may be locked before `L_probe_max` when its quality-safe,
+  predicted-economic interval separates;
+- scheduler and refined measurement cannot replace the locked Source.
 
 ## Atomic waiting-window scheduling
 

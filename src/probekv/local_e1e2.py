@@ -17,7 +17,13 @@ from .calibration import (
     SplitConformalUpper,
 )
 from .config import ExperimentConfig
-from .contracts import CandidateBounds, ProbeObservation
+from .contracts import (
+    CandidateBounds,
+    CostAccountingPolicy,
+    CostValueKind,
+    ProbeObservation,
+)
+from .cost import cost_breakdown_from_total
 from .features import CacheCraftMetadata, cache_craft_style_score, combined_feature_vector
 from .io import atomic_write_json, try_write_parquet, write_jsonl
 from .labeling import RatioMeasurement, safe_repair_ratio
@@ -384,6 +390,10 @@ def run_local_e1e2(
             config.gamma,
             config.reuse_ratio_tolerance,
             config.preliminary_economic_filter,
+            (
+                config.cost_accounting_policy
+                is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            ),
         )
     )
     decision_rows: List[Dict[str, Any]] = []
@@ -431,13 +441,39 @@ def run_local_e1e2(
                 case.sources, quality_uppers, intervals
             ):
                 lower_ratio, interval_upper = interval
+                lower_cost = 12.0 + 85.0 * lower_ratio
+                upper_cost = 12.0 + 85.0 * interval_upper
+                use_components = (
+                    config.cost_accounting_policy
+                    is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+                )
                 bounds.append(
                     CandidateBounds(
                         source.source_id,
                         quality_upper,
-                        12.0 + 85.0 * lower_ratio,
-                        12.0 + 85.0 * interval_upper,
+                        lower_cost,
+                        upper_cost,
                         quality_covered=True,
+                        cost_lower_breakdown=(
+                            cost_breakdown_from_total(
+                                lower_cost,
+                                100.0,
+                                layer,
+                                CostValueKind.PREDICTED_LOWER,
+                            )
+                            if use_components
+                            else None
+                        ),
+                        cost_upper_breakdown=(
+                            cost_breakdown_from_total(
+                                upper_cost,
+                                100.0,
+                                layer,
+                                CostValueKind.PREDICTED_UPPER,
+                            )
+                            if use_components
+                            else None
+                        ),
                     )
                 )
                 predictions.append((lower_ratio + interval_upper) / 2.0)

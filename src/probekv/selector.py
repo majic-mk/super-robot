@@ -21,6 +21,7 @@ class ProbePolicy:
     gamma: float = 0.8
     reuse_ratio_tolerance: float = 0.02
     preliminary_economic_filter: bool = False
+    require_component_cost_bounds: bool = False
 
     def __post_init__(self) -> None:
         if not self.checkpoints:
@@ -77,6 +78,7 @@ class DynamicProbeSelector:
             prefetch_m=1,
             selection_reason=reason,
             predicted_cost_upper_ms=candidate.cost_upper_ms,
+            predicted_cost_breakdown=candidate.cost_upper_breakdown,
         )
 
     @staticmethod
@@ -149,6 +151,18 @@ class DynamicProbeSelector:
         saw_quality_coverage = False
         for layer in self.policy.checkpoints:
             candidates = tuple(bounds_by_layer.get(layer, ()))
+            if self.policy.require_component_cost_bounds:
+                missing = [
+                    candidate.source_id
+                    for candidate in candidates
+                    if candidate.cost_lower_breakdown is None
+                    or candidate.cost_upper_breakdown is None
+                ]
+                if missing:
+                    raise ValueError(
+                        "unified cost accounting requires component bounds "
+                        "for: %s" % ", ".join(sorted(missing))
+                    )
             saw_quality_coverage = saw_quality_coverage or any(
                 candidate.quality_covered for candidate in candidates
             )

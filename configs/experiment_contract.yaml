@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 project: ProbeKV
 core_claim: >-
   target-model current-early-state-guided selection among multiple canonical
@@ -31,6 +31,11 @@ amendment_note: >-
   CacheBlend compatibility patch and preserves post-C retrieved chunks as the
   current-only suffix. Version 3 remains reproducible and is not silently
   reinterpreted.
+  Protocol version 5, frozen before GPU performance experiments, preserves
+  checkpoint-level early Source selection while requiring preliminary and
+  refined decisions to instantiate the same component cost identity. The
+  Source selected during probe is locked; refined admission can only accept
+  reuse or reject it and run full recomputation.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -48,6 +53,9 @@ invariants:
   full_recompute_implies_reuse_rejected: true
   selector_abstention_forbids_source_loading: true
   scheduler_feedback_precedes_final_admission: true
+  selected_source_locked_before_loading: true
+  refined_admission_cannot_reselect_source: true
+  preliminary_and_refined_share_cost_identity: true
 
 protocol_versions:
   v3_reproduction:
@@ -62,6 +70,14 @@ protocol_versions:
       - post_ready_blocking_ms
       - measured_load_and_interference
       - refined_repair_and_full_time
+  v5_main:
+    closed_loop_policy: two_stage_refined_admission
+    cost_accounting_policy: unified_components_v1
+    cost_origin: request_arrival
+    cost_endpoint: first_token_ready
+    early_checkpoint_selection_preserved: true
+    selected_source_locked_during_refinement: true
+    interference_accounting_mode: included_in_load
 
 probe_policy:
   objective: earliest_calibrated_safe_and_economical_decision
@@ -71,6 +87,7 @@ probe_policy:
   final_selection_requires_quality_coverage: true
   final_selection_requires_predicted_gamma_admission: true
   v4_preliminary_economic_filter_at_every_checkpoint: true
+  v5_early_checkpoint_selection_preserved: true
   final_max_reuse_tolerance: 0.02
   final_timing_rejection_retains_selected_source: true
   main_32_layer_checkpoints: [1, 2, 3, 4, 5, 6, 7, 8]

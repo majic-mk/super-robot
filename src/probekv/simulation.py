@@ -6,8 +6,13 @@ from dataclasses import asdict, replace
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from .config import ExperimentConfig
-from .contracts import CandidateBounds
-from .cost import DynamicReusePlanner, LayerOption, finalize_execution
+from .contracts import CandidateBounds, CostAccountingPolicy, CostValueKind
+from .cost import (
+    DynamicReusePlanner,
+    LayerOption,
+    cost_breakdown_from_total,
+    finalize_execution,
+)
 from .gates import gate_h1, gate_h2, gate_h4
 from .orchestration import (
     ClosedLoopPolicy,
@@ -71,6 +76,10 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             config.gamma,
             config.reuse_ratio_tolerance,
             config.preliminary_economic_filter,
+            (
+                config.cost_accounting_policy
+                is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+            ),
         )
     )
     planner = DynamicReusePlanner(config.gamma)
@@ -116,13 +125,39 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             for source_index, cost in enumerate(costs):
                 centre_noise = randomizer.uniform(-width * 0.25, width * 0.25)
                 centre = cost + centre_noise
+                lower_cost = max(0.0, centre - width)
+                upper_cost = centre + width
+                use_components = (
+                    config.cost_accounting_policy
+                    is CostAccountingPolicy.UNIFIED_COMPONENTS_V1
+                )
                 bounds.append(
                     CandidateBounds(
                         source_id="s%d" % source_index,
                         repair_ratio_upper=min(1.0, safe_ratios[source_index] + 0.02),
-                        cost_lower_ms=max(0.0, centre - width),
-                        cost_upper_ms=centre + width,
+                        cost_lower_ms=lower_cost,
+                        cost_upper_ms=upper_cost,
                         quality_covered=True,
+                        cost_lower_breakdown=(
+                            cost_breakdown_from_total(
+                                lower_cost,
+                                full_ms,
+                                layer,
+                                CostValueKind.PREDICTED_LOWER,
+                            )
+                            if use_components
+                            else None
+                        ),
+                        cost_upper_breakdown=(
+                            cost_breakdown_from_total(
+                                upper_cost,
+                                full_ms,
+                                layer,
+                                CostValueKind.PREDICTED_UPPER,
+                            )
+                            if use_components
+                            else None
+                        ),
                     )
                 )
             bounds_by_layer[layer] = tuple(bounds)
@@ -299,7 +334,8 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     repair_ratio_upper=selected_option.repair_ratio_upper,
                     probe_ms=selected_option.probe_ms,
                     compare_ms=selected_option.compare_ms,
-                    repair_ms=max(
+                    repair_ms=0.0,
+                    remaining_layer_ms=max(
                         0.0,
                         selected_option.repair_ms
                         - schedule.useful_a_dense_ms,
@@ -310,7 +346,9 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 scheduling_feedback, refined_cost
             )
             closed_loop_result = TwoStageReuseController(
-                config.gamma, config.closed_loop_policy
+                config.gamma,
+                config.closed_loop_policy,
+                config.cost_accounting_policy,
             ).execute(decision, runtime)
             execution = closed_loop_result.execution
         elif provisional_execution.reuse_accepted:
@@ -351,6 +389,8 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             )
         simulated_ttft.append(schedule.a_ttft_ms)
         simulated_fairness.append(schedule.jain_fairness)
+        predicted_timing = decision.predicted_cost_breakdown
+        refined_timing = execution.timing
 
         rows.append(
             {
@@ -361,7 +401,35 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 "selected_source": decision.selected_source_id,
                 "abstained": decision.abstained,
                 "selection_reason": decision.selection_reason.value,
+                "source_locked_at_probe": decision.selected_source_id,
+                "refined_source_id": (
+                    closed_loop_result.refined_cost.selected_source_id
+                    if closed_loop_result is not None
+                    and closed_loop_result.refined_cost is not None
+                    else None
+                ),
                 "probe_layer": decision.probe_layer,
+                "cost_accounting_policy": (
+                    config.cost_accounting_policy.value
+                ),
+                "predicted_cost_upper_ms": (
+                    decision.predicted_cost_upper_ms
+                ),
+                "predicted_cost_origin": (
+                    predicted_timing.cost_origin
+                    if predicted_timing is not None
+                    else None
+                ),
+                "predicted_cost_endpoint": (
+                    predicted_timing.cost_endpoint
+                    if predicted_timing is not None
+                    else None
+                ),
+                "predicted_remaining_layer_ms": (
+                    predicted_timing.remaining_layer_ms
+                    if predicted_timing is not None
+                    else None
+                ),
                 "normalized_regret": probe_regret,
                 "reuse_accepted": execution.reuse_accepted,
                 "rejection_reason": (
@@ -384,6 +452,31 @@ def run_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     schedule.useful_other_request_work_ms
                 ),
                 "load_interference_ms": schedule.load_interference_ms,
+                "refined_visible_load_ms": (
+                    refined_timing.visible_load_ms
+                    if refined_timing is not None
+                    else None
+                ),
+                "refined_repair_selection_ms": (
+                    refined_timing.repair_selection_ms
+                    if refined_timing is not None
+                    else None
+                ),
+                "refined_remaining_layer_ms": (
+                    refined_timing.remaining_layer_ms
+                    if refined_timing is not None
+                    else None
+                ),
+                "refined_reuse_total_ms": (
+                    refined_timing.reuse_total_ms
+                    if refined_timing is not None
+                    else None
+                ),
+                "full_total_ms": (
+                    refined_timing.full_total_ms
+                    if refined_timing is not None
+                    else full_ms
+                ),
                 "closure_policy": config.closed_loop_policy.value,
                 "selection_state": execution.selection_state.value,
                 "probe_admission_state": decision.admission_state.value,
