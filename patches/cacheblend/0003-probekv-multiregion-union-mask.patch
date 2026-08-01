@@ -1,0 +1,105 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+index a15f082..9f6f693 100644
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -204,2 +204,84 @@ class XFormersImpl(AttentionImpl):
+-        if status in [1]:
++        repair_regions = cache_fuse_metadata.get("repair_regions")
++        if status in [1] and repair_regions is not None:
++            last_len = int(cache_fuse_metadata["suffix_len"])
++            total_len = value.shape[0]
++            suffix_start = total_len - last_len
++            prefix_len = int(cache_fuse_metadata["prefix_len"])
++            if prefix_len < 0 or prefix_len > suffix_start:
++                raise ValueError("prefix_len is outside the prompt")
++            dense_mask = torch.ones(
++                total_len, dtype=torch.bool, device=value.device
++            )
++            dense_mask[:prefix_len] = False
++            selected_regions = []
++            repair_audit = {}
++            previous_end = prefix_len
++            for region in repair_regions:
++                segment_id = str(region["segment_id"])
++                start = int(region["start"])
++                segment_len = int(region["length"])
++                end = start + segment_len
++                ratio = float(region["recomp_ratio"])
++                if not segment_id or segment_id in repair_audit:
++                    raise ValueError("repair region IDs must be unique")
++                if segment_len <= 0 or start < previous_end or end > suffix_start:
++                    raise ValueError("repair regions must be ordered and disjoint")
++                if ratio < 0.0 or ratio > 1.0:
++                    raise ValueError("segment recomp_ratio must be in [0, 1]")
++                dense_mask[start:end] = False
++                if ratio == 0.0:
++                    topk_num = 0
++                elif ratio == 1.0:
++                    topk_num = segment_len
++                else:
++                    topk_num = int(segment_len * ratio)
++                temp_diff = torch.sum(
++                    (value[start:end] - value_old[start:end]) ** 2,
++                    dim=[1, 2],
++                )
++                ranking = torch.argsort(
++                    temp_diff, descending=True, stable=True
++                )
++                indices = ranking[:topk_num] + start
++                indices, _ = torch.sort(indices)
++                selected_regions.append(indices)
++                repair_audit[segment_id] = {
++                    "eligible_segment_tokens": segment_len,
++                    "selected_segment_tokens": topk_num,
++                    "effective_ratio": topk_num / float(segment_len),
++                    "selected_segment_indices": indices,
++                }
++                previous_end = end
++            dense_indices = torch.nonzero(
++                dense_mask, as_tuple=False
++            ).flatten()
++            top_indices = torch.cat(selected_regions + [dense_indices])
++            top_indices, _ = torch.sort(torch.unique(top_indices))
++            cache_fuse_metadata["segment_repair_audit"] = repair_audit
++            cache_fuse_metadata["eligible_segment_tokens"] = sum(
++                row["eligible_segment_tokens"]
++                for row in repair_audit.values()
++            )
++            cache_fuse_metadata["selected_segment_tokens"] = sum(
++                row["selected_segment_tokens"]
++                for row in repair_audit.values()
++            )
++            cache_fuse_metadata["selected_segment_indices"] = torch.cat(
++                selected_regions
++            ) if selected_regions else torch.empty(
++                0, dtype=torch.long, device=value.device
++            )
++            cache_fuse_metadata["mandatory_suffix_tokens"] = last_len
++            query = query[top_indices]
++            cache_fuse_metadata["imp_indices"] = top_indices
++            attn_bias = _make_partial_bias_gqa(
++                cache_fuse_metadata,
++                query.device,
++                self.num_kv_heads,
++                self.num_queries_per_kv,
++            )
++            cache_fuse_metadata["attn_bias"] = attn_bias
++            attn_metadata.prefill_metadata.attn_bias = None
++
++        if status in [1] and repair_regions is None:
+             last_len = int(cache_fuse_metadata['suffix_len'])
+@@ -609,2 +691,2 @@ def _fetch_maetrailized_mask_gqa(q_len,num_kv_heads,num_queries_per_kv,device,dt
+     #attn_mask_padded = LowerTriangularMaskWithTensorBias(attn_mask_padded)
+-    return attn_mask_padded
+\ No newline at end of file
++    return attn_mask_padded
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+index 0687854..dffe6da 100644
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -311,2 +311,5 @@ class LlamaModel(nn.Module):
+                                     "segment_len": None,
++                                    "prefix_len": None,
++                                    "repair_regions": None,
++                                    "segment_repair_audit": None,
+                                     "eligible_segment_tokens": None,

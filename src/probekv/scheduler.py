@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Sequence, Tuple
 
+from .v6_contracts import (
+    RequestSchedulingFeedback,
+    SegmentSchedulingFeedback,
+)
+
 
 class SchedulerPolicy(str, Enum):
     NO_OVERLAP = "no_overlap"
@@ -88,6 +93,62 @@ class MultiScheduleResult:
     useful_other_request_work_ms: float
     load_interference_ms: float
     gpu_busy_ms: float
+
+
+@dataclass(frozen=True)
+class MultiSourceLoad:
+    segment_id: str
+    selected_source_id: str
+    load_start_ms: float
+    load_ms: float
+    transferred_bytes: int
+    first_ready_layer: int
+    ready_through_layer: int
+    load_interference_ms: float = 0.0
+    layer_ready_ms: Tuple[Tuple[int, float], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.segment_id or not self.selected_source_id:
+            raise ValueError("multi-source load identifiers are required")
+        if min(self.load_start_ms, self.load_ms, self.load_interference_ms) < 0:
+            raise ValueError("multi-source load timings must be non-negative")
+        if self.transferred_bytes < 0:
+            raise ValueError("transferred bytes must be non-negative")
+        if self.first_ready_layer < 1:
+            raise ValueError("ready layers are 1-based")
+        if self.ready_through_layer < self.first_ready_layer:
+            raise ValueError("invalid ready layer range")
+        if self.layer_ready_ms:
+            layers = tuple(int(layer) for layer, _ in self.layer_ready_ms)
+            times = tuple(float(ready_ms) for _, ready_ms in self.layer_ready_ms)
+            if layers != tuple(sorted(set(layers))):
+                raise ValueError("load layer readiness must be sorted and unique")
+            if (
+                layers[0] != self.first_ready_layer
+                or layers[-1] != self.ready_through_layer
+            ):
+                raise ValueError("load layer readiness does not match layer range")
+            if times != tuple(sorted(times)):
+                raise ValueError("load layer readiness must be monotonic")
+            if any(
+                ready_ms < self.load_start_ms
+                or ready_ms > self.ready_ms + 1e-9
+                for ready_ms in times
+            ):
+                raise ValueError("load layer readiness falls outside load interval")
+
+    @property
+    def ready_ms(self) -> float:
+        return self.load_start_ms + self.load_ms + self.load_interference_ms
+
+    @property
+    def layer_ready_schedule(self) -> Tuple[Tuple[int, float], ...]:
+        if self.layer_ready_ms:
+            return self.layer_ready_ms
+        endpoints = ((self.first_ready_layer, self.ready_ms),)
+        if self.ready_through_layer != self.first_ready_layer:
+            endpoints += ((self.ready_through_layer, self.ready_ms),)
+        return endpoints
 
 
 def _is_hybrid(policy: SchedulerPolicy) -> bool:
@@ -395,4 +456,74 @@ def simulate_waiting_queue(
         gpu_busy_ms=(
             wait_busy + remaining_repair + scenario.decode_start_ms
         ),
+    )
+
+
+def simulate_multisource_schedule(
+    request_id: str,
+    policy: SchedulerPolicy,
+    loads: Sequence[MultiSourceLoad],
+    scenario: SchedulerScenario,
+    requests: Sequence[ReadyRequest],
+    a_layer: int,
+    total_layers: int,
+    hybrid_dense_budget: int = 2,
+) -> RequestSchedulingFeedback:
+    """Produce v6 scheduler feedback for independently ready Sources."""
+
+    if not request_id:
+        raise ValueError("request_id must be non-empty")
+    if not loads:
+        raise ValueError("multi-source scheduling requires at least one load")
+    if total_layers < 1:
+        raise ValueError("total_layers must be positive")
+    segment_ids = [load.segment_id for load in loads]
+    if len(segment_ids) != len(set(segment_ids)):
+        raise ValueError("multi-source loads contain duplicate segments")
+    first_ready_ms = min(load.ready_ms for load in loads)
+    adjusted = SchedulerScenario(
+        load_ms=max(0.0, first_ready_ms - scenario.load_interference_ms),
+        dense_layer_ms=scenario.dense_layer_ms,
+        max_extra_dense_layers=scenario.max_extra_dense_layers,
+        repair_ms=scenario.repair_ms,
+        decode_start_ms=scenario.decode_start_ms,
+        other_ready_work_ms=scenario.other_ready_work_ms,
+        microbatch_ms=scenario.microbatch_ms,
+        max_post_ready_overrun_ms=scenario.max_post_ready_overrun_ms,
+        load_interference_ms=scenario.load_interference_ms,
+    )
+    schedule = simulate_waiting_queue(
+        policy,
+        adjusted,
+        requests,
+        a_layer,
+        hybrid_dense_budget=hybrid_dense_budget,
+    )
+    feedback = tuple(
+        SegmentSchedulingFeedback(
+            segment_id=load.segment_id,
+            selected_source_id=load.selected_source_id,
+            source_load_start_ms=load.load_start_ms,
+            source_ready_ms=load.ready_ms,
+            first_ready_layer=load.first_ready_layer,
+            ready_through_layer=load.ready_through_layer,
+            transferred_bytes=load.transferred_bytes,
+            source_load_finish_ms=load.ready_ms,
+            layer_ready_ms=load.layer_ready_schedule,
+        )
+        for load in loads
+    )
+    first_boundary = min(load.first_ready_layer for load in loads)
+    return RequestSchedulingFeedback(
+        request_id=request_id,
+        segments=feedback,
+        scheduled_step_finish_ms=schedule.scheduled_step_finish_ms,
+        a_resume_ms=schedule.a_resume_ms,
+        post_ready_blocking_ms=schedule.post_ready_blocking_ms,
+        load_interference_ms=sum(
+            load.load_interference_ms for load in loads
+        ),
+        useful_a_dense_ms=schedule.useful_a_dense_ms,
+        useful_other_request_work_ms=schedule.useful_other_request_work_ms,
+        candidate_boundaries=tuple(range(first_boundary, total_layers + 1)),
     )

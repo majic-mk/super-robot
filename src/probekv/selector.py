@@ -142,6 +142,76 @@ class DynamicProbeSelector:
             SelectionReason.FINAL_MAX_REUSE_LOWER_BOUND,
         )
 
+    def evaluate_checkpoint(
+        self,
+        candidates: Sequence[CandidateBounds],
+        layer: int,
+        full_recompute_ms: Optional[float],
+        saw_quality_coverage: bool = False,
+    ) -> Tuple[Optional[SourceDecision], bool]:
+        """Evaluate one real checkpoint without forcing an early abstention."""
+
+        if layer not in self.policy.checkpoints:
+            raise ValueError("layer is not a configured probe checkpoint")
+        candidates = tuple(candidates)
+        if self.policy.require_component_cost_bounds:
+            missing = [
+                candidate.source_id
+                for candidate in candidates
+                if candidate.cost_lower_breakdown is None
+                or candidate.cost_upper_breakdown is None
+            ]
+            if missing:
+                raise ValueError(
+                    "unified cost accounting requires component bounds "
+                    "for: %s" % ", ".join(sorted(missing))
+                )
+        saw_quality_coverage = saw_quality_coverage or any(
+            candidate.quality_covered for candidate in candidates
+        )
+        at_final_layer = layer == self.policy.max_layer
+        if (
+            at_final_layer
+            and self.policy.selector_policy is not SelectorPolicy.STRICT_INTERVAL
+        ):
+            winner, reason = self._final_winner(candidates, full_recompute_ms)
+            return (
+                self._abstained(layer, reason)
+                if winner is None
+                else self._selected(winner, layer, reason),
+                saw_quality_coverage,
+            )
+        early_candidates = candidates
+        if self.policy.preliminary_economic_filter:
+            if full_recompute_ms is None or full_recompute_ms <= 0:
+                raise ValueError(
+                    "preliminary economic filtering requires "
+                    "positive full_recompute_ms"
+                )
+            early_candidates = tuple(
+                candidate
+                for candidate in candidates
+                if candidate.quality_covered
+                and candidate.cost_upper_ms
+                <= self.policy.gamma * full_recompute_ms
+            )
+        winner = self._confident_winner(early_candidates)
+        if winner is not None:
+            return (
+                self._selected(
+                    winner, layer, SelectionReason.EARLY_CONFIDENT
+                ),
+                saw_quality_coverage,
+            )
+        if at_final_layer:
+            reason = (
+                SelectionReason.MAX_PROBE_UNCERTAIN
+                if saw_quality_coverage
+                else SelectionReason.NO_QUALITY_SAFE_SOURCE
+            )
+            return self._abstained(layer, reason), saw_quality_coverage
+        return None, saw_quality_coverage
+
     def select(
         self,
         bounds_by_layer: Mapping[int, Sequence[CandidateBounds]],
@@ -151,52 +221,14 @@ class DynamicProbeSelector:
         saw_quality_coverage = False
         for layer in self.policy.checkpoints:
             candidates = tuple(bounds_by_layer.get(layer, ()))
-            if self.policy.require_component_cost_bounds:
-                missing = [
-                    candidate.source_id
-                    for candidate in candidates
-                    if candidate.cost_lower_breakdown is None
-                    or candidate.cost_upper_breakdown is None
-                ]
-                if missing:
-                    raise ValueError(
-                        "unified cost accounting requires component bounds "
-                        "for: %s" % ", ".join(sorted(missing))
-                    )
-            saw_quality_coverage = saw_quality_coverage or any(
-                candidate.quality_covered for candidate in candidates
+            decision, saw_quality_coverage = self.evaluate_checkpoint(
+                candidates,
+                layer,
+                full_recompute_ms,
+                saw_quality_coverage,
             )
-            at_final_layer = layer == self.policy.max_layer
-            if (
-                at_final_layer
-                and self.policy.selector_policy
-                is not SelectorPolicy.STRICT_INTERVAL
-            ):
-                winner, reason = self._final_winner(
-                    candidates, full_recompute_ms
-                )
-                if winner is None:
-                    return self._abstained(layer, reason)
-                return self._selected(winner, layer, reason)
-            early_candidates = candidates
-            if self.policy.preliminary_economic_filter:
-                if full_recompute_ms is None or full_recompute_ms <= 0:
-                    raise ValueError(
-                        "preliminary economic filtering requires "
-                        "positive full_recompute_ms"
-                    )
-                early_candidates = tuple(
-                    candidate
-                    for candidate in candidates
-                    if candidate.quality_covered
-                    and candidate.cost_upper_ms
-                    <= self.policy.gamma * full_recompute_ms
-                )
-            winner = self._confident_winner(early_candidates)
-            if winner is not None:
-                return self._selected(
-                    winner, layer, SelectionReason.EARLY_CONFIDENT
-                )
+            if decision is not None:
+                return decision
             last_layer = layer
         reason = (
             SelectionReason.MAX_PROBE_UNCERTAIN

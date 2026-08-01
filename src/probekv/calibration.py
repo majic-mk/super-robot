@@ -159,6 +159,76 @@ class GroupedSimultaneousConformal:
         rank = min(n, math.ceil((n + 1) * (1.0 - miscoverage)))
         return cls(miscoverage, maxima[rank - 1], n)
 
+    def upper(
+        self, prediction: float, lower: float = 0.0, upper: float = 1.0
+    ) -> float:
+        return min(upper, max(lower, float(prediction) + self.correction))
+
+
+@dataclass(frozen=True)
+class CalibrationSupportEnvelope:
+    """Axis-aligned online support guard fitted only on calibration data."""
+
+    bounds: Mapping[str, Tuple[float, float]]
+
+    @classmethod
+    def fit(
+        cls, rows: Sequence[Mapping[str, float]], feature_names: Sequence[str]
+    ) -> "CalibrationSupportEnvelope":
+        if not rows or not feature_names:
+            raise ValueError("support envelope requires rows and features")
+        bounds = {}
+        for name in feature_names:
+            values = [float(row[name]) for row in rows]
+            if any(not math.isfinite(value) for value in values):
+                raise ValueError("support features must be finite")
+            bounds[name] = (min(values), max(values))
+        return cls(bounds)
+
+    def contains(self, features: Mapping[str, float]) -> bool:
+        for name, (lower, upper) in self.bounds.items():
+            if name not in features:
+                return False
+            value = float(features[name])
+            if not math.isfinite(value) or value < lower or value > upper:
+                return False
+        return True
+
+
+@dataclass(frozen=True)
+class RequestQualityDecision:
+    support_covered: bool
+    predicted_degradation: float
+    conservative_degradation_upper: float
+    accepted: bool
+
+
+@dataclass(frozen=True)
+class RequestQualityGuard:
+    calibrator: GroupedSimultaneousConformal
+    support: CalibrationSupportEnvelope
+    max_degradation: float = 0.10
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.max_degradation <= 1:
+            raise ValueError("maximum degradation must be in [0, 1]")
+
+    def evaluate(
+        self,
+        predicted_request_degradation: float,
+        features: Mapping[str, float],
+    ) -> RequestQualityDecision:
+        if not 0 <= predicted_request_degradation <= 1:
+            raise ValueError("predicted degradation must be in [0, 1]")
+        supported = self.support.contains(features)
+        upper = self.calibrator.upper(predicted_request_degradation)
+        return RequestQualityDecision(
+            support_covered=supported,
+            predicted_degradation=predicted_request_degradation,
+            conservative_degradation_upper=upper,
+            accepted=supported and upper <= self.max_degradation,
+        )
+
 
 class CalibratedGradientBoostingIntervalPredictor:
     """Dependency-light point model plus a held-out conformal interval."""

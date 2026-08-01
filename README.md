@@ -13,6 +13,11 @@ remains available only for reproduction. Protocol v5 keeps checkpoint-level
 early Source selection and makes preliminary prediction and refined admission
 use one request-arrival-to-first-token component cost identity. Once selected,
 the Source is locked; refinement can only accept reuse or fall back to full.
+Protocol v6 adds a global 1-16-variant pool and plans every exact non-prefix
+repeated segment in one request. It compares lightweight summaries within a
+request-level 5% budget, locks Sources independently during the shared early
+pass, then uses actual multi-source scheduler feedback to choose one common
+reuse boundary and an economical subset of segments. v3-v5 remain unchanged.
 The real CacheBlend path is split into an H1-only case runner and a
 capability-gated online adapter; the case runner cannot silently satisfy the
 online closed-loop contract.
@@ -36,6 +41,7 @@ python -m probekv simulate --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_system_v3.json
 python -m probekv simulate --config configs/local_system_v4.json
 python -m probekv simulate --config configs/local_system_v5.json
+python -m probekv.cli --config configs/local_system_v6.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -46,6 +52,7 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
 - `docs/UNIFIED_COST_ACCOUNTING.md`: v5 shared-cost and Source-lock protocol.
+- `docs/V6_MULTI_SEGMENT.md`: v6 global-pool, multi-segment and common-boundary contract.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.

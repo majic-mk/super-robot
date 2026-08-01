@@ -110,3 +110,29 @@ CacheBlend model loop does not yet expose resumable prefill; implementing and
 validating that stack-specific engine hook on A800 is the remaining CB4
 hardware gate. Until CB4 passes, closed-loop records remain
 `server_pilot`/`paper_evidence:false`.
+
+## Protocol v6 multi-region adapter
+
+`MultiSegmentCacheBlendBackend` adds a separate v6 interface; it does not
+silently change the v5 case runner. `stage_canonical_sources` stages at most one
+locked winner per selected segment and must return per-segment, layer-wise
+ready times. `execute_multisegment_prefill` receives ordered request regions,
+independent segment ratios, one common boundary and one absolute-position union
+repair mask. Dense gaps, misses, abstentions, rejected segments and the suffix
+remain dense.
+
+The adapter rejects Source replacement, incomplete layer readiness, digest
+mutation, non-nested or wrong-denominator masks, non-absolute causal rows and
+unreported RoPE alignment. For the all-`r=1` endpoint it additionally requires
+exact dense-reference token IDs and teacher-forced logit relative-L2 at most
+`1e-4`. The local protocol tests use an invariant-checking fake runtime; the
+pinned vLLM/CacheBlend implementation and timings remain an A800 gate under
+`configs/a800_closed_loop_v6.json`.
+
+The v6 patch mode is `probekv_v6_multiregion`. It applies the unchanged v5
+patches followed by `0003-probekv-multiregion-union-mask.patch`. The third
+patch accepts ordered, disjoint `repair_regions`, leaves exact-prefix positions
+out of the query set, keeps all gaps/misses/suffix tokens dense and unions the
+per-segment CacheBlend drift selections. It passed `git apply --unidiff-zero`
+against the frozen base plus patches 0001/0002 and Python syntax compilation;
+this static check is not a substitute for A800 tensor/output validation.

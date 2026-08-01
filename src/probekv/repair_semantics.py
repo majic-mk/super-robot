@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
+
+from .v6_contracts import RegionKind, RequestSpec
 
 
 @dataclass(frozen=True)
@@ -153,4 +157,136 @@ def assert_nested_selections(selections: Iterable[RepairSelection]) -> None:
         current = set(selection.selected_segment_indices)
         if not previous.issubset(current):
             raise ValueError("repair selections are not nested across ratios")
+        previous = current
+
+
+@dataclass(frozen=True)
+class MultiSegmentRepairSelection:
+    requested_ratios: Mapping[str, float]
+    selected_indices_by_segment: Mapping[str, Tuple[int, ...]]
+    dense_indices: Tuple[int, ...]
+    execution_indices: Tuple[int, ...]
+    union_mask_digest: str
+
+    def validate(self, request: RequestSpec) -> None:
+        request.validate()
+        segments = {segment.segment_id: segment for segment in request.segments}
+        if set(self.requested_ratios) != set(self.selected_indices_by_segment):
+            raise ValueError("ratio and repair-index segment sets disagree")
+        if not set(self.requested_ratios).issubset(segments):
+            raise ValueError("repair selection references an unknown segment")
+        selected_union = set()
+        for segment_id, ratio in self.requested_ratios.items():
+            if not 0 <= ratio <= 1:
+                raise ValueError("segment repair ratio must be in [0, 1]")
+            segment = segments[segment_id]
+            indices = self.selected_indices_by_segment[segment_id]
+            if len(indices) != len(set(indices)):
+                raise ValueError("segment repair indices must be unique")
+            allowed = set(range(segment.token_start, segment.token_end))
+            if not set(indices).issubset(allowed):
+                raise ValueError("repair index lies outside its segment")
+            expected = repaired_segment_token_count(segment.token_count, ratio)
+            if len(indices) != expected:
+                raise ValueError("segment repair count does not match ratio")
+            selected_union.update(indices)
+        if len(self.dense_indices) != len(set(self.dense_indices)):
+            raise ValueError("dense token indices must be unique")
+        expected_dense = set()
+        accepted = set(self.requested_ratios)
+        for region in request.regions:
+            if region.kind is RegionKind.PREFIX_EXACT:
+                continue
+            if (
+                region.kind is RegionKind.REUSE_CANDIDATE
+                and region.segment_id in accepted
+            ):
+                continue
+            expected_dense.update(range(region.start, region.end))
+        if set(self.dense_indices) != expected_dense:
+            raise ValueError(
+                "dense mask must cover every non-accepted region and suffix"
+            )
+        if selected_union & set(self.dense_indices):
+            raise ValueError("repair and dense token indices must be disjoint")
+        expected_execution = tuple(sorted(selected_union | set(self.dense_indices)))
+        if self.execution_indices != expected_execution:
+            raise ValueError("union execution mask does not match its regions")
+        if any(index < request.exact_prefix_tokens for index in self.execution_indices):
+            raise ValueError("exact prefix token entered the repair mask")
+        payload = json.dumps(
+            list(self.execution_indices), separators=(",", ":")
+        ).encode("ascii")
+        expected_digest = hashlib.sha256(payload).hexdigest()
+        if self.union_mask_digest != expected_digest:
+            raise ValueError("union repair mask digest mismatch")
+
+
+def select_multisegment_repair_tokens(
+    drift_scores: Sequence[float],
+    request: RequestSpec,
+    requested_ratios: Mapping[str, float],
+) -> MultiSegmentRepairSelection:
+    """Build one absolute-position union mask for a v6 request.
+
+    Only accepted segment IDs appear in ``requested_ratios``. Every other
+    non-prefix region is dense. CacheBlend's stable largest-drift ordering is
+    applied independently inside each accepted segment.
+    """
+
+    request.validate()
+    if len(drift_scores) != len(request.token_ids):
+        raise ValueError("drift scores must cover the complete request")
+    segments = {segment.segment_id: segment for segment in request.segments}
+    if not set(requested_ratios).issubset(segments):
+        raise ValueError("ratio supplied for an unknown segment")
+    selected: Dict[str, Tuple[int, ...]] = {}
+    dense = set()
+    for region in request.regions:
+        if region.kind is RegionKind.PREFIX_EXACT:
+            continue
+        if (
+            region.kind is RegionKind.REUSE_CANDIDATE
+            and region.segment_id in requested_ratios
+        ):
+            segment_id = str(region.segment_id)
+            ratio = float(requested_ratios[segment_id])
+            count = repaired_segment_token_count(region.token_count, ratio)
+            ranked = sorted(
+                range(region.start, region.end),
+                key=lambda index: (-float(drift_scores[index]), index),
+            )
+            selected[segment_id] = tuple(sorted(ranked[:count]))
+        else:
+            dense.update(range(region.start, region.end))
+    selected_union = set(
+        index for indices in selected.values() for index in indices
+    )
+    execution = tuple(sorted(selected_union | dense))
+    payload = json.dumps(list(execution), separators=(",", ":")).encode("ascii")
+    result = MultiSegmentRepairSelection(
+        requested_ratios=dict(requested_ratios),
+        selected_indices_by_segment=selected,
+        dense_indices=tuple(sorted(dense)),
+        execution_indices=execution,
+        union_mask_digest=hashlib.sha256(payload).hexdigest(),
+    )
+    result.validate(request)
+    return result
+
+
+def assert_nested_multisegment_selections(
+    selections: Iterable[MultiSegmentRepairSelection],
+    segment_id: str,
+) -> None:
+    relevant = [
+        selection for selection in selections
+        if segment_id in selection.requested_ratios
+    ]
+    relevant.sort(key=lambda item: item.requested_ratios[segment_id])
+    previous = set()
+    for selection in relevant:
+        current = set(selection.selected_indices_by_segment[segment_id])
+        if not previous.issubset(current):
+            raise ValueError("multi-segment repair selections are not nested")
         previous = current

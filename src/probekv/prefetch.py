@@ -31,6 +31,83 @@ class PrefetchDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class LockedSegmentWinner:
+    segment_id: str
+    source_id: str
+    locked_probe_layer: int
+    kv_bytes: int
+    load_ms: float
+    predicted_saved_ms: float
+
+    def __post_init__(self) -> None:
+        if not self.segment_id or not self.source_id:
+            raise ValueError("locked winner identifiers are required")
+        if self.locked_probe_layer < 1:
+            raise ValueError("locked probe layer must be 1-based")
+        if self.kv_bytes < 0 or self.load_ms < 0:
+            raise ValueError("winner load size and time must be non-negative")
+
+    @property
+    def value_density(self) -> float:
+        return max(0.0, self.predicted_saved_ms) / float(max(1, self.kv_bytes))
+
+
+@dataclass(frozen=True)
+class MultiSegmentPrefetchDecision:
+    source_id_by_segment: dict
+    dropped_segment_ids: Tuple[str, ...]
+    transferred_bytes: int
+    expected_visible_load_ms: float
+
+
+def choose_locked_winner_prefetch(
+    winners: Sequence[LockedSegmentWinner],
+    hbm_available_bytes: int,
+    overlap_ms: float,
+) -> MultiSegmentPrefetchDecision:
+    """Load at most one already-locked winner per segment under HBM budget."""
+
+    if hbm_available_bytes < 0 or overlap_ms < 0:
+        raise ValueError("HBM and overlap budgets must be non-negative")
+    segment_ids = [winner.segment_id for winner in winners]
+    if len(segment_ids) != len(set(segment_ids)):
+        raise ValueError("only one locked winner is allowed per segment")
+    ordered = sorted(
+        winners,
+        key=lambda winner: (
+            winner.locked_probe_layer,
+            -winner.value_density,
+            winner.segment_id,
+            winner.source_id,
+        ),
+    )
+    selected = []
+    used = 0
+    for winner in ordered:
+        if used + winner.kv_bytes > hbm_available_bytes:
+            continue
+        selected.append(winner)
+        used += winner.kv_bytes
+    selected_segments = {winner.segment_id for winner in selected}
+    dropped = tuple(
+        winner.segment_id for winner in ordered
+        if winner.segment_id not in selected_segments
+    )
+    visible = max(
+        (max(0.0, winner.load_ms - overlap_ms) for winner in selected),
+        default=0.0,
+    )
+    return MultiSegmentPrefetchDecision(
+        source_id_by_segment={
+            winner.segment_id: winner.source_id for winner in selected
+        },
+        dropped_segment_ids=dropped,
+        transferred_bytes=used,
+        expected_visible_load_ms=visible,
+    )
+
+
 def _fixed_count(policy: PrefetchPolicy, candidate_count: int) -> int:
     if policy in {PrefetchPolicy.P0, PrefetchPolicy.P1}:
         return 0

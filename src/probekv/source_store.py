@@ -12,6 +12,10 @@ class SourceEvictionPolicy(str, Enum):
 
     REJECT_WHEN_FULL = "reject_when_full"
     FIFO = "fifo"
+    # v6 values are parsed by the shared configuration object but executed by
+    # GlobalSourcePool, never by this legacy per-content store.
+    VALUE_DENSITY_V1 = "value_density_v1"
+    CACHE_CRAFT_FR = "cache_craft_fr"
 
 
 class ReplicaEvictionPolicy(str, Enum):

@@ -22,12 +22,21 @@ class CacheBlendPatchTests(unittest.TestCase):
         closed_loop = patch_files_for_mode(
             MANIFEST, "probekv_closed_loop"
         )
+        multiregion = patch_files_for_mode(
+            MANIFEST, "probekv_v6_multiregion"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
         self.assertEqual(closed_loop, probekv)
+        self.assertEqual(len(multiregion), 3)
+        self.assertEqual(multiregion[:2], probekv)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
+        )
+        self.assertNotEqual(
+            combined_patch_sha256(probekv),
+            combined_patch_sha256(multiregion),
         )
         self.assertTrue(
             manifest["runtime_modes"]["closed_loop_v5"][
@@ -51,7 +60,9 @@ class CacheBlendPatchTests(unittest.TestCase):
         )
 
     def test_all_tracked_patches_have_valid_hunk_counts(self):
-        for path in patch_files_for_mode(MANIFEST, "probekv"):
+        for path in patch_files_for_mode(
+            MANIFEST, "probekv_v6_multiregion"
+        ):
             validate_unified_diff(path)
 
     def test_partial_repair_uses_absolute_query_causal_rows(self):
@@ -66,6 +77,22 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertIn("attn_bias = _make_partial_bias_gqa", additions)
         self.assertNotIn(
             "attn_bias = LowerTriangularFromBottomRightMask", additions
+        )
+
+    def test_v6_patch_builds_union_mask_without_changing_v5_mode(self):
+        paths = patch_files_for_mode(MANIFEST, "probekv_v6_multiregion")
+        patch = paths[-1].read_text(encoding="utf-8")
+        additions = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertIn('cache_fuse_metadata.get("repair_regions")', additions)
+        self.assertIn("dense_mask[:prefix_len] = False", additions)
+        self.assertIn("torch.unique(top_indices)", additions)
+        self.assertEqual(
+            patch_files_for_mode(MANIFEST, "probekv_closed_loop"),
+            paths[:2],
         )
 
 

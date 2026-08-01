@@ -14,6 +14,8 @@ python -m probekv validate-config --config configs/local_smoke.json
 python -m probekv simulate --config configs/local_smoke.json
 python -m probekv validate-config --config configs/local_system_v3.json
 python -m probekv simulate --config configs/local_system_v3.json
+python scripts/validate_contract.py
+python -m probekv.cli --config configs/local_system_v6.json
 python scripts/audit_environment.py --output artifacts/local_validation/environment.json
 ```
 
@@ -21,6 +23,12 @@ python scripts/audit_environment.py --output artifacts/local_validation/environm
 `hybrid_strict`. `local_system_v3.json` exercises final economic minimum-cost
 selection and bounded-overrun scheduling. Both are deterministic software
 checks and never paper performance evidence.
+
+`local_system_v6.json` additionally exercises 1/2/5/10 repeated segments and
+1/4/16 stored variants, budgeted comparisons, independent early locks,
+multi-source feedback, common-boundary admission and rich audit output. Unit
+tests separately cover all miss, partial/all reuse, 16th-variant selection,
+global pool pressure, model switching and multi-region repair invariants.
 
 For a locally cached Hugging Face causal LM:
 

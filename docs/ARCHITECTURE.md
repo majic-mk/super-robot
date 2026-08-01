@@ -2,7 +2,8 @@
 
 ## Data path
 
-1. The tokenizer identifies an exact repeated non-prefix segment `C`.
+1. The tokenizer identifies every exact repeated non-prefix segment
+   `C_1 ... C_n`; v3-v5 retain their single-segment representation.
 2. Prefix Cache gets first refusal. ProbeKV runs only when prefix reuse does
    not solve the request.
 3. For every historical context (`A`, `B`, `E`, ...), the system independently
@@ -20,7 +21,7 @@
    boundary events. Only after those events exist does the reuse planner check
    the refined full cost:
 
-   `probe + compare + visible_load + post_ready_blocking + interference_charge + repair_selection + repair + remaining_layers <= gamma * full_total`.
+   `probe + metadata + compare + visible_load + post_ready_blocking + interference_charge + repair_selection + repair + remaining_layers <= gamma * full_total`.
 
 7. While the source is loading, the scheduler may compute more dense layers of
    request A and/or run complete, non-preemptible dense steps or microbatches
@@ -45,6 +46,14 @@ audit, but `actual_reuse_boundary` is null because reuse did not execute.
 Protocol v5 additionally requires preliminary and refined values to use the
 same origin, endpoint and interference accounting mode. A Source selected at
 any early checkpoint is locked before loading; refinement cannot reselect.
+
+Protocol v6 lifts the legacy per-request Kmax and single-segment restrictions
+without altering old artifacts. It keeps up to 16 variants per retained
+content in a global byte pool, compares summaries within one 5% request budget,
+and applies the same call order independently to all detected candidate
+segments. The multi-source scheduler feeds actual layer readiness into a
+request planner that selects one common boundary and may accept only an
+economical subset (`PARTIAL_REUSE`). See `V6_MULTI_SEGMENT.md`.
 
 ## Probe depth objective
 
@@ -134,7 +143,10 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 
 | Component | Implementation | Contract |
 |---|---|---|
-| Canonical store | `source_store.py` | exact full-prefill only; model-scoped Kmax; explicit FIFO/version and LRU/replica lifecycle |
+| Legacy canonical store | `source_store.py` | v3-v5 exact full-prefill, Kmax and reproduction lifecycle |
+| v6 global Source pool | `global_source_pool.py` | 1-16 variants, global hard tiers, model soft quotas, value/FR eviction and model lifecycle |
+| v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
+| v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |
 | Budget calibration | `calibration.py` | isotonic baseline + case-grouped simultaneous conformal bounds |
 | Case manifest | `manifest.py` | token hash plus content/document split isolation |
@@ -145,6 +157,7 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Repair label | `labeling.py` | suffix-monotone safe ratio |
 | Reuse planner | `cost.py` | refined total-cost admission; selection retained on rejection |
 | Closed-loop controller | `orchestration.py` | selector abstention guard and scheduler-before-admission state machine |
+| v6 request controller | `multisegment_orchestration.py` | multi-source feedback, marginal pruning, common boundary and partial reuse |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
 | Scheduler | `scheduler.py` | strict atomic and bounded-overrun policies |
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |

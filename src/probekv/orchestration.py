@@ -99,6 +99,7 @@ class RefinedCostMeasurement:
     compare_ms: float
     repair_ms: float
     full_ms: float
+    metadata_ms: float = 0.0
     repair_selection_ms: float = 0.0
     remaining_layer_ms: float = 0.0
     cost_origin: str = "request_arrival"
@@ -120,6 +121,7 @@ class RefinedCostMeasurement:
         if min(
             self.probe_ms,
             self.compare_ms,
+            self.metadata_ms,
             self.repair_ms,
             self.full_ms,
             self.repair_selection_ms,
@@ -215,6 +217,9 @@ class ClosedLoopResult:
             "predicted_cost_endpoint": (
                 predicted.cost_endpoint if predicted is not None else None
             ),
+            "predicted_metadata_ms": (
+                predicted.metadata_ms if predicted is not None else None
+            ),
             "predicted_visible_load_ms": (
                 predicted.visible_load_ms if predicted is not None else None
             ),
@@ -295,6 +300,7 @@ class ClosedLoopResult:
                 else None
             ),
             "load_ms": timing.load_ms if timing is not None else None,
+            "metadata_ms": timing.metadata_ms if timing is not None else None,
             "overlap_ms": timing.overlap_ms if timing is not None else None,
             "visible_load_ms": (
                 timing.visible_load_ms if timing is not None else None
@@ -418,6 +424,7 @@ class TwoStageReuseController:
             repair_ratio_upper=refined.repair_ratio_upper,
             probe_ms=refined.probe_ms,
             compare_ms=refined.compare_ms,
+            metadata_ms=refined.metadata_ms,
             # load_ms is elapsed copy time including measured interference.
             load_ms=scheduling.load_ms,
             overlap_ms=scheduling.overlap_ms,

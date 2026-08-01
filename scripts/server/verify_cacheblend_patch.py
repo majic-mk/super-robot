@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from probekv.cacheblend_patch import (
@@ -23,13 +25,27 @@ def _git(repo: Path, *args: str) -> str:
     ).strip()
 
 
+def _git_with_env(repo: Path, env, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        stderr=subprocess.STDOUT,
+        env=env,
+    ).strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cacheblend", required=True)
     parser.add_argument(
         "--mode",
         required=True,
-        choices=("cb0", "probekv", "probekv_closed_loop"),
+        choices=(
+            "cb0",
+            "probekv",
+            "probekv_closed_loop",
+            "probekv_v6_multiregion",
+        ),
     )
     parser.add_argument("--manifest", default="patches/cacheblend/manifest.json")
     parser.add_argument("--output", required=True)
@@ -42,22 +58,69 @@ def main() -> int:
     if actual_commit != manifest["base_commit"]:
         raise RuntimeError("CacheBlend base commit mismatch")
     patch_paths = patch_files_for_mode(manifest_path, args.mode)
-    for patch_path in patch_paths:
+    subprocess.check_call(["git", "-C", str(cacheblend), "diff", "--check"])
+    with tempfile.TemporaryDirectory(prefix="probekv-cacheblend-verify-") as root:
+        root_path = Path(root)
+        expected_repo = root_path / "expected"
+        subprocess.check_call(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                str(cacheblend),
+                str(expected_repo),
+            ]
+        )
         subprocess.check_call(
             [
                 "git",
                 "-C",
-                str(cacheblend),
-                "apply",
-                "--unidiff-zero",
-                "--reverse",
-                "--check",
-                str(patch_path),
+                str(expected_repo),
+                "-c",
+                "advice.detachedHead=false",
+                "checkout",
+                "--quiet",
+                "--detach",
+                manifest["base_commit"],
             ]
         )
-    subprocess.check_call(["git", "-C", str(cacheblend), "diff", "--check"])
-    subprocess.check_call(["git", "-C", str(cacheblend), "add", "-u"])
-    tree = _git(cacheblend, "write-tree")
+        for patch_path in patch_paths:
+            subprocess.check_call(
+                [
+                    "git",
+                    "-C",
+                    str(expected_repo),
+                    "apply",
+                    "--unidiff-zero",
+                    "--whitespace=nowarn",
+                    str(patch_path),
+                ]
+            )
+        subprocess.check_call(
+            ["git", "-C", str(expected_repo), "diff", "--check"]
+        )
+        subprocess.check_call(
+            ["git", "-C", str(expected_repo), "add", "-u"]
+        )
+        expected_tree = _git(expected_repo, "write-tree")
+
+        alternate_index = root_path / "actual.index"
+        index_env = dict(os.environ)
+        index_env["GIT_INDEX_FILE"] = str(alternate_index)
+        subprocess.check_call(
+            ["git", "-C", str(cacheblend), "read-tree", "HEAD"],
+            env=index_env,
+        )
+        subprocess.check_call(
+            ["git", "-C", str(cacheblend), "add", "-u"],
+            env=index_env,
+        )
+        tree = _git_with_env(cacheblend, index_env, "write-tree")
+        if tree != expected_tree:
+            raise RuntimeError(
+                "patched CacheBlend tree does not equal the ordered patchset"
+            )
     payload = {
         "cacheblend_commit": actual_commit,
         "patch_mode": args.mode,

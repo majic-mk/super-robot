@@ -27,6 +27,7 @@ class LayerOption:
     repair_ms: float
     full_ms: float
     buffer_ready: bool = True
+    metadata_ms: float = 0.0
     post_ready_blocking_ms: float = 0.0
     load_interference_ms: float = 0.0
     source_ready_ms: Optional[float] = None
@@ -45,6 +46,7 @@ class LayerOption:
         return TimingBreakdown(
             probe_ms=self.probe_ms,
             compare_ms=self.compare_ms,
+            metadata_ms=self.metadata_ms,
             load_ms=self.load_ms,
             visible_load_ms=max(0.0, self.load_ms - self.overlap_ms),
             repair_ms=self.repair_ms,
@@ -132,6 +134,7 @@ def cost_breakdown_from_total(
     value_kind: CostValueKind,
     *,
     probe_ms: float = 0.0,
+    metadata_ms: float = 0.0,
     compare_ms: float = 0.0,
     visible_load_ms: float = 0.0,
     post_ready_blocking_ms: float = 0.0,
@@ -153,6 +156,7 @@ def cost_breakdown_from_total(
 
     known = (
         probe_ms
+        + metadata_ms
         + compare_ms
         + visible_load_ms
         + post_ready_blocking_ms
@@ -168,6 +172,7 @@ def cost_breakdown_from_total(
         raise ValueError("aggregate total is smaller than known components")
     return TimingBreakdown(
         probe_ms=probe_ms,
+        metadata_ms=metadata_ms,
         compare_ms=compare_ms,
         load_ms=visible_load_ms,
         visible_load_ms=visible_load_ms,
@@ -205,6 +210,8 @@ def finalize_execution(
                 RejectionReason.PREDICTED_TIME_GATE_FAILED,
             SelectionReason.MAX_PROBE_UNCERTAIN:
                 RejectionReason.SELECTION_UNCERTAIN,
+            SelectionReason.COMPARISON_BUDGET_EXHAUSTED:
+                RejectionReason.COMPARISON_BUDGET_EXHAUSTED,
         }
         rejection = rejection_by_reason.get(
             selection.selection_reason,

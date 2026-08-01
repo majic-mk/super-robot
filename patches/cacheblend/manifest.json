@@ -12,6 +12,11 @@
     "probekv_closed_loop": [
       "0001-cb0-fix-suffix-length.patch",
       "0002-probekv-segment-repair-mask.patch"
+    ],
+    "probekv_v6_multiregion": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch"
     ]
   },
   "runtime_modes": {
@@ -31,6 +36,20 @@
       "status": "adapter_complete_engine_pending_a800",
       "paper_evidence": false,
       "purpose": "selector to scheduler to refined admission to execution"
+    },
+    "closed_loop_v6": {
+      "patch_mode": "probekv_v6_multiregion",
+      "ordered_repair_regions": true,
+      "absolute_union_mask": true,
+      "per_segment_ratio": true,
+      "layer_resumable_prefill": true,
+      "async_multisource_loading": true,
+      "scheduler_feedback_required": true,
+      "cuda_event_timing_required": true,
+      "implementation": "ProbeKV MultiSegmentCacheBlendRuntime adapter",
+      "status": "patch_static_checked_engine_pending_a800",
+      "paper_evidence": false,
+      "purpose": "v6 multi-segment correctness and closed-loop execution"
     }
   },
   "innovation_claim": false,

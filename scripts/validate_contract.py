@@ -9,17 +9,24 @@ from pathlib import Path
 import yaml
 
 from probekv.matrix import main_rag_matrix, profile_matrix
+from probekv.config import load_config
 from probekv.statistics import minimum_zero_violation_trials
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--contract", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--contract", default="configs/experiment_contract.yaml"
+    )
+    parser.add_argument(
+        "--output", default="artifacts/contract_validation.json"
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     errors = []
+    if contract.get("schema_version") != 6:
+        errors.append("current experiment contract must use schema version 6")
     invariants = contract["invariants"]
     if invariants["canonical_source_origin"] != "full_prefill":
         errors.append("canonical source origin must be full_prefill")
@@ -29,6 +36,33 @@ def main() -> int:
         errors.append("online Kmax must be 4")
     if max(invariants["offline_k"]) != 8:
         errors.append("offline K ablation must include 8")
+    v6 = contract.get("protocol_versions", {}).get("v6_main", {})
+    required_v6 = {
+        "legacy_online_kmax_forbidden": True,
+        "max_stored_variants_per_content": 16,
+        "candidate_compare_policy": "all_within_request_budget",
+        "max_compared_variants_per_segment": 16,
+        "probe_metadata_compare_budget_fraction": 0.05,
+        "segment_planning_policy": "all_exact_nonprefix",
+        "max_detected_segments": None,
+        "boundary_policy": "common",
+        "partial_reuse_enabled": True,
+        "joint_quality_policy": "simultaneous_conformal",
+        "interference_accounting_mode": "explicit_penalty",
+        "source_pool_policy": "global_hard_model_soft",
+    }
+    for key, expected in required_v6.items():
+        if v6.get(key) != expected:
+            errors.append("invalid v6 contract field %s" % key)
+    if v6.get("k_ablation") != [1, 2, 4, 8, 16]:
+        errors.append("v6 K ablation must cover 1,2,4,8,16")
+    try:
+        local_v6 = load_config("configs/local_system_v6.json")
+    except (OSError, ValueError) as error:
+        errors.append("local v6 config is invalid: %s" % error)
+    else:
+        if local_v6.protocol_version != 6:
+            errors.append("local v6 config did not load as protocol 6")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")

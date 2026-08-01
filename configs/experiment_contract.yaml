@@ -1,11 +1,11 @@
-schema_version: 5
+schema_version: 6
 project: ProbeKV
 core_claim: >-
   target-model current-early-state-guided selection among multiple canonical
   historical KV variants of the same exact non-prefix segment, using
   variant-specific conservative safe total-reuse cost bounds and abstention
 frozen_at: 2026-07-26
-amended_at: 2026-07-29
+amended_at: 2026-08-01
 amendment_note: >-
   Following the pre-experiment design review, every layer through the 25%
   ceiling is the main probe policy. The original sparse checkpoints remain a
@@ -36,6 +36,12 @@ amendment_note: >-
   refined decisions to instantiate the same component cost identity. The
   Source selected during probe is locked; refined admission can only accept
   reuse or reject it and run full recomputation.
+  Protocol version 6 is a new, explicit protocol and does not reinterpret v3-v5
+  artifacts. It replaces the legacy per-request Kmax rule with a global pool of
+  up to 16 canonical variants per retained content, plans every detected exact
+  non-prefix segment, compares summaries only within a request-level 5% budget,
+  and performs multi-segment partial reuse through one actual common boundary.
+  Selection, per-segment admission, and request execution mode remain separate.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -43,14 +49,15 @@ invariants:
   prefix_cache_precedence: true
   require_current_historical_context_distinct: true
   user_question_position: after_retrieved_chunks
-  online_kmax: 4
-  offline_k: [1, 2, 4, 8]
+  online_kmax: 4  # legacy v3-v5 only; forbidden in v6 configuration files
+  offline_k: [1, 2, 4, 8]  # legacy v3-v5
   default_gamma: 0.8
   gamma_ablation: [0.6, 0.7, 0.8, 0.9]
   max_probe_fraction: 0.25
   legacy_force_selection_at_probe_max: false
-  selected_source_none_implies_reuse_rejected: true
-  full_recompute_implies_reuse_rejected: true
+  legacy_selected_source_none_implies_reuse_rejected: true
+  selected_source_none_implies_reuse_forbidden: true
+  full_recompute_implies_no_admission_accepted: true
   selector_abstention_forbids_source_loading: true
   scheduler_feedback_precedes_final_admission: true
   selected_source_locked_before_loading: true
@@ -90,6 +97,51 @@ protocol_versions:
       - boundary_conditioned_profiles
       - canonical_sources_read_only
       - cuda_event_timing
+  v6_main:
+    supersedes_protocol_for_new_experiments: v5_main
+    runtime_backend: cacheblend_multisegment_closed_loop
+    legacy_online_kmax_forbidden: true
+    prefix_cache_precedence: true
+    max_stored_variants_per_content: 16
+    min_variants_per_retained_content: 1
+    candidate_compare_policy: all_within_request_budget
+    max_compared_variants_per_segment: 16
+    k_ablation: [1, 2, 4, 8, 16]
+    probe_metadata_compare_budget_fraction: 0.05
+    segment_planning_policy: all_exact_nonprefix
+    max_detected_segments: null
+    boundary_policy: common
+    partial_reuse_enabled: true
+    joint_quality_policy: simultaneous_conformal
+    interference_accounting_mode: explicit_penalty
+    source_pool_policy: global_hard_model_soft
+    source_eviction_policy: value_density_v1
+    cachecraft_eviction_baseline: cache_craft_fr
+    source_lock_precedes_loading: true
+    scheduler_feedback_precedes_refined_admission: true
+    scheduler_source_feedback:
+      - source_load_start_ms
+      - source_load_finish_ms
+      - source_ready_ms
+      - layer_ready_ms
+      - transferred_bytes
+      - wasted_bytes
+    request_scheduler_feedback:
+      - scheduled_step_finish_ms
+      - a_resume_ms
+      - post_ready_blocking_ms
+      - load_interference_ms
+      - useful_a_dense_ms
+      - useful_other_request_work_ms
+    no_source_selection_implies_direct_dense: true
+    comparison_complexity: sum_per_segment_candidates
+    forbidden_comparison_complexity: cartesian_source_combinations
+    correctness_grid:
+      segment_counts: [1, 2, 5, 10]
+      variant_counts: [1, 4, 16]
+    multisegment_pilot:
+      segment_counts: [5, 10, 15]
+      hit_regimes: [all_hit, partial_hit, all_miss]
 
 probe_policy:
   objective: earliest_calibrated_safe_and_economical_decision
@@ -238,8 +290,32 @@ source_lifecycle:
   online_version_policy: fifo_unleased
   h1_pilot_policy: fixed_resident_four_sources
   replica_policy: byte_aware_lru_unleased
-  selector_signals_may_affect_eviction: false
+  selector_signals_may_affect_eviction: false  # legacy v3-v5
   eviction_events_required: true
+  v6:
+    canonical_identity: [model_signature, content_hash, source_id]
+    global_hard_tier_capacities: true
+    model_soft_quotas: true
+    value_density_factors: [p_hit, p_select, p_admit, expected_saved_ms, resident_bytes]
+    selector_and_admission_statistics_affect_eviction: true
+    probation_observations: 2
+    eviction_order:
+      - unleased_low_value_gpu_replica
+      - unleased_low_value_cpu_or_ssd_replica
+      - redundant_variant
+      - whole_low_value_content
+    busy_sources_protected: [leased, copy_in_flight, execution_in_flight]
+    model_namespace_states: [ACTIVE, DRAINING, RETIRED, PURGING, DELETED]
+    selective_repair_promotion: false
+
+multisegment_policy:
+  ordered_region_types: [PREFIX_EXACT, REUSE_CANDIDATE, DENSE, MANDATORY_SUFFIX]
+  one_locked_winner_loaded_per_segment: true
+  common_actual_reuse_boundary: true
+  request_execution_modes: [ALL_REUSE, PARTIAL_REUSE, FULL_RECOMPUTE]
+  per_segment_repair_ratios: true
+  union_repair_mask_uses_absolute_positions: true
+  all_ratios_one_must_equal_dense_output: true
 
 statistics:
   bootstrap_iterations: 10000

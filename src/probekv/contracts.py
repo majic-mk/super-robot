@@ -31,6 +31,7 @@ class SelectionReason(str, Enum):
     MAX_PROBE_UNCERTAIN = "max_probe_uncertain"
     NO_QUALITY_SAFE_SOURCE = "no_quality_safe_source"
     NO_ECONOMIC_SOURCE = "no_economic_source"
+    COMPARISON_BUDGET_EXHAUSTED = "comparison_budget_exhausted"
 
 
 class RejectionReason(str, Enum):
@@ -39,6 +40,7 @@ class RejectionReason(str, Enum):
     FINAL_TIME_GATE_FAILED = "final_time_gate_failed"
     SELECTION_UNCERTAIN = "selection_uncertain"
     NO_FEASIBLE_REUSE_LAYER = "no_feasible_reuse_layer"
+    COMPARISON_BUDGET_EXHAUSTED = "comparison_budget_exhausted"
 
 
 class ExecutionMode(str, Enum):
@@ -326,6 +328,7 @@ class TimingBreakdown:
     visible_load_ms: float
     repair_ms: float
     full_ms: float
+    metadata_ms: float = 0.0
     post_ready_blocking_ms: float = 0.0
     load_interference_ms: float = 0.0
     source_ready_ms: Optional[float] = None
@@ -346,6 +349,7 @@ class TimingBreakdown:
         if min(
             self.probe_ms,
             self.compare_ms,
+            self.metadata_ms,
             self.load_ms,
             self.visible_load_ms,
             self.repair_ms,
@@ -424,6 +428,7 @@ class TimingBreakdown:
     def reuse_total_ms(self) -> float:
         return (
             self.probe_ms
+            + self.metadata_ms
             + self.compare_ms
             + self.visible_load_ms
             + self.post_ready_blocking_ms

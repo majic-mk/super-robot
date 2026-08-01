@@ -16,13 +16,23 @@ from .io import (
 from .local_e1e2 import run_local_e1e2
 from .manifest import case_from_mapping, manifest_digest, validate_manifest
 from .simulation import run_local_simulation
+from .v6_simulation import run_v6_local_simulation
+from .v6_manifest import (
+    request_case_from_mapping,
+    request_manifest_digest,
+    validate_request_manifest,
+)
 
 
 def _simulate(config_path: str, output_override: str = None) -> int:
     config = load_config(config_path)
     if config.evidence_class != "local_simulation":
         raise ValueError("simulate command only accepts local_simulation configs")
-    result = run_local_simulation(config)
+    result = (
+        run_v6_local_simulation(config)
+        if config.protocol_version == 6
+        else run_local_simulation(config)
+    )
     output = Path(output_override or config.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     workspace = Path.cwd()
@@ -124,8 +134,41 @@ def _build_manifest(
     return 0
 
 
+def _validate_request_manifest(input_path: str) -> int:
+    cases = []
+    with Path(input_path).open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                cases.append(request_case_from_mapping(json.loads(line)))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "invalid v6 request manifest row %d" % line_number
+                ) from error
+    validate_request_manifest(cases)
+    print(
+        json.dumps(
+            {
+                "input": str(Path(input_path).resolve()),
+                "cases": len(cases),
+                "manifest_digest": request_manifest_digest(cases),
+                "protocol_version": 6,
+                "valid": True,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="probekv")
+    parser.add_argument(
+        "--config",
+        help="direct local-simulation shorthand; equivalent to simulate --config",
+    )
+    parser.add_argument("--output", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command")
     validate = subparsers.add_parser("validate-config")
     validate.add_argument("--config", required=True)
@@ -141,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--output", required=True)
     manifest.add_argument("--model-signature", required=True)
     manifest.add_argument("--seed", type=int, default=20260726)
+    request_manifest = subparsers.add_parser("validate-request-manifest")
+    request_manifest.add_argument("--input", required=True)
     return parser
 
 
@@ -157,6 +202,10 @@ def main(argv=None) -> int:
         return _build_manifest(
             args.input, args.output, args.model_signature, args.seed
         )
+    if args.command == "validate-request-manifest":
+        return _validate_request_manifest(args.input)
+    if args.config:
+        return _simulate(args.config, args.output)
     parser.print_help()
     return 2
 

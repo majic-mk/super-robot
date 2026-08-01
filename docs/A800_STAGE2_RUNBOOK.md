@@ -20,6 +20,36 @@ python scripts/server/validate_cacheblend_closed_loop.py \
 A whole-request `generate()` wrapper is rejected by that gate. CB4 requires
 real layer-boundary scheduler feedback and CUDA event timing.
 
+Protocol v6 is a separate follow-on gate using
+`configs/a800_closed_loop_v6.json`. Before any v6 H1/H2 timing run, execute the
+1/2/5/10-segment by K=1/4/16 correctness and microbenchmark grid described in
+`V6_MULTI_SEGMENT.md`. v5 artifacts cannot be relabeled as v6, and a fake/local
+runtime remains `paper_evidence:false`.
+
+Prepare that tree with the explicit v6 patch mode:
+
+```bash
+bash scripts/server/prepare_cacheblend.sh \
+  "$STAGE2_ROOT/src/CacheBlend-probekv-v6" probekv_v6_multiregion
+python scripts/server/verify_cacheblend_patch.py \
+  --cacheblend "$STAGE2_ROOT/src/CacheBlend-probekv-v6" \
+  --mode probekv_v6_multiregion \
+  --output "$ARTIFACTS/v6_patch.json"
+```
+
+Freeze the 140-cell bring-up manifest before starting the GPU worker:
+
+```bash
+python scripts/server/build_v6_a800_jobs.py \
+  --config configs/v6_a800_microbench.json \
+  --output "$ARTIFACTS/v6_jobs"
+```
+
+The manifest covers 1/2/5/10-segment correctness at K=1/4/16, per-layer
+summary and K=1/2/4/8/16 comparison profiles, 1/5/10/15-segment comparison and
+multi-source loading, and the full union-repair ratio grid. It defines work;
+it does not claim the A800 jobs have run.
+
 Protocol v4 preserves current-only chunks after C as `current_suffix_context`;
 that field is part of the case digest. Therefore every earlier 150-case
 manifest, CB job file, H1 job file and readiness artifact is stale even when
@@ -215,4 +245,3 @@ The primary H1 decision is valid when all 5,400 primary rows are accounted for.
 The 4,320 anchor rows may remain explicitly pending after the second hard stop,
 but must be completed before formal E1.  Release the cloud instance from the
 provider console after copying the artifact directory.
-

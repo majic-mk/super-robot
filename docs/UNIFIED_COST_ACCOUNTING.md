@@ -26,6 +26,7 @@ Both stages use the same request-arrival to first-token-ready identity:
 ```text
 reuse_total =
     probe
+  + metadata
   + compare
   + visible_load
   + post_ready_blocking
