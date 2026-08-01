@@ -60,6 +60,8 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `docs/A100_RUNBOOK.md`: formal-server timing and evidence collection rules
   (legacy filename retained for stable links).
 - `docs/A800_STAGE2_RUNBOOK.md`: exact CB0-CB3 and 150-case H1 pilot commands.
+- `docs/A800_V6_RENTAL_CHECKLIST.md`: final no-GPU artifact gate, pinned server
+  installation, model audit and mandatory A800 runtime-qualification boundary.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.
 - `docs/RAG_DATA.md`: real-dataset normalization and Source construction rules.
 - `docs/E1_JOBS.md`: deterministic repair-grid sharding and result audit.
@@ -96,3 +98,11 @@ python scripts/server/verify_paper_environment.py \
 git rev-parse HEAD
 git status --short
 ```
+
+For protocol v6, passing the generic environment check is not sufficient.
+`scripts/server/verify_v6_runtime_qualification.py` must also report both
+`gpu_runtime_qualified: true` and `h1_h2_execution_allowed: true`. The current
+multi-segment adapter and patchset are locally verified, while the concrete
+layer-resumable pinned-vLLM engine hook remains a source-implementation blocker
+that must subsequently pass the A800 qualification gate. It must not be
+represented as already implemented or executed.

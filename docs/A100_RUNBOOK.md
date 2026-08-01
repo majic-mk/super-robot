@@ -25,7 +25,7 @@ Initial server preparation:
 
 ```bash
 python -m pip install -e . -r requirements/ci.txt -r requirements/analysis.txt
-bash scripts/server/run_preflight.sh
+bash scripts/server/run_preflight.sh gpu
 bash scripts/server/prepare_cacheblend.sh /absolute/external/path/CacheBlend
 ```
 

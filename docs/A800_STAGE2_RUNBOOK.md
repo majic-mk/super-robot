@@ -26,6 +26,11 @@ Protocol v6 is a separate follow-on gate using
 `V6_MULTI_SEGMENT.md`. v5 artifacts cannot be relabeled as v6, and a fake/local
 runtime remains `paper_evidence:false`.
 
+The authoritative final v6 installation and rental gate is
+`A800_V6_RENTAL_CHECKLIST.md`. In particular, CB1-CB3 and the legacy H1 case
+runner do not qualify the v6 layer-resumable runtime. Do not start v6 H1/H2
+unless `verify_v6_runtime_qualification.py` explicitly unlocks them.
+
 Prepare that tree with the explicit v6 patch mode:
 
 ```bash
@@ -42,6 +47,8 @@ Freeze the 140-cell bring-up manifest before starting the GPU worker:
 ```bash
 python scripts/server/build_v6_a800_jobs.py \
   --config configs/v6_a800_microbench.json \
+  --contract configs/experiment_contract.yaml \
+  --server-lock configs/a800_server_lock.json \
   --output "$ARTIFACTS/v6_jobs"
 ```
 

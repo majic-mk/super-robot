@@ -43,6 +43,11 @@ class CacheBlendPatchTests(unittest.TestCase):
                 "layer_resumable_prefill"
             ]
         )
+        self.assertTrue(
+            manifest["runtime_modes"]["closed_loop_v6"][
+                "absolute_union_mask"
+            ]
+        )
 
     def test_runtime_patch_freezes_segment_only_denominator(self):
         patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(

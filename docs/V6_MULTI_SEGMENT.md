@@ -139,6 +139,13 @@ The local adapter and fake-runtime invariants are implemented and tested. The
 pinned CacheBlend CUDA/vLLM execution must still pass the A800 correctness and
 microbenchmark gates before it can produce performance evidence.
 
+The final pre-rental workflow is defined in `A800_V6_RENTAL_CHECKLIST.md`.
+The 140-job manifest now binds the jobs to the exact ProbeKV commit, experiment
+contract, server lock, Mistral revision and ordered CacheBlend patch digest.
+The no-GPU gate authorizes only a short runtime bring-up rental. The concrete
+engine hook is still a source-implementation blocker, and H1/H2 remains
+hard-blocked until that engine subsequently produces a passing A800 audit.
+
 ## Global Source pool
 
 Canonical identity is

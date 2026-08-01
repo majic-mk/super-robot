@@ -1,0 +1,249 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import yaml
+
+from probekv.v6_runtime_qualification import evaluate_runtime_qualification
+from probekv.v6_server_readiness import evaluate_no_gpu_readiness
+from scripts.server.download_model_snapshot import audit_snapshot
+
+
+def lock_record():
+    return {
+        "platform": {
+            "python_major_minor": "3.10",
+            "minimum_cpu_count": 16,
+            "minimum_host_memory_gib": 110,
+            "minimum_data_disk_free_gib": 250,
+        },
+        "stack": {
+            "pytorch": "2.2.1",
+            "pytorch_cuda": "12.1",
+            "xformers": "0.0.25",
+            "vllm": "0.4.1",
+            "numpy": "1.26.4",
+            "transformers": "4.40.2",
+            "tokenizers": "0.19.1",
+            "huggingface-hub": "0.36.2",
+            "ray": "2.10.0",
+            "cmake": "4.4.0",
+            "ninja": "1.13.0",
+            "cacheblend_commit": "cb",
+            "cacheblend_patch_mode": "probekv_v6_multiregion",
+        },
+        "model": {"model_id": "model", "revision": "revision"},
+        "runtime": {
+            "backend": "cacheblend_multisegment_closed_loop",
+            "implementation_status": "engine_pending",
+            "required_capabilities": [
+                "async_multisource_loading",
+                "layer_resumable_prefill",
+            ],
+        },
+    }
+
+
+def job_manifest():
+    return {
+        "protocol_version": 6,
+        "paper_evidence": False,
+        "jobs": 140,
+        "job_digest": "job-digest",
+        "jobs_sha256": "jobs",
+        "code_commit": "code",
+        "git_clean": True,
+        "config_sha256": "config",
+        "contract_sha256": "contract",
+        "server_lock_sha256": "lock",
+        "model": {"model_id": "model", "revision": "revision"},
+        "runtime": {"backend": "cacheblend_multisegment_closed_loop"},
+        "cacheblend": {"patch_sha256": "patch"},
+    }
+
+
+def host_record():
+    return {
+        "python": "3.10.14",
+        "cpu_count": 18,
+        "host_memory_gib": 120,
+        "data_disk_free_gib": 300,
+        "git_commit": "code",
+        "git_status": "",
+        "nvcc_cuda": "12.1",
+        "packages": {
+            "torch": "2.2.1+cu121",
+            "xformers": "0.0.25",
+            "vllm": "0.4.1",
+            "numpy": "1.26.4",
+            "transformers": "4.40.2",
+            "tokenizers": "0.19.1",
+            "huggingface-hub": "0.36.2",
+            "ray": "2.10.0",
+            "cmake": "4.4.0",
+            "ninja": "1.13.0",
+        },
+    }
+
+
+class NoGpuReadinessTests(unittest.TestCase):
+    def test_complete_artifacts_allow_rental_but_not_h1(self):
+        result = evaluate_no_gpu_readiness(
+            lock_record(),
+            job_manifest(),
+            host_record(),
+            {"complete": True, "model_id": "model", "revision": "revision"},
+            {
+                "cacheblend_commit": "cb",
+                "patch_mode": "probekv_v6_multiregion",
+                "cacheblend_patch_sha256": "patch",
+                "cacheblend_tree": "tree",
+            },
+            expected_code_commit="code",
+            actual_hashes={
+                "jobs_sha256": "jobs",
+                "config_sha256": "config",
+                "contract_sha256": "contract",
+                "server_lock_sha256": "lock",
+            },
+        )
+        self.assertTrue(result["artifact_preparation_ready"])
+        self.assertTrue(result["gpu_rental_ready_for_runtime_bringup"])
+        self.assertFalse(result["gpu_rental_ready_for_runtime_qualification"])
+        self.assertIsNotNone(result["blocking_source_implementation"])
+        self.assertFalse(result["gpu_runtime_qualified"])
+        self.assertFalse(result["h1_h2_execution_allowed"])
+
+    def test_wrong_stack_dirty_tree_and_model_fail(self):
+        host = host_record()
+        host["git_status"] = " M source.py"
+        host["packages"]["vllm"] = "0.5.0"
+        result = evaluate_no_gpu_readiness(
+            lock_record(),
+            job_manifest(),
+            host,
+            {"complete": False, "model_id": "model", "revision": "other"},
+            {
+                "cacheblend_commit": "wrong",
+                "patch_mode": "probekv_v6_multiregion",
+                "cacheblend_patch_sha256": "patch",
+                "cacheblend_tree": "tree",
+            },
+            expected_code_commit="code",
+            actual_hashes={
+                "jobs_sha256": "jobs",
+                "config_sha256": "config",
+                "contract_sha256": "contract",
+                "server_lock_sha256": "lock",
+            },
+        )
+        self.assertFalse(result["artifact_preparation_ready"])
+        self.assertGreaterEqual(len(result["failures"]), 4)
+
+    def test_model_snapshot_audit_requires_config_tokenizer_and_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "revision"
+            root.mkdir()
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            (root / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+            (root / "tokenizer.json").write_text("{}", encoding="utf-8")
+            (root / "model.safetensors").write_bytes(b"weights")
+            audit = audit_snapshot(root, "model", "revision")
+            self.assertTrue(audit["complete"])
+            self.assertEqual(audit["weight_files"], ["model.safetensors"])
+
+
+class RuntimeQualificationTests(unittest.TestCase):
+    def valid_audit(self):
+        return {
+            "paper_evidence": False,
+            "runtime_backend": "cacheblend_multisegment_closed_loop",
+            "concrete_engine_hook": True,
+            "capabilities": {
+                "async_multisource_loading": True,
+                "layer_resumable_prefill": True,
+            },
+            "code_commit": "code",
+            "job_digest": "job-digest",
+            "model_revision": "revision",
+            "cacheblend_patch_sha256": "patch",
+            "correctness": {
+                "r1_dense_token_ids_equal": True,
+                "max_teacher_forced_logit_relative_l2": 0.00001,
+                "canonical_source_digests_unchanged": True,
+                "absolute_union_mask_verified": True,
+            },
+            "jobs": {"planned": 140, "completed": 140, "failed": 0},
+        }
+
+    def test_full_a800_audit_unlocks_h1_h2(self):
+        result = evaluate_runtime_qualification(
+            lock_record(), job_manifest(), self.valid_audit()
+        )
+        self.assertTrue(result["gpu_runtime_qualified"])
+        self.assertTrue(result["h1_h2_execution_allowed"])
+
+    def test_contract_only_adapter_cannot_unlock_experiments(self):
+        audit = self.valid_audit()
+        audit["concrete_engine_hook"] = False
+        audit["jobs"]["completed"] = 0
+        result = evaluate_runtime_qualification(
+            lock_record(), job_manifest(), audit
+        )
+        self.assertFalse(result["gpu_runtime_qualified"])
+        self.assertTrue(any("concrete" in item for item in result["failures"]))
+
+
+class ServerScriptSafetyTests(unittest.TestCase):
+    def test_setup_script_has_exact_stack_and_no_embedded_credentials(self):
+        text = Path("scripts/server/setup_a800_env.sh").read_text(encoding="utf-8")
+        for expected in ("torch==2.2.1", "xformers==0.0.25", "release 12\\.1"):
+            self.assertIn(expected, text)
+        lowered = text.lower()
+        self.assertNotIn("password=", lowered)
+        self.assertNotIn("hf_token=", lowered)
+        legacy = Path("scripts/server/run_preflight.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('mode="${1:-gpu}"', legacy)
+        self.assertIn('if [[ "$mode" == "gpu" ]]', legacy)
+
+    def test_package_metadata_matches_runtime_syntax_floor(self):
+        pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+        setup_cfg = Path("setup.cfg").read_text(encoding="utf-8")
+        self.assertIn('requires-python = ">=3.10"', pyproject)
+        self.assertIn("python_requires = >=3.10", setup_cfg)
+
+    def test_server_lock_matches_contract_and_exact_install_file(self):
+        lock = json.loads(
+            Path("configs/a800_server_lock.json").read_text(encoding="utf-8")
+        )
+        contract = yaml.safe_load(
+            Path("configs/experiment_contract.yaml").read_text(encoding="utf-8")
+        )
+        primary = contract["stacks"]["primary"]
+        self.assertEqual(lock["stack"]["cacheblend_commit"], primary["commit"])
+        self.assertEqual(lock["stack"]["vllm"], str(primary["vllm"]))
+        self.assertEqual(lock["stack"]["pytorch"], str(primary["pytorch"]))
+        self.assertEqual(lock["stack"]["xformers"], str(primary["xformers"]))
+        requirements = Path("requirements/server-tools.txt").read_text(
+            encoding="utf-8"
+        )
+        for package in (
+            "numpy",
+            "transformers",
+            "tokenizers",
+            "huggingface-hub",
+            "ray",
+            "cmake",
+            "ninja",
+        ):
+            self.assertIn(
+                "%s==%s" % (package, lock["stack"][package]),
+                requirements,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

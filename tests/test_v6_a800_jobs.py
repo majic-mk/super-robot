@@ -2,7 +2,11 @@ import json
 import unittest
 from pathlib import Path
 
-from probekv.v6_a800_jobs import V6A800JobKind, build_v6_a800_jobs
+from probekv.v6_a800_jobs import (
+    V6A800JobKind,
+    build_v6_a800_job_manifest,
+    build_v6_a800_jobs,
+)
 
 
 class V6A800JobMatrixTests(unittest.TestCase):
@@ -34,6 +38,37 @@ class V6A800JobMatrixTests(unittest.TestCase):
         }
         self.assertEqual(profile_segments, {1, 5, 10, 15})
         self.assertEqual(len({job.job_id for job in jobs}), len(jobs))
+        self.assertEqual(len(jobs), 140)
+
+    def test_manifest_binds_jobs_to_code_model_and_cacheblend(self):
+        raw = json.loads(
+            Path("configs/v6_a800_microbench.json").read_text(encoding="utf-8")
+        )
+        jobs = build_v6_a800_jobs(raw)
+        manifest = build_v6_a800_job_manifest(
+            jobs,
+            jobs_sha256="jobs",
+            code_commit="a" * 40,
+            git_clean=True,
+            config_sha256="config",
+            contract_sha256="contract",
+            server_lock_sha256="lock",
+            model_id="model",
+            model_revision="b" * 40,
+            runtime_backend="cacheblend_multisegment_closed_loop",
+            runtime_implementation_status="engine_pending",
+            cacheblend_commit="c" * 40,
+            cacheblend_patch_mode="probekv_v6_multiregion",
+            cacheblend_patch_sha256="patch",
+        )
+        self.assertEqual(manifest["jobs"], 140)
+        self.assertEqual(manifest["code_commit"], "a" * 40)
+        self.assertEqual(manifest["model"]["revision"], "b" * 40)
+        self.assertEqual(
+            manifest["cacheblend"]["patch_mode"],
+            "probekv_v6_multiregion",
+        )
+        self.assertFalse(manifest["runtime"]["qualified"])
 
 
 if __name__ == "__main__":

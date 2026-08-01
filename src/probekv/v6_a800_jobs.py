@@ -167,3 +167,80 @@ def v6_a800_job_digest(jobs: Sequence[V6A800Job]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def build_v6_a800_job_manifest(
+    jobs: Sequence[V6A800Job],
+    *,
+    jobs_sha256: str,
+    code_commit: str,
+    git_clean: bool,
+    config_sha256: str,
+    contract_sha256: str,
+    server_lock_sha256: str,
+    model_id: str,
+    model_revision: str,
+    runtime_backend: str,
+    runtime_implementation_status: str,
+    cacheblend_commit: str,
+    cacheblend_patch_mode: str,
+    cacheblend_patch_sha256: str,
+) -> Dict[str, Any]:
+    """Bind the frozen job matrix to every input needed on the A800.
+
+    A digest of only the job dimensions is insufficient: the same 140 rows
+    could otherwise be executed with different code, model weights, repair
+    patches or runtime capabilities.  The readiness gate consumes this record
+    before any GPU job is allowed to start.
+    """
+
+    required_text = {
+        "jobs_sha256": jobs_sha256,
+        "code_commit": code_commit,
+        "config_sha256": config_sha256,
+        "contract_sha256": contract_sha256,
+        "server_lock_sha256": server_lock_sha256,
+        "model_id": model_id,
+        "model_revision": model_revision,
+        "runtime_backend": runtime_backend,
+        "runtime_implementation_status": runtime_implementation_status,
+        "cacheblend_commit": cacheblend_commit,
+        "cacheblend_patch_mode": cacheblend_patch_mode,
+        "cacheblend_patch_sha256": cacheblend_patch_sha256,
+    }
+    missing = [key for key, value in required_text.items() if not str(value).strip()]
+    if missing:
+        raise ValueError(
+            "v6 A800 provenance is missing: %s" % ", ".join(sorted(missing))
+        )
+    if any(job.paper_evidence for job in jobs):
+        raise ValueError("v6 A800 bring-up manifest cannot contain paper jobs")
+    return {
+        "schema_version": 2,
+        "protocol_version": 6,
+        "evidence_class": "server_pilot",
+        "paper_evidence": False,
+        "jobs": len(jobs),
+        "job_digest": v6_a800_job_digest(jobs),
+        "jobs_sha256": jobs_sha256,
+        "code_commit": code_commit,
+        "git_clean": bool(git_clean),
+        "config_sha256": config_sha256,
+        "contract_sha256": contract_sha256,
+        "server_lock_sha256": server_lock_sha256,
+        "model": {
+            "model_id": model_id,
+            "revision": model_revision,
+        },
+        "runtime": {
+            "backend": runtime_backend,
+            "implementation_status": runtime_implementation_status,
+            "qualified": False,
+        },
+        "cacheblend": {
+            "base_commit": cacheblend_commit,
+            "patch_mode": cacheblend_patch_mode,
+            "patch_sha256": cacheblend_patch_sha256,
+        },
+        "next_required_gate": "A800-runtime-qualification",
+    }

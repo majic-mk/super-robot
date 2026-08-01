@@ -1,0 +1,9 @@
+-r data.txt
+numpy==1.26.4
+transformers==4.40.2
+tokenizers==0.19.1
+huggingface-hub==0.36.2
+ray==2.10.0
+cmake==4.4.0
+ninja==1.13.0
+packaging>=23

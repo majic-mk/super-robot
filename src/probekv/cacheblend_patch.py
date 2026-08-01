@@ -67,17 +67,23 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
     ):
         raise ValueError("unexpected CacheBlend base commit")
     modes = manifest.get("patches")
-    required_modes = {"cb0", "probekv", "probekv_closed_loop"}
+    required_modes = {
+        "cb0",
+        "probekv",
+        "probekv_closed_loop",
+        "probekv_v6_multiregion",
+    }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
-            "patch manifest must define cb0, probekv, and "
-            "probekv_closed_loop modes"
+            "patch manifest must define cb0, probekv, "
+            "probekv_closed_loop and probekv_v6_multiregion modes"
         )
     runtime_modes = manifest.get("runtime_modes")
     if (
         not isinstance(runtime_modes, dict)
         or "h1_case_runner" not in runtime_modes
         or "closed_loop_v5" not in runtime_modes
+        or "closed_loop_v6" not in runtime_modes
     ):
         raise ValueError("patch manifest must define CacheBlend runtime modes")
     closed_loop = runtime_modes["closed_loop_v5"]
@@ -91,6 +97,20 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
             raise ValueError(
                 "closed_loop_v5 must require %s" % key
             )
+    closed_loop_v6 = runtime_modes["closed_loop_v6"]
+    for key in (
+        "ordered_repair_regions",
+        "absolute_union_mask",
+        "per_segment_ratio",
+        "layer_resumable_prefill",
+        "async_multisource_loading",
+        "scheduler_feedback_required",
+        "cuda_event_timing_required",
+    ):
+        if closed_loop_v6.get(key) is not True:
+            raise ValueError("closed_loop_v6 must require %s" % key)
+    if closed_loop_v6.get("patch_mode") != "probekv_v6_multiregion":
+        raise ValueError("closed_loop_v6 must use the v6 multi-region patch mode")
     return manifest
 
 
