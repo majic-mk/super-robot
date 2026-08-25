@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from probekv.v6_a800_jobs import (
+    V6A800Job,
     V6A800JobKind,
     build_v6_a800_job_manifest,
     build_v6_a800_jobs,
@@ -40,6 +41,9 @@ class V6A800JobMatrixTests(unittest.TestCase):
         self.assertEqual(profile_segments, {1, 5, 10, 15})
         self.assertEqual(len({job.job_id for job in jobs}), len(jobs))
         self.assertEqual(len(jobs), 140)
+        self.assertEqual(
+            [V6A800Job.from_row(job.to_row()) for job in jobs], list(jobs)
+        )
 
     def test_manifest_binds_jobs_to_code_model_and_cacheblend(self):
         raw = json.loads(

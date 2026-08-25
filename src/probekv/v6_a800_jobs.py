@@ -55,6 +55,12 @@ class V6A800Job:
         row["kind"] = self.kind.value
         return row
 
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "V6A800Job":
+        values = dict(row)
+        values["kind"] = V6A800JobKind(str(values["kind"]))
+        return cls(**values)
+
 
 def _job(kind: V6A800JobKind, **values: Any) -> V6A800Job:
     identity = json.dumps(

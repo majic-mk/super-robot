@@ -23,6 +23,16 @@ class QualificationJobResult:
         if not self.job_id or self.gpu_ms < 0 or self.host_ms < 0:
             raise ValueError("invalid qualification result")
 
+    def to_row(self) -> Dict[str, Any]:
+        return {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+        }
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "QualificationJobResult":
+        return cls(**dict(row))
+
 
 class QualificationExecutor(Protocol):
     concrete_engine_hook: bool
@@ -70,6 +80,16 @@ def dispatch_qualification(
     if missing:
         raise RuntimeError("qualification executor lacks: %s" % ", ".join(missing))
     results = tuple(executor.execute(job) for job in jobs)
+    validate_qualification_results(jobs, results)
+    return results
+
+
+def validate_qualification_results(
+    jobs: Sequence[V6A800Job],
+    results: Sequence[QualificationJobResult],
+) -> None:
+    """Validate a complete immutable result sequence, including resumed runs."""
+
     if tuple(result.job_id for result in results) != tuple(job.job_id for job in jobs):
         raise RuntimeError("qualification results changed immutable job order")
     for result in results:
@@ -90,4 +110,3 @@ def dispatch_qualification(
             raise RuntimeError("qualification mutated a canonical Source")
         if not result.absolute_union_mask_verified:
             raise RuntimeError("absolute-position union mask was not verified")
-    return results

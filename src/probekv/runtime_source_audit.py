@@ -31,6 +31,8 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
     engine_path = repo / "src" / "probekv" / "cacheblend_v6_online_engine.py"
     session_path = repo / "src" / "probekv" / "resumable_prefill.py"
     worker_path = repo / "src" / "probekv" / "v6_qualification_worker.py"
+    executor_path = repo / "src" / "probekv" / "v6_a800_executor.py"
+    runner_path = repo / "scripts" / "server" / "run_v6_a800_qualification.py"
     for path, markers in (
         (engine_path, (
             "class CacheBlendV6OnlineEngine",
@@ -46,6 +48,21 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
             "cuda_event_timing",
             "r1_dense_token_ids_equal",
             "teacher_forced_logit_relative_l2",
+        )),
+        (executor_path, (
+            "class RealCacheBlendA800Executor",
+            "canonical_variants",
+            "teacher_tokens",
+            "winner_variant",
+            "aggregate_relative_l2",
+            "expected_cacheblend_tree",
+            "runtime_provenance",
+        )),
+        (runner_path, (
+            "requires the frozen 140-job matrix",
+            "sentinel-only",
+            "append_jsonl_fsync",
+            "validate_qualification_results",
         )),
     ):
         if not path.is_file():

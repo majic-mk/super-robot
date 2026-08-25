@@ -129,6 +129,26 @@ First rent: Mistral only, at most four hours. Run hardware/stack gate, then A
 and C `1 Segment, K=1, r=1` sentinels, then all 140 Mistral jobs. Stop on any
 token, first-32-logit, RoPE, mask, Source digest or CUDA-event failure.
 
+The frozen real runner is resumable and refuses a dirty checkout, a different
+ProbeKV SHA, a different model revision, a different patch digest, a modified
+job JSONL, fake timing or fewer/more than 140 planned jobs:
+
+```bash
+python scripts/server/run_v6_a800_qualification.py \
+  --jobs /absolute/artifacts/v6_no_gpu_preflight/jobs_mistral/jobs_mistral.jsonl \
+  --job-manifest /absolute/artifacts/v6_no_gpu_preflight/jobs_mistral/manifest_mistral.json \
+  --model-audit /absolute/artifacts/model_audits/model_audit_mistral.json \
+  --patch-audit /absolute/artifacts/cacheblend_v6_staggered/runtime_extension_audit.json \
+  --model-key mistral \
+  --output /absolute/artifacts/v6_a800_qualification/mistral \
+  --sentinel-only
+```
+
+Remove only `--sentinel-only` to execute the matrix. If the process is
+preempted, rerun the same command with `--resume`; the runner accepts only an
+immutable successful result prefix. A failed job is durably recorded and must
+be diagnosed in a new output directory rather than overwritten.
+
 Second rent: Qwen only after the Mistral runtime passed and the Qwen handoff is
 complete. Run dense smoke, A/C r=1 sentinels and all 140 Qwen jobs. Also run a
 non-zero native Prefix Cache sentinel and verify that every layer's pre-RoPE

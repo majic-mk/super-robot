@@ -20,6 +20,10 @@ from scripts.server.install_prebuilt_vllm_extensions import parse_sm_arches
 
 def lock_record():
     return {
+        "gpu": {
+            "name_regex": "^NVIDIA A800.*80GB$",
+            "compute_capability": "8.0",
+        },
         "platform": {
             "python_major_minor": "3.10",
             "minimum_cpu_count": 16,
@@ -72,7 +76,7 @@ def job_manifest():
         "server_lock_sha256": "lock",
         "model": {"model_id": "model", "revision": "revision"},
         "runtime": {"backend": "cacheblend_multisegment_closed_loop"},
-        "cacheblend": {"patch_sha256": "patch"},
+        "cacheblend": {"patch_sha256": "patch", "tree": "tree"},
     }
 
 
@@ -242,6 +246,15 @@ class RuntimeQualificationTests(unittest.TestCase):
             "job_digest": "job-digest",
             "model_revision": "revision",
             "cacheblend_patch_sha256": "patch",
+            "runtime_provenance": {
+                "torch": "2.2.1+cu121",
+                "vllm": "0.4.1",
+                "xformers": "0.0.25",
+                "torch_cuda": "12.1",
+                "gpu_name": "NVIDIA A800-SXM4-80GB",
+                "compute_capability": [8, 0],
+                "cacheblend_tree": "tree",
+            },
             "correctness": {
                 "r1_dense_token_ids_equal": True,
                 "max_teacher_forced_logit_relative_l2": 0.00001,
