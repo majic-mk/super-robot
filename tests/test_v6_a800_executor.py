@@ -56,6 +56,15 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("git\", \"status\", \"--porcelain", text)
         self.assertNotIn("FakeQualification", text)
 
+    def test_dense_path_restores_one_cacheblend_slot_per_layer(self):
+        text = Path("src/probekv/v6_a800_executor.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "[None, None] for _ in range(self.model_spec.num_layers)", text
+        )
+        self.assertNotIn("self.inner_model.old_kvs = []", text)
+
 
 if __name__ == "__main__":
     unittest.main()

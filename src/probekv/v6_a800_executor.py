@@ -361,7 +361,12 @@ class RealCacheBlendA800Executor:
         metadata["check"] = False
         metadata["collect"] = False
         metadata["probekv_resumable"] = False
-        self.inner_model.old_kvs = []
+        # The pinned CacheBlend forward indexes one old-KV slot at every layer
+        # even for status=full-prefill. Restore its canonical dense sentinels;
+        # an empty list fails before the attention path can ignore old KV.
+        self.inner_model.old_kvs = [
+            [None, None] for _ in range(self.model_spec.num_layers)
+        ]
         tensors = self._prepare(
             fixture, (), is_prompt=True, reuse=False, request_id="dense-prefill"
         )
