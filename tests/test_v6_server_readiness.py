@@ -280,6 +280,11 @@ class ServerScriptSafetyTests(unittest.TestCase):
             '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',
             text,
         )
+        patch_setup = Path("scripts/server/prepare_cacheblend.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('python_bin="${PROBEKV_PYTHON_BIN:-python3}"', patch_setup)
+        self.assertIn('"$python_bin" - <<\'PY\'', patch_setup)
         legacy = Path("scripts/server/run_preflight.sh").read_text(
             encoding="utf-8"
         )

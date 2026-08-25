@@ -13,6 +13,12 @@ repository="https://github.com/YaoJiayi/CacheBlend.git"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 patch_dir="$repo_root/patches/cacheblend"
+python_bin="${PROBEKV_PYTHON_BIN:-python3}"
+if ! command -v "$python_bin" >/dev/null 2>&1; then
+  echo "Python is required; set PROBEKV_PYTHON_BIN if necessary" >&2
+  exit 1
+fi
+python_bin="$(command -v "$python_bin")"
 
 case "$mode" in
   cb0)
@@ -94,7 +100,7 @@ PROBEKV_CB_COMMIT="$actual_commit" \
 PROBEKV_CB_MODE="$mode" \
 PROBEKV_CB_PATCH_SHA="$patch_sha256" \
 PROBEKV_CB_TREE="$patched_tree" \
-python - <<'PY'
+"$python_bin" - <<'PY'
 import json
 import os
 
