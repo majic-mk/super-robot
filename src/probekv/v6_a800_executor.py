@@ -300,7 +300,9 @@ class RealCacheBlendA800Executor:
             request_id=request_id,
             is_prompt=is_prompt,
             seq_data={0: data},
-            sampling_params=self.SamplingParams(temperature=0, max_tokens=32),
+            sampling_params=self.SamplingParams(
+                temperature=0, max_tokens=max(32, len(output_ids) + 1)
+            ),
             block_tables={0: blocks},
             token_chunk_size=(len(fixture.prompt_ids) if is_prompt else 1),
         )
@@ -324,6 +326,7 @@ class RealCacheBlendA800Executor:
         reuse: bool,
         token_count: int,
         teacher_tokens: Sequence[int] = (),
+        stop_token_ids: Sequence[int] = (),
     ) -> Tuple[Tuple[int, ...], Tuple[Any, ...]]:
         predicted: List[int] = []
         context: List[int] = []
@@ -334,6 +337,9 @@ class RealCacheBlendA800Executor:
         context.append(
             int(teacher_tokens[0]) if teacher_tokens else predicted[-1]
         )
+        stops = {int(value) for value in stop_token_ids}
+        if stops and context[-1] in stops:
+            return tuple(predicted), tuple(traces)
         for step in range(1, token_count):
             tensors = self._prepare(
                 fixture, context, is_prompt=False, reuse=reuse,
@@ -352,10 +358,15 @@ class RealCacheBlendA800Executor:
             context.append(
                 int(teacher_tokens[step]) if teacher_tokens else predicted[-1]
             )
+            if stops and context[-1] in stops:
+                break
         return tuple(predicted), tuple(traces)
 
     def _dense_generate(
-        self, fixture: RuntimeFixture, token_count: int
+        self,
+        fixture: RuntimeFixture,
+        token_count: int,
+        stop_token_ids: Sequence[int] = (),
     ) -> GenerationTrace:
         metadata = self.inner_model.cache_fuse_metadata
         metadata["check"] = False
@@ -384,7 +395,8 @@ class RealCacheBlendA800Executor:
                 attn_metadata=attention,
             )
             token_ids, logits = self._decode_from_prefill(
-                fixture, hidden, sampling, reuse=False, token_count=token_count
+                fixture, hidden, sampling, reuse=False, token_count=token_count,
+                stop_token_ids=stop_token_ids,
             )
         end.record()
         end.synchronize()
@@ -413,6 +425,10 @@ class RealCacheBlendA800Executor:
         probe_layer: int,
         winner_variant: int = 0,
         teacher_tokens: Sequence[int] = (),
+        boundary_by_segment: Mapping[int, int] | None = None,
+        repair_positions_by_segment: Mapping[int, Sequence[int]] | None = None,
+        model_signature: str = "a800-qualification",
+        stop_token_ids: Sequence[int] = (),
     ) -> GenerationTrace:
         tensors = self._prepare(
             fixture, (), is_prompt=True, reuse=True, request_id="reuse-prefill"
@@ -430,7 +446,7 @@ class RealCacheBlendA800Executor:
         start.record()
         with self.torch.inference_mode():
             engine.begin_prefill(
-                model_signature="a800-qualification",
+                model_signature=model_signature,
                 token_ids=fixture.prompt_ids,
                 absolute_positions=tuple(range(len(fixture.prompt_ids))),
                 exact_prefix_tokens=0,
@@ -454,21 +470,39 @@ class RealCacheBlendA800Executor:
                 for event in ticket.layer_events.values():
                     event.synchronize()
             base = first_probe + 1
-            boundaries = {
+            boundaries = dict(boundary_by_segment or {
                 index: min(base + index % 3, self.model_spec.num_layers)
                 for index in range(len(fixture.segment_positions))
-            }
+            })
+            expected_segments = set(range(len(fixture.segment_positions)))
+            if set(boundaries) != expected_segments:
+                raise ValueError("reuse boundaries must cover every Segment")
+            if any(
+                not first_probe < int(boundary) <= self.model_spec.num_layers
+                for boundary in boundaries.values()
+            ):
+                raise ValueError("reuse boundary must follow the dense probe")
+            supplied_positions = dict(repair_positions_by_segment or {})
+            if supplied_positions and set(supplied_positions) != expected_segments:
+                raise ValueError("repair positions must cover every Segment")
             for boundary in sorted(set(boundaries.values())):
                 if engine.session.current_layer < boundary - 1:
                     engine.advance_to_layer(boundary - 1)
                 for index, positions in enumerate(fixture.segment_positions):
                     if boundaries[index] != boundary:
                         continue
+                    repair_positions = tuple(
+                        int(value) for value in supplied_positions.get(
+                            index, self._repair_positions(positions, ratio)
+                        )
+                    )
+                    if not set(repair_positions).issubset(set(positions)):
+                        raise ValueError("repair position lies outside its Segment")
                     engine.commit_ready_segment(
                         segment_id="c%d" % index,
                         boundary=boundary,
                         segment_positions=positions,
-                        repair_positions=self._repair_positions(positions, ratio),
+                        repair_positions=repair_positions,
                         scheduler_boundary=boundary,
                     )
                 engine.advance_to_layer(boundary)
@@ -480,6 +514,7 @@ class RealCacheBlendA800Executor:
                 reuse=True,
                 token_count=token_count,
                 teacher_tokens=teacher_tokens,
+                stop_token_ids=stop_token_ids,
             )
         end.record()
         end.synchronize()

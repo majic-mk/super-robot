@@ -22,12 +22,14 @@ ablation. The removed shadow-dense policy is not accepted by configuration.
 Both A and C use actual multi-source scheduler feedback and per-segment refined
 boundaries. The old common-boundary configuration remains separately available
 for reproduction. v3-v5 remain unchanged.
-The real CacheBlend path is split into an H1-only case runner and a
-capability-gated online adapter; the case runner cannot silently satisfy the
-online closed-loop contract. Patch mode `probekv_v6_staggered_runtime` now
+The legacy complete-generate H1 case runner is retained only for CB1-CB3 and
+old-protocol reproduction; it cannot produce protocol-v6 H1 labels. The v6 H1
+worker uses the same layer-resumable executor as the capability-gated online
+adapter and hard-stops when any Source has `r=1 != dense`. Patch mode
+`probekv_v6_staggered_runtime` now
 adds concrete layer-resumable hooks for the Mistral `llama.py` path and the
-Qwen2 `qwen2.py` path. These sources are ready for A800 qualification, but are
-not GPU-qualified until the frozen sentinel and 140-job matrices pass.
+Qwen2 `qwen2.py` path. Both adapters passed their frozen 140-job A800 matrices
+at commit `6618068`; any later code commit must be requalified before H1.
 
 Mistral-7B-Instruct-v0.3 is the CacheBlend qualification and secondary model;
 Qwen2.5-7B-Instruct is the formal primary model. Llama 3.1 is deferred until
@@ -113,5 +115,6 @@ git status --short
 For protocol v6, passing the generic environment check is not sufficient.
 `scripts/server/verify_v6_runtime_qualification.py` must also report both
 `gpu_runtime_qualified: true` and `h1_h2_execution_allowed: true`. The concrete
-dual-model source hooks are implemented and statically audited; the real A800
-token/logit/RoPE/mask/event validation remains intentionally unclaimed.
+dual-model source hooks are implemented and statically audited. Model-specific
+H1 manifests must be rebuilt with `prepare_v6_h1_model_data.py`; Mistral token
+IDs and content hashes must never be reused by Qwen.

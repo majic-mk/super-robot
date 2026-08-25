@@ -75,10 +75,15 @@ admission and formal H4 performance evidence.
 
 The same repair patch is used by two deliberately different runtime modes:
 
-- `cacheblend_case_runner` is the existing CB1-CB3/H1 worker. It builds all
-  case Sources and executes complete `generate()` calls for fixed
-  `(Source, layer, ratio)` jobs. It is valid for Source-sensitivity labels but
-  is not an online scheduler.
+- `cacheblend_case_runner` is the legacy CB1-CB3/reproduction worker. It
+  executes complete `generate()` calls and is not valid for protocol-v6 H1:
+  a layer-5 `r=1` repair cannot undo approximate state from layers 1-4.
+- `v6_resumable_h1_case_runner` uses `RealCacheBlendA800Executor`, remains
+  dense through `reuse_layer-1`, applies CacheBlend stable V-drift ranking
+  inside C, and commits the locked canonical Source immediately before the
+  requested boundary. Every Source/boundary group runs `r=1` first and stops
+  the entire scan unless token IDs are exact and logit relative-L2 is at most
+  `1e-4`.
 - `cacheblend_closed_loop` uses `CacheBlendClosedLoopRuntime` and the
   `CacheBlendOnlineEngine` contract. It requires asynchronous winner-only
   Source loading, layer-resumable prefill, real scheduler feedback,
