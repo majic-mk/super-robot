@@ -30,6 +30,9 @@ fi
 output="$data_root/artifacts/v6_no_gpu_preflight"
 mkdir -p "$output"
 export PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -x "${PROBEKV_NVCC_BIN:-/usr/local/cuda/bin/nvcc}" ]]; then
+  export PROBEKV_NVCC_BIN="${PROBEKV_NVCC_BIN:-/usr/local/cuda/bin/nvcc}"
+fi
 
 # Storage admission is decided before downloading model snapshots. Reapplying
 # the 70/50 GiB pre-download thresholds after a valid dual-model download would

@@ -40,10 +40,23 @@ def _memory_total_gib() -> float:
     return 0.0
 
 
+def _nvcc_executable() -> str:
+    """Resolve nvcc even when a non-interactive SSH shell has a minimal PATH."""
+
+    explicit = os.environ.get("PROBEKV_NVCC_BIN")
+    if explicit:
+        return explicit
+    detected = shutil.which("nvcc")
+    if detected:
+        return detected
+    cuda_default = Path("/usr/local/cuda/bin/nvcc")
+    return str(cuda_default) if cuda_default.is_file() else "nvcc"
+
+
 def collect_no_gpu_host(repo: Path, data_root: Path) -> Dict[str, Any]:
     """Collect only CPU/storage/software facts; no CUDA device is required."""
 
-    nvcc = _command_output(["nvcc", "--version"])
+    nvcc = _command_output([_nvcc_executable(), "--version"])
     nvcc_match = re.search(r"release\s+([0-9]+\.[0-9]+)", nvcc)
     disk = shutil.disk_usage(str(data_root))
     return {

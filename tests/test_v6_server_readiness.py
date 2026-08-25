@@ -1,12 +1,15 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
 from probekv.v6_runtime_qualification import evaluate_runtime_qualification
 from probekv.v6_server_readiness import (
+    _nvcc_executable,
     evaluate_dual_model_no_gpu_readiness,
     evaluate_no_gpu_readiness,
 )
@@ -267,6 +270,10 @@ class RuntimeQualificationTests(unittest.TestCase):
 
 
 class ServerScriptSafetyTests(unittest.TestCase):
+    def test_explicit_nvcc_survives_minimal_ssh_path(self):
+        with patch.dict(os.environ, {"PROBEKV_NVCC_BIN": "/opt/cuda/bin/nvcc"}):
+            self.assertEqual(_nvcc_executable(), "/opt/cuda/bin/nvcc")
+
     def test_setup_script_has_exact_stack_and_no_embedded_credentials(self):
         text = Path("scripts/server/setup_a800_env.sh").read_text(encoding="utf-8")
         for expected in ("torch==2.2.1", "xformers==0.0.25", "release 12\\.1"):
@@ -310,6 +317,10 @@ class ServerScriptSafetyTests(unittest.TestCase):
         )
         self.assertIn('mode="${1:-gpu}"', legacy)
         self.assertIn('if [[ "$mode" == "gpu" ]]', legacy)
+        no_gpu = Path("scripts/server/run_v6_no_gpu_preflight.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("PROBEKV_NVCC_BIN", no_gpu)
 
     def test_package_metadata_matches_runtime_syntax_floor(self):
         pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
