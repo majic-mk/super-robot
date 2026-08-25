@@ -66,6 +66,7 @@ if [[ "$env_python_version" != "3.10" ]]; then
 fi
 
 export MAX_JOBS="${MAX_JOBS:-8}"
+export TORCH_CUDA_ARCH_LIST="${PROBEKV_CUDA_ARCH_LIST:-8.0}"
 export HF_HOME="$stage_root/hf"
 export HUGGINGFACE_HUB_CACHE="$stage_root/hf/hub"
 export TRANSFORMERS_CACHE="$stage_root/hf/transformers"

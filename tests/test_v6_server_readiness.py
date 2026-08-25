@@ -275,6 +275,10 @@ class ServerScriptSafetyTests(unittest.TestCase):
         self.assertNotIn("hf_token=", lowered)
         self.assertIn('python_bin="$(command -v "$python_bin")"', text)
         self.assertIn("PROBEKV_NVCC_BIN", text)
+        self.assertIn(
+            'TORCH_CUDA_ARCH_LIST="${PROBEKV_CUDA_ARCH_LIST:-8.0}"',
+            text,
+        )
         self.assertIn("PROBEKV_ENV_DIR", text)
         self.assertIn(
             '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',
