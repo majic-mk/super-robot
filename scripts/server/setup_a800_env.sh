@@ -114,6 +114,7 @@ else
   "$python" -m pip install --no-build-isolation -e "$cacheblend/vllm_blend"
 fi
 "$python" "$repo/scripts/server/capture_environment.py" \
+  --repo "$repo" \
   --output "$artifacts/environment.json"
 
 rm -rf -- "$stage_root/build/torch_extensions" "$stage_root/build/xdg"

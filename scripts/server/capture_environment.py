@@ -13,10 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def command_output(command):
+def command_output(command, cwd: Path | None = None):
     try:
         return subprocess.check_output(
-            command, stderr=subprocess.STDOUT, universal_newlines=True
+            command,
+            cwd=cwd,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as error:
         return getattr(error, "output", "") or str(error)
@@ -32,14 +35,23 @@ def redact(value: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=Path.cwd(),
+        help="Git repository whose exact commit and cleanliness are recorded.",
+    )
     args = parser.parse_args()
+    repo = args.repo.resolve()
+    if not (repo / ".git").exists():
+        parser.error(f"--repo is not a Git worktree: {repo}")
     pip_freeze = redact(command_output([sys.executable, "-m", "pip", "freeze"]))
     record = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "python": sys.version,
         "platform": platform.platform(),
-        "git_commit": command_output(["git", "rev-parse", "HEAD"]),
-        "git_status": command_output(["git", "status", "--short"]),
+        "git_commit": command_output(["git", "rev-parse", "HEAD"], cwd=repo),
+        "git_status": command_output(["git", "status", "--short"], cwd=repo),
         "nvidia_smi": command_output(["nvidia-smi"]),
         "nvcc": command_output(["nvcc", "--version"]),
         "pip_freeze": pip_freeze.splitlines(),
