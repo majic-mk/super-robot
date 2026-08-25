@@ -528,6 +528,9 @@ class MultiSegmentCacheBlendBackend:
             raise ValueError(
                 "missing CacheBlend provenance: %s" % ", ".join(missing)
             )
-        if record["patch_mode"] != "probekv_v6_multiregion":
-            raise ValueError("v6 requires the multi-region CacheBlend patch mode")
+        if record["patch_mode"] not in {
+            "probekv_v6_multiregion",
+            "probekv_v6_staggered_runtime",
+        }:
+            raise ValueError("v6 requires an explicit multi-region patch mode")
         return record

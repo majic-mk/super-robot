@@ -189,6 +189,9 @@ def build_v6_a800_job_manifest(
     cacheblend_commit: str,
     cacheblend_patch_mode: str,
     cacheblend_patch_sha256: str,
+    tokenizer_hash: str = "legacy-tokenizer-hash",
+    adapter_name: str = "legacy-adapter",
+    cacheblend_tree: str = "pending-no-gpu-patch-audit",
 ) -> Dict[str, Any]:
     """Bind the frozen job matrix to every input needed on the A800.
 
@@ -211,6 +214,9 @@ def build_v6_a800_job_manifest(
         "cacheblend_commit": cacheblend_commit,
         "cacheblend_patch_mode": cacheblend_patch_mode,
         "cacheblend_patch_sha256": cacheblend_patch_sha256,
+        "tokenizer_hash": tokenizer_hash,
+        "adapter_name": adapter_name,
+        "cacheblend_tree": cacheblend_tree,
     }
     missing = [key for key, value in required_text.items() if not str(value).strip()]
     if missing:
@@ -235,6 +241,8 @@ def build_v6_a800_job_manifest(
         "model": {
             "model_id": model_id,
             "revision": model_revision,
+            "tokenizer_hash": tokenizer_hash,
+            "adapter_name": adapter_name,
         },
         "runtime": {
             "backend": runtime_backend,
@@ -245,6 +253,7 @@ def build_v6_a800_job_manifest(
             "base_commit": cacheblend_commit,
             "patch_mode": cacheblend_patch_mode,
             "patch_sha256": cacheblend_patch_sha256,
+            "tree": cacheblend_tree,
         },
         "next_required_gate": "A800-runtime-qualification",
     }

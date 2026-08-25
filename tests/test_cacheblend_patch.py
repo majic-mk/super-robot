@@ -25,11 +25,16 @@ class CacheBlendPatchTests(unittest.TestCase):
         multiregion = patch_files_for_mode(
             MANIFEST, "probekv_v6_multiregion"
         )
+        staggered = patch_files_for_mode(
+            MANIFEST, "probekv_v6_staggered_runtime"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
         self.assertEqual(closed_loop, probekv)
         self.assertEqual(len(multiregion), 3)
         self.assertEqual(multiregion[:2], probekv)
+        self.assertEqual(len(staggered), 4)
+        self.assertEqual(staggered[:3], multiregion)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
@@ -42,6 +47,10 @@ class CacheBlendPatchTests(unittest.TestCase):
             manifest["runtime_modes"]["closed_loop_v5"][
                 "layer_resumable_prefill"
             ]
+        )
+        self.assertEqual(
+            manifest["runtime_modes"]["staggered_runtime_v6"]["status"],
+            "concrete_engine_hook_complete_requires_a800_qualification",
         )
         self.assertTrue(
             manifest["runtime_modes"]["closed_loop_v6"][
@@ -98,6 +107,20 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertEqual(
             patch_files_for_mode(MANIFEST, "probekv_closed_loop"),
             paths[:2],
+        )
+
+    def test_staggered_runtime_patch_ports_qwen_and_preserves_old_mode(self):
+        paths = patch_files_for_mode(MANIFEST, "probekv_v6_staggered_runtime")
+        patch = paths[-1].read_text(encoding="utf-8")
+        for marker in (
+            "class Qwen2Model", "probekv_begin_prefill",
+            "probekv_advance_prefill", "target_active_positions",
+            "local_imp_indices",
+        ):
+            self.assertIn(marker, patch)
+        self.assertEqual(
+            patch_files_for_mode(MANIFEST, "probekv_v6_multiregion"),
+            paths[:3],
         )
 
 

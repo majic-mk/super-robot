@@ -17,8 +17,8 @@ def main_rag_matrix() -> Iterator[Dict[str, object]]:
     return cartesian_rows(
         {
             "model": (
+                "Qwen/Qwen2.5-7B-Instruct",
                 "mistralai/Mistral-7B-Instruct-v0.3",
-                "meta-llama/Llama-3.1-8B-Instruct",
             ),
             "dataset": ("MuSiQue", "2WikiMultiHopQA", "HotPotQA"),
             "k": (1, 2, 4),

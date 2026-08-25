@@ -7,7 +7,9 @@
     "python_major_minor": "3.10",
     "minimum_cpu_count": 16,
     "minimum_host_memory_gib": 110,
-    "minimum_data_disk_free_gib": 250
+    "minimum_combined_free_gib": 70,
+    "minimum_largest_writable_free_gib": 50,
+    "minimum_system_free_gib": 15
   },
   "gpu": {
     "count": 1,
@@ -28,12 +30,27 @@
     "cmake": "4.4.0",
     "ninja": "1.13.0",
     "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
-    "cacheblend_patch_mode": "probekv_v6_multiregion"
+    "cacheblend_patch_mode": "probekv_v6_staggered_runtime"
   },
-  "model": {
-    "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
-    "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
-    "dtype": "bfloat16"
+  "models": {
+    "mistral": {
+      "role": "cacheblend_runtime_qualification_and_secondary",
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "adapter_name": "mistral_cacheblend_llama_v041",
+      "num_layers": 32,
+      "probe_checkpoints": [1, 2, 4, 6, 8],
+      "dtype": "bfloat16"
+    },
+    "qwen": {
+      "role": "formal_primary",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "adapter_name": "qwen2_5_vllm041",
+      "num_layers": 28,
+      "probe_checkpoints": [1, 2, 4, 5, 7],
+      "dtype": "bfloat16"
+    }
   },
   "runtime": {
     "backend": "cacheblend_multisegment_closed_loop",
@@ -51,7 +68,7 @@
       "policy_conditioned_probe_state",
       "cuda_event_timing"
     ],
-    "implementation_status": "contract_and_patch_complete_concrete_engine_hook_missing",
+    "implementation_status": "concrete_engine_hook_complete_requires_a800_qualification",
     "qualification_required_before_h1_h2": true
   }
 }

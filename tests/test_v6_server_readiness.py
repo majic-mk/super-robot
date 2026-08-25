@@ -6,7 +6,10 @@ from pathlib import Path
 import yaml
 
 from probekv.v6_runtime_qualification import evaluate_runtime_qualification
-from probekv.v6_server_readiness import evaluate_no_gpu_readiness
+from probekv.v6_server_readiness import (
+    evaluate_dual_model_no_gpu_readiness,
+    evaluate_no_gpu_readiness,
+)
 from scripts.server.download_model_snapshot import audit_snapshot
 
 
@@ -93,6 +96,62 @@ def host_record():
 
 
 class NoGpuReadinessTests(unittest.TestCase):
+    def test_dual_model_source_gate_allows_qualification_not_h1(self):
+        lock = lock_record()
+        lock.pop("model", None)
+        lock["models"] = {
+            key: {
+                "model_id": key + "-model",
+                "revision": key + "-revision",
+                "adapter_name": key + "-adapter",
+            }
+            for key in ("mistral", "qwen")
+        }
+        lock["runtime"]["implementation_status"] = (
+            "concrete_engine_hook_complete_requires_a800_qualification"
+        )
+        manifests = {}
+        audits = {}
+        hashes = {}
+        for key in ("mistral", "qwen"):
+            manifest = job_manifest()
+            manifest["model"] = {
+                "model_id": key + "-model",
+                "revision": key + "-revision",
+                "adapter_name": key + "-adapter",
+                "tokenizer_hash": key + "-tokenizer",
+            }
+            manifests[key] = manifest
+            audits[key] = {
+                "complete": True,
+                "model_id": key + "-model",
+                "revision": key + "-revision",
+                "tokenizer_hash": key + "-tokenizer",
+            }
+            hashes[key] = {
+                "jobs_sha256": "jobs", "config_sha256": "config",
+                "contract_sha256": "contract", "server_lock_sha256": "lock",
+            }
+        result = evaluate_dual_model_no_gpu_readiness(
+            lock, manifests, host_record(),
+            {"storage_ready": True, "storage_mode": "dual_model_resident"},
+            audits,
+            {
+                "cacheblend_commit": "cb",
+                "patch_mode": "probekv_v6_multiregion",
+                "cacheblend_patch_sha256": "patch",
+                "cacheblend_tree": "tree",
+            },
+            {"runtime_source_ready": True, "failures": []},
+            expected_code_commit="code", actual_hashes_by_model=hashes,
+        )
+        self.assertTrue(result["artifact_preparation_ready"], result["failures"])
+        self.assertTrue(result["mistral_runtime_source_ready"])
+        self.assertTrue(result["qwen_runtime_source_ready"])
+        self.assertTrue(result["gpu_rental_ready_for_runtime_qualification"])
+        self.assertFalse(result["gpu_runtime_qualified"])
+        self.assertFalse(result["h1_h2_execution_allowed"])
+
     def test_complete_artifacts_allow_rental_but_not_h1(self):
         result = evaluate_no_gpu_readiness(
             lock_record(),
@@ -237,6 +296,13 @@ class ServerScriptSafetyTests(unittest.TestCase):
         self.assertEqual(lock["stack"]["vllm"], str(primary["vllm"]))
         self.assertEqual(lock["stack"]["pytorch"], str(primary["pytorch"]))
         self.assertEqual(lock["stack"]["xformers"], str(primary["xformers"]))
+        self.assertEqual(
+            lock["stack"]["cacheblend_patch_mode"],
+            "probekv_v6_staggered_runtime",
+        )
+        self.assertEqual(set(lock["models"]), {"mistral", "qwen"})
+        self.assertEqual(lock["models"]["qwen"]["role"], "formal_primary")
+        self.assertEqual(lock["platform"]["minimum_combined_free_gib"], 70)
         requirements = Path("requirements/server-tools.txt").read_text(
             encoding="utf-8"
         )

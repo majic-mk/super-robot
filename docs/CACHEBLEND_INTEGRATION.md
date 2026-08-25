@@ -22,6 +22,14 @@ metric. Its `full_remaining_*` fields are explicitly marked
 `full_prefill_total_proxy`; exact remaining-layer timing is still required
 before H4 admission or any performance claim.
 
+The independent v6 mode is `probekv_v6_staggered_runtime`; the historical
+`probekv_v6_multiregion` chain remains available for reproduction. For native
+Prefix Cache hits, the staggered mode requires a read-only pre-RoPE prefix
+shadow for every Transformer layer. This bridges the native paged prefix into
+CacheBlend's contiguous old-KV view without admitting prefix tokens into the
+repair mask. Missing shadows and KV geometry, dtype or device mismatches are
+hard failures.
+
 ## Server milestones
 
 - CB0-original: pinned unmodified CacheBlend failure remains archived.
@@ -105,11 +113,10 @@ Realized TTFT is recorded after reuse or full execution and must later be used
 to audit profile coverage.
 
 Configuration `a800_closed_loop_v5.json` refuses to run unless async loading,
-resumable prefill and CUDA-event timing are all required. The existing pinned
-CacheBlend model loop does not yet expose resumable prefill; implementing and
-validating that stack-specific engine hook on A800 is the remaining CB4
-hardware gate. Until CB4 passes, closed-loop records remain
-`server_pilot`/`paper_evidence:false`.
+resumable prefill and CUDA-event timing are all required. The legacy v5 mode
+remains unchanged. The new v6 runtime mode below exposes resumable prefill
+explicitly; A800 validation is still the remaining CB4 hardware gate. Until it
+passes, closed-loop records remain `server_pilot`/`paper_evidence:false`.
 
 ## Protocol v6 multi-region adapter
 
@@ -129,10 +136,34 @@ exact dense-reference token IDs and teacher-forced logit relative-L2 at most
 pinned vLLM/CacheBlend implementation and timings remain an A800 gate under
 `configs/a800_closed_loop_v6.json`.
 
-The v6 patch mode is `probekv_v6_multiregion`. It applies the unchanged v5
+The legacy v6 patch mode is `probekv_v6_multiregion`. It applies the unchanged v5
 patches followed by `0003-probekv-multiregion-union-mask.patch`. The third
 patch accepts ordered, disjoint `repair_regions`, leaves exact-prefix positions
 out of the query set, keeps all gaps/misses/suffix tokens dense and unions the
 per-segment CacheBlend drift selections. It passed `git apply --unidiff-zero`
 against the frozen base plus patches 0001/0002 and Python syntax compilation;
 this static check is not a substitute for A800 tensor/output validation.
+
+## Concrete staggered dual-model runtime
+
+`probekv_v6_staggered_runtime` appends
+`0004-probekv-staggered-resumable-dual-model.patch` without changing the old
+mode. The patch adds `probekv_begin_prefill`, `probekv_advance_prefill` and
+`probekv_finish_prefill` to both the Mistral-compatible `llama.py` path and
+`qwen2.py`. `ProbeKVResumablePrefillSession` owns request-local hidden,
+residual, active-position and working-KV state. `CacheBlendV6OnlineEngine`
+loads only locked winners on a CUDA copy stream and polls a ready event for
+each Source layer.
+
+At layer `l`, active query rows contain dense/suffix positions, every unresolved
+Segment, and the frozen repair rows of committed Segments. Each commit replaces
+one full Segment row set with its repair subset, so the active set is monotone
+non-increasing. Source rows are written only into request working old-KV
+tensors. Canonical CPU Source tensors are hashed before and after staging and
+never mutated.
+
+Mistral uses 32 layers and checkpoints `{1,2,4,6,8}`. Qwen2.5 uses 28 layers,
+checkpoints `{1,2,4,5,7}`, 28 query heads, 4 KV heads, QKV bias,
+`rope_theta=1000000`, no sliding window and no YaRN. Model signatures include
+the tokenizer hash and runtime patch digest, preventing cross-model Source
+reuse. Static readiness authorizes only an A800 qualification rental, not H1/H2.

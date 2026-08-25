@@ -100,6 +100,8 @@ def evaluate_no_gpu_readiness(
     platform_lock = lock.get("platform", {})
     stack = lock.get("stack", {})
     model = lock.get("model", {})
+    if not model and lock.get("models"):
+        model = next(iter(lock["models"].values()))
     runtime = lock.get("runtime", {})
 
     observed_python = str(host.get("python", ""))
@@ -114,9 +116,10 @@ def evaluate_no_gpu_readiness(
         platform_lock.get("minimum_host_memory_gib", 0.0)
     ):
         failures.append("host memory is below the server lock")
-    if float(host.get("data_disk_free_gib", 0.0)) < float(
-        platform_lock.get("minimum_data_disk_free_gib", 0.0)
-    ):
+    legacy_minimum = platform_lock.get("minimum_data_disk_free_gib")
+    if legacy_minimum is not None and float(
+        host.get("data_disk_free_gib", 0.0)
+    ) < float(legacy_minimum):
         failures.append("data-disk free space is below the server lock")
     if str(host.get("git_commit")) != str(expected_code_commit):
         failures.append("checked-out ProbeKV commit does not match the requested SHA")
@@ -167,6 +170,12 @@ def evaluate_no_gpu_readiness(
     manifest_model = job_manifest.get("model", {})
     if manifest_model.get("model_id") != model.get("model_id") or manifest_model.get("revision") != model.get("revision"):
         failures.append("job manifest model identity does not match the server lock")
+    if manifest_model.get("adapter_name") not in (None, model.get("adapter_name")):
+        failures.append("job manifest adapter does not match the server lock")
+    if model_audit.get("tokenizer_hash") and manifest_model.get(
+        "tokenizer_hash"
+    ) != model_audit.get("tokenizer_hash"):
+        failures.append("job manifest tokenizer hash differs from model audit")
     manifest_runtime = job_manifest.get("runtime", {})
     if manifest_runtime.get("backend") != runtime.get("backend"):
         failures.append("job manifest runtime backend does not match the server lock")
@@ -185,6 +194,9 @@ def evaluate_no_gpu_readiness(
         failures.append("CacheBlend patch digest differs from the frozen job manifest")
     if not patch_audit.get("cacheblend_tree"):
         failures.append("CacheBlend patched tree identity is missing")
+    manifest_tree = manifest_cacheblend.get("tree")
+    if manifest_tree not in (None, "pending-patch-audit") and manifest_tree != patch_audit.get("cacheblend_tree"):
+        failures.append("CacheBlend tree differs from the frozen job manifest")
 
     artifact_ready = not failures
     runtime_status = str(runtime.get("implementation_status", "unknown"))
@@ -216,5 +228,68 @@ def evaluate_no_gpu_readiness(
             "v6-r1-dense-equivalence",
             "v6-CUDA-timing-and-140-job-bringup",
         ],
+        "failures": failures,
+    }
+
+
+def evaluate_dual_model_no_gpu_readiness(
+    lock: Mapping[str, Any],
+    job_manifests: Mapping[str, Mapping[str, Any]],
+    host: Mapping[str, Any],
+    storage: Mapping[str, Any],
+    model_audits: Mapping[str, Mapping[str, Any]],
+    patch_audit: Mapping[str, Any],
+    runtime_source_audit: Mapping[str, Any],
+    *,
+    expected_code_commit: str,
+    actual_hashes_by_model: Mapping[str, Mapping[str, str]],
+) -> Dict[str, Any]:
+    """Final CPU-only gate for the sequential Mistral/Qwen handoff."""
+
+    failures: List[str] = []
+    models = lock.get("models", {})
+    expected_keys = {"mistral", "qwen"}
+    if set(models) != expected_keys:
+        failures.append("server lock must define exactly Mistral and Qwen")
+    if storage.get("storage_ready") is not True:
+        failures.extend("storage: %s" % value for value in storage.get("failures", ()))
+    per_model: Dict[str, Any] = {}
+    for key in sorted(expected_keys):
+        if key not in job_manifests or key not in model_audits:
+            failures.append("missing %s manifest or model audit" % key)
+            continue
+        derived_lock = dict(lock)
+        derived_lock["model"] = models.get(key, {})
+        result = evaluate_no_gpu_readiness(
+            derived_lock,
+            job_manifests[key],
+            host,
+            model_audits[key],
+            patch_audit,
+            expected_code_commit=expected_code_commit,
+            actual_hashes=actual_hashes_by_model[key],
+        )
+        per_model[key] = result
+        failures.extend("%s: %s" % (key, value) for value in result["failures"])
+    source_ready = runtime_source_audit.get("runtime_source_ready") is True
+    if not source_ready:
+        failures.extend(
+            "runtime-source: %s" % value
+            for value in runtime_source_audit.get("failures", ("audit failed",))
+        )
+    artifact_ready = not failures
+    return {
+        "schema_version": 2,
+        "stage": "v6_dual_model_no_gpu_readiness",
+        "paper_evidence": False,
+        "expected_code_commit": expected_code_commit,
+        "storage_mode": storage.get("storage_mode"),
+        "artifact_preparation_ready": artifact_ready,
+        "mistral_runtime_source_ready": source_ready and "mistral" in per_model,
+        "qwen_runtime_source_ready": source_ready and "qwen" in per_model,
+        "gpu_rental_ready_for_runtime_qualification": artifact_ready and source_ready,
+        "gpu_runtime_qualified": False,
+        "h1_h2_execution_allowed": False,
+        "per_model": per_model,
         "failures": failures,
     }

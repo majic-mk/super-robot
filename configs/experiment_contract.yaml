@@ -211,11 +211,13 @@ hardware:
   matched_hardware_required_for_all_direct_baselines: true
 
 models:
-  primary:
-    - mistralai/Mistral-7B-Instruct-v0.3
-    - meta-llama/Llama-3.1-8B-Instruct
-  auxiliary:
+  formal_primary:
     - Qwen/Qwen2.5-7B-Instruct
+  runtime_qualification_and_secondary:
+    - mistralai/Mistral-7B-Instruct-v0.3
+  deferred_modern_stack:
+    - meta-llama/Llama-3.1-8B-Instruct
+  deferred_llama_entry_gate: qwen_end_to_end_gain_ge_5_percent
   local_correctness:
     - Qwen/Qwen2.5-1.5B-Instruct
 

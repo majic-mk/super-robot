@@ -180,11 +180,12 @@ pinned CacheBlend CUDA/vLLM execution must still pass the A800 correctness and
 microbenchmark gates before it can produce performance evidence.
 
 The final pre-rental workflow is defined in `A800_V6_RENTAL_CHECKLIST.md`.
-The 140-job manifest now binds the jobs to the exact ProbeKV commit, experiment
-contract, server lock, Mistral revision and ordered CacheBlend patch digest.
-The no-GPU gate authorizes only a short runtime bring-up rental. The concrete
-engine hook is still a source-implementation blocker, and H1/H2 remains
-hard-blocked until that engine subsequently produces a passing A800 audit.
+Two 140-job manifests now bind the jobs to the exact ProbeKV commit, experiment
+contract, server lock, Mistral/Qwen revision and tokenizer hash, adapter, and
+ordered CacheBlend patch/tree digest. The concrete layer-resumable source hook
+exists under `probekv_v6_staggered_runtime`; the no-GPU gate may therefore
+authorize an A800 qualification rental. H1/H2 remains hard-blocked until the
+real engine produces a passing A800 audit for the corresponding model.
 
 ## Global Source pool
 

@@ -17,6 +17,12 @@
       "0001-cb0-fix-suffix-length.patch",
       "0002-probekv-segment-repair-mask.patch",
       "0003-probekv-multiregion-union-mask.patch"
+    ],
+    "probekv_v6_staggered_runtime": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch"
     ]
   },
   "runtime_modes": {
@@ -50,6 +56,25 @@
       "status": "patch_static_checked_engine_pending_a800",
       "paper_evidence": false,
       "purpose": "v6 multi-segment correctness and closed-loop execution"
+    },
+    "staggered_runtime_v6": {
+      "patch_mode": "probekv_v6_staggered_runtime",
+      "ordered_repair_regions": true,
+      "absolute_union_mask": true,
+      "per_segment_ratio": true,
+      "per_segment_staggered_boundaries": true,
+      "layer_resumable_prefill": true,
+      "async_multisource_loading": true,
+      "scheduler_feedback_required": true,
+      "cuda_event_timing_required": true,
+      "model_adapters": [
+        "mistral_cacheblend_llama_v041",
+        "qwen2_5_vllm041"
+      ],
+      "implementation": "ProbeKVResumablePrefillSession + pinned model hooks",
+      "status": "concrete_engine_hook_complete_requires_a800_qualification",
+      "paper_evidence": false,
+      "purpose": "A/C staggered dual-model runtime qualification"
     }
   },
   "innovation_claim": false,

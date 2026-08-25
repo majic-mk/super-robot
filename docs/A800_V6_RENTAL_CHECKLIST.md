@@ -1,51 +1,62 @@
-# A800 v6 rental-readiness checklist
+# A800 v6 dual-model rental-readiness checklist
 
-This checklist separates three claims that must never be conflated:
+Four states must remain separate:
 
-1. **Artifact-ready without a GPU**: the exact code, Python stack, model
-   snapshot, CacheBlend patch tree and 140-job manifest are present and bound
-   by hashes.
-2. **Ready only for a short bring-up rental**: item 1 passed, so CUDA build and
-   integration failures can be diagnosed without risking an H1/H2 run.
-3. **Ready to rent for qualification**: the concrete layer-resumable engine
-   hook exists in source and the immutable 140-job worker can exercise it.
-4. **Ready for H1/H2 or paper timing**: the concrete layer-resumable
-   CacheBlend/vLLM engine has passed all 140 jobs, both A/C execution hooks,
-   execution-matched C probe-state capture, `r=1` dense equivalence and
-   CUDA timing gates.
+1. CPU artifacts are frozen and hash-bound.
+2. Concrete Mistral and Qwen runtime sources exist.
+3. Renting an A800 for runtime qualification is allowed.
+4. H1/H2 is allowed only after real CUDA qualification.
 
-Passing item 1 does not imply item 3 or 4. At the current repository revision the
-v6 contracts, controller, adapters and CacheBlend multi-region mask patch are
-implemented, but the concrete pinned-vLLM layer-resumable engine hook is still
-missing. This is a source-implementation blocker that an A800 alone does not
-solve; after implementation it must also be qualified on A800. The hard gate deliberately reports
-`h1_h2_execution_allowed: false` until a real A800 audit proves otherwise.
+The repository now implements the concrete source hooks under patch mode
+`probekv_v6_staggered_runtime`. This is not a claim that they already work on
+an A800. Before GPU execution, the final gate must report:
+
+```text
+artifact_preparation_ready = true
+mistral_runtime_source_ready = true
+qwen_runtime_source_ready = true
+gpu_rental_ready_for_runtime_qualification = true
+gpu_runtime_qualified = false
+h1_h2_execution_allowed = false
+failures = []
+```
 
 ## Frozen inputs
 
-- Python 3.10; PyTorch 2.2.1 + CUDA 12.1; xformers 0.0.25; vLLM 0.4.1.
-  The previously successful A800 versions of NumPy, Transformers, Tokenizers,
-  Hugging Face Hub, Ray, CMake and Ninja are also pinned in
-  `requirements/server-tools.txt`; do not replace them with latest versions.
-- CacheBlend commit
-  `b72d7945e6d6306f12be66520196e0f081fa2b0c` with patch mode
-  `probekv_v6_multiregion`.
-- `mistralai/Mistral-7B-Instruct-v0.3` revision
-  `c170c708c41dac9275d15a8fff4eca08d52bab71`.
-- One A800 80 GB, compute capability 8.0, at least 110 GiB host RAM, 16 CPU
-  cores and 250 GiB free on the data disk.
-- The machine-readable source of truth is
-  `configs/a800_server_lock.json`.
+- Python 3.10, PyTorch 2.2.1+cu121, xformers 0.0.25, vLLM 0.4.1.
+- CacheBlend commit `b72d7945e6d6306f12be66520196e0f081fa2b0c`.
+- Mistral revision `c170c708c41dac9275d15a8fff4eca08d52bab71`.
+- Qwen revision `a09a35458c702b33eeacc393d103063234e8bc28`.
+- Mistral adapter `mistral_cacheblend_llama_v041`.
+- Qwen adapter `qwen2_5_vllm041`.
+- One A800 80GB, compute capability 8.0, 16 CPU cores and 110GiB RAM.
+- Transformers remains 4.40.2; no silent stack upgrade is allowed.
 
-## No-GPU preparation
+## 130GB storage policy
 
-Use only data-disk paths. Do not put credentials in commands, scripts, Git or
-artifact JSON.
+The old 250GiB single-disk gate is removed. The server must have at least:
+
+- 70GiB free across unique writable filesystems;
+- 50GiB free on the largest writable filesystem;
+- 15GiB free on the system filesystem.
+
+At 90GiB or more free, retain both selective snapshots. At 70-89GiB, qualify
+Mistral first, preserve audits/results, purge only its verified regenerable HF
+snapshot, then download Qwen in CPU-only mode. Below 70GiB, stop before renting
+a GPU and do not delete user files.
+
+The Mistral downloader excludes `consolidated.safetensors`; only the three HF
+weight shards are allowed. Qwen uses only its four weight shards. One venv and
+one final CacheBlend tree are retained, pip caching is disabled, build objects
+are removed after installation, datasets stream, and full-dataset KV is never
+stored.
+
+## CPU-only preparation
 
 ```bash
 export PROBEKV_SRC=/data/src/ProbeKV
 export STAGE_ROOT=/data/probekv-stage
-export FROZEN_SHA=<commit-pushed-to-GitHub>
+export FROZEN_SHA=<pushed-clean-commit>
 
 git -C "$PROBEKV_SRC" fetch origin
 git -C "$PROBEKV_SRC" checkout --detach "$FROZEN_SHA"
@@ -53,71 +64,56 @@ bash "$PROBEKV_SRC/scripts/server/setup_a800_env.sh" \
   "$PROBEKV_SRC" "$STAGE_ROOT"
 source "$STAGE_ROOT/envs/probekv-py310/bin/activate"
 
-export HF_HOME="$STAGE_ROOT/hf"
-export PYTHONPATH="$PROBEKV_SRC/src"
-python "$PROBEKV_SRC/scripts/server/download_model_snapshot.py" \
-  --model-id mistralai/Mistral-7B-Instruct-v0.3 \
-  --revision c170c708c41dac9275d15a8fff4eca08d52bab71 \
-  --cache-dir "$STAGE_ROOT/hf" \
-  --output "$STAGE_ROOT/artifacts/v6_setup/model_audit.json"
+# Use `both` when storage.json selects dual_model_resident. In sequential mode
+# use `mistral` now and `qwen` after Mistral qualification and verified purge.
+bash "$PROBEKV_SRC/scripts/server/prepare_dual_model_snapshots.sh" \
+  "$PROBEKV_SRC" "$STAGE_ROOT" both
 
 bash "$PROBEKV_SRC/scripts/server/run_v6_no_gpu_preflight.sh" \
-  "$PROBEKV_SRC" \
-  "$STAGE_ROOT" \
-  "$FROZEN_SHA" \
-  "$STAGE_ROOT/artifacts/v6_setup/model_audit.json" \
+  "$PROBEKV_SRC" "$STAGE_ROOT" "$FROZEN_SHA" \
+  "$STAGE_ROOT/artifacts/model_audits/model_audit_mistral.json" \
+  "$STAGE_ROOT/artifacts/model_audits/model_audit_qwen.json" \
   "$STAGE_ROOT/artifacts/v6_setup/cacheblend_patch.json"
 ```
 
-The last command must finish with `artifact_preparation_ready: true`. At the
-current revision it may report `gpu_rental_ready_for_runtime_bringup: true`,
-but intentionally keeps `gpu_rental_ready_for_runtime_qualification`,
-`gpu_runtime_qualified` and `h1_h2_execution_allowed` false until the concrete
-engine hook exists. Therefore a rental at this point is suitable only for a
-short bring-up/debug session, not for H1/H2 production.
+The preflight compiles sources, runs all tests, validates the experiment
+contract, runs both A and C local v6 configurations, audits storage and runtime
+sources, and writes:
 
-## First A800 session: qualification only
-
-First run the existing hardware/stack gate:
-
-```bash
-cd "$PROBEKV_SRC"
-python scripts/server/verify_paper_environment.py \
-  --contract configs/experiment_contract.yaml \
-  --output "$STAGE_ROOT/artifacts/v6_a800/hardware_stack.json"
+```text
+jobs_mistral/jobs_mistral.jsonl
+jobs_mistral/manifest_mistral.json
+jobs_qwen/jobs_qwen.jsonl
+jobs_qwen/manifest_qwen.json
+readiness.json
 ```
 
-The concrete worker must then consume the frozen
-`v6_no_gpu_preflight/jobs/jobs.jsonl` and produce a runtime audit bound to the
-same `code_commit`, `job_digest`, model revision and CacheBlend patch hash. It
-must prove all capabilities listed in `a800_server_lock.json`, complete all
-140 jobs, preserve canonical Source digests, exercise A
-(`causal_commit_wait`) and C (`immediate_staggered_closed_loop`), and pass:
+Each matrix contains 140 non-paper qualification jobs and binds the ProbeKV
+commit, CacheBlend base/patch/tree, model revision, tokenizer hash,
+config/contract/server-lock hashes, adapter and job digest.
+
+## GPU sequence
+
+First rent: Mistral only, at most four hours. Run hardware/stack gate, then A
+and C `1 Segment, K=1, r=1` sentinels, then all 140 Mistral jobs. Stop on any
+token, first-32-logit, RoPE, mask, Source digest or CUDA-event failure.
+
+Second rent: Qwen only after the Mistral runtime passed and the Qwen handoff is
+complete. Run dense smoke, A/C r=1 sentinels and all 140 Qwen jobs. Also run a
+non-zero native Prefix Cache sentinel and verify that every layer's pre-RoPE
+prefix shadow is present, read-only and absolute-position aligned. Only a full
+pass may unlock Qwen H1/H2.
+
+The runtime audit must prove:
 
 ```text
 r=1 generated token IDs == dense generated token IDs
 max first-32-token teacher-forced logit relative-L2 <= 1e-4
+canonical Source digests unchanged
+all 140 jobs completed, failed = 0
 ```
 
-Validate that audit with:
-
-```bash
-python scripts/server/verify_v6_runtime_qualification.py \
-  --server-lock configs/a800_server_lock.json \
-  --job-manifest "$STAGE_ROOT/artifacts/v6_no_gpu_preflight/jobs/manifest.json" \
-  --runtime-audit "$STAGE_ROOT/artifacts/v6_a800/runtime_audit.json" \
-  --output "$STAGE_ROOT/artifacts/v6_a800/runtime_gate.json"
-```
-
-Only `gpu_runtime_qualified: true` and `h1_h2_execution_allowed: true` authorize
-H1/H2. A contract-only adapter, fake runtime, partial 140-job run, host timer,
-different SHA, different model or different patch is rejected.
-
-## Stop conditions
-
-- Stop before GPU work if the repository is dirty or any hash differs.
-- Stop after environment build if vLLM is not exactly 0.4.1.
-- Stop H1/H2 if the concrete engine hook is absent or any one of the 140 jobs
-  fails.
-- Never relabel local simulation, CB1-CB3 or qualification timing as paper
-  evidence.
+Validate the audit with `scripts/server/verify_v6_runtime_qualification.py`.
+Fake timing, a different SHA, partial jobs, a different model/adapter or a
+different CacheBlend tree is rejected. Qualification remains
+`paper_evidence:false`; formal matched-stack measurements start only afterward.

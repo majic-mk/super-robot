@@ -10,6 +10,7 @@ repo="$1"
 stage_root="$2"
 case "$repo" in /*) ;; *) echo "ProbeKV path must be absolute" >&2; exit 2;; esac
 case "$stage_root" in /*) ;; *) echo "data root must be absolute" >&2; exit 2;; esac
+case "$stage_root" in /|/root|/home) echo "data root is too broad" >&2; exit 2;; esac
 if [[ ! -d "$repo/.git" ]]; then
   echo "ProbeKV path is not a Git checkout: $repo" >&2
   exit 1
@@ -31,12 +32,10 @@ if ! command -v nvcc >/dev/null 2>&1 || ! nvcc --version | grep -q 'release 12\.
 fi
 
 mkdir -p "$stage_root"/{src,envs,hf,build,artifacts}
-free_kib="$(df -Pk "$stage_root" | awk 'NR==2 {print $4}')"
-minimum_kib=$((250 * 1024 * 1024))
-if (( free_kib < minimum_kib )); then
-  echo "data root needs at least 250 GiB free" >&2
-  exit 1
-fi
+export PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}"
+python "$repo/scripts/server/plan_server_storage.py" \
+  --stage-root "$stage_root" --system-root / \
+  --output "$stage_root/artifacts/storage.json"
 
 env_dir="$stage_root/envs/probekv-py310"
 cacheblend="$stage_root/src/CacheBlend-probekv-v6"
@@ -52,7 +51,7 @@ export HUGGINGFACE_HUB_CACHE="$stage_root/hf/hub"
 export TRANSFORMERS_CACHE="$stage_root/hf/transformers"
 export TORCH_EXTENSIONS_DIR="$stage_root/build/torch_extensions"
 export XDG_CACHE_HOME="$stage_root/build/xdg"
-export PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}"
+export PIP_NO_CACHE_DIR=1
 
 python="$env_dir/bin/python"
 "$python" -m pip install --upgrade 'pip>=23.3,<25' 'setuptools>=68,<76' wheel
@@ -65,23 +64,25 @@ python="$env_dir/bin/python"
 
 if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
   --cacheblend "$cacheblend" \
-  --mode probekv_v6_multiregion \
+  --mode probekv_v6_staggered_runtime \
   --output "$artifacts/cacheblend_patch.json" >/dev/null 2>&1; then
   if [[ -d "$cacheblend/.git" && -n "$(git -C "$cacheblend" status --porcelain)" ]]; then
     echo "existing CacheBlend tree is neither verified nor clean: $cacheblend" >&2
     exit 1
   fi
   bash "$repo/scripts/server/prepare_cacheblend.sh" \
-    "$cacheblend" probekv_v6_multiregion
+    "$cacheblend" probekv_v6_staggered_runtime
   "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
     --cacheblend "$cacheblend" \
-    --mode probekv_v6_multiregion \
+    --mode probekv_v6_staggered_runtime \
     --output "$artifacts/cacheblend_patch.json"
 fi
 
 "$python" -m pip install --no-build-isolation -e "$cacheblend/vllm_blend"
 "$python" "$repo/scripts/server/capture_environment.py" \
   --output "$artifacts/environment.json"
+
+rm -rf -- "$stage_root/build/torch_extensions" "$stage_root/build/xdg"
 
 echo "A800 software tree prepared under $stage_root"
 echo "Activate with: source $env_dir/bin/activate"

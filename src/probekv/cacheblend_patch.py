@@ -72,11 +72,13 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv",
         "probekv_closed_loop",
         "probekv_v6_multiregion",
+        "probekv_v6_staggered_runtime",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
             "patch manifest must define cb0, probekv, "
-            "probekv_closed_loop and probekv_v6_multiregion modes"
+            "probekv_closed_loop, probekv_v6_multiregion and "
+            "probekv_v6_staggered_runtime modes"
         )
     runtime_modes = manifest.get("runtime_modes")
     if (
@@ -111,6 +113,27 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
             raise ValueError("closed_loop_v6 must require %s" % key)
     if closed_loop_v6.get("patch_mode") != "probekv_v6_multiregion":
         raise ValueError("closed_loop_v6 must use the v6 multi-region patch mode")
+    staggered = runtime_modes.get("staggered_runtime_v6")
+    if not isinstance(staggered, dict):
+        raise ValueError("patch manifest must define staggered_runtime_v6")
+    for key in (
+        "ordered_repair_regions",
+        "absolute_union_mask",
+        "per_segment_ratio",
+        "per_segment_staggered_boundaries",
+        "layer_resumable_prefill",
+        "async_multisource_loading",
+        "scheduler_feedback_required",
+        "cuda_event_timing_required",
+    ):
+        if staggered.get(key) is not True:
+            raise ValueError("staggered_runtime_v6 must require %s" % key)
+    if staggered.get("patch_mode") != "probekv_v6_staggered_runtime":
+        raise ValueError("staggered runtime must use its explicit patch mode")
+    if staggered.get("status") != (
+        "concrete_engine_hook_complete_requires_a800_qualification"
+    ):
+        raise ValueError("staggered runtime source status is not qualification-ready")
     return manifest
 
 

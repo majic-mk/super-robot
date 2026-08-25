@@ -45,6 +45,7 @@ def main() -> int:
             "probekv",
             "probekv_closed_loop",
             "probekv_v6_multiregion",
+            "probekv_v6_staggered_runtime",
         ),
     )
     parser.add_argument("--manifest", default="patches/cacheblend/manifest.json")

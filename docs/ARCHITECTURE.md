@@ -6,6 +6,15 @@
    `C_1 ... C_n`; v3-v5 retain their single-segment representation.
 2. Prefix Cache gets first refusal. ProbeKV runs only when prefix reuse does
    not solve the request.
+
+When a request has an exact Prefix Cache hit and later enters staggered
+non-prefix reuse, the attention data plane also needs those prefix rows in the
+contiguous pre-RoPE working view used by CacheBlend. The v6 engine therefore
+requires a read-only, per-layer pre-RoPE **prefix shadow** alongside the native
+paginated Prefix Cache entry. It is not another Source and never enters
+selection or repair accounting. Local request rows and absolute token
+positions are stored separately; a missing or shape-incompatible shadow is a
+hard error rather than silently recomputing or zero-filling the prefix.
 3. For every historical context (`A`, `B`, `E`, ...), the system independently
    runs `full_prefill(context | C)` and registers a read-only canonical source.
    The current prefix `P` and all historical prefixes are mutually distinct;
@@ -159,6 +168,9 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Reuse planner | `cost.py` | refined total-cost admission; selection retained on rejection |
 | Closed-loop controller | `orchestration.py` | selector abstention guard and scheduler-before-admission state machine |
 | v6 request controller | `multisegment_orchestration.py` | multi-source feedback, marginal pruning, A/C staggered boundaries, legacy common reproduction and partial reuse |
+| Resumable prefill | `resumable_prefill.py` | model-independent layer state, one-time Segment commit and monotone active-token set |
+| Pinned model adapters | `model_adapters.py` | Mistral/Qwen geometry, model signature and hard failure on an unpatched model |
+| v6 online data plane | `cacheblend_v6_online_engine.py` | winner-only CUDA prefetch, per-layer ready events, Source-row installation and execution audit |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
 | Scheduler | `scheduler.py` | strict atomic and bounded-overrun policies |
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |
