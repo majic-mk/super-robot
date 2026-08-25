@@ -37,6 +37,8 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
             "TorchLayerwiseSourceLoader",
             "exact_prefix_layers",
             "source_ready_observed_host_ms_by_segment_layer",
+            "source_ready_gpu_ms_by_segment_layer",
+            "layer_ready_gpu_ms",
         )),
         (session_path, ("class ProbeKVResumablePrefillSession", "commit_segment_reuse")),
         (worker_path, (

@@ -16,6 +16,7 @@ class LayerwiseLoadTicket:
     started_host_ms: float
     requested_bytes: int
     layer_tensors: Dict[int, Tuple[Any, Any]]
+    start_event: Any
     layer_events: Dict[int, Any]
     source_digest_before: str
     source_digest_after: str
@@ -36,6 +37,12 @@ class LayerwiseLoadTicket:
     def layer_ready(self, layer: int) -> bool:
         event = self.layer_events.get(int(layer))
         return bool(event is not None and event.query())
+
+    def layer_ready_gpu_ms(self, layer: int) -> float:
+        event = self.layer_events.get(int(layer))
+        if event is None or not event.query():
+            raise RuntimeError("Source layer has no completed CUDA ready event")
+        return float(self.start_event.elapsed_time(event))
 
 
 class TorchLayerwiseSourceLoader:
@@ -80,6 +87,8 @@ class TorchLayerwiseSourceLoader:
         layer_events: Dict[int, Any] = {}
         requested_bytes = 0
         with self.torch.cuda.stream(self.stream):
+            start_event = self.torch.cuda.Event(enable_timing=True)
+            start_event.record(self.stream)
             for layer, (key, value) in enumerate(canonical_layers, start=1):
                 if key.device.type != "cpu" or value.device.type != "cpu":
                     raise ValueError("canonical staging input must be CPU KV")
@@ -100,6 +109,7 @@ class TorchLayerwiseSourceLoader:
             started_host_ms=started,
             requested_bytes=requested_bytes,
             layer_tensors=layer_tensors,
+            start_event=start_event,
             layer_events=layer_events,
             source_digest_before=before,
             source_digest_after=after,
@@ -114,6 +124,9 @@ class OnlineRequestAudit:
         default_factory=dict
     )
     source_ready_observed_host_ms_by_segment_layer: Dict[str, Dict[int, float]] = field(
+        default_factory=dict
+    )
+    source_ready_gpu_ms_by_segment_layer: Dict[str, Dict[int, float]] = field(
         default_factory=dict
     )
     actual_boundary_by_segment: Dict[str, int] = field(default_factory=dict)
@@ -288,6 +301,9 @@ class CacheBlendV6OnlineEngine:
             self.audit.source_ready_observed_host_ms_by_segment_layer.setdefault(
                 segment_id, {}
             ).setdefault(boundary, time.perf_counter() * 1000.0)
+            self.audit.source_ready_gpu_ms_by_segment_layer.setdefault(
+                segment_id, {}
+            ).setdefault(boundary, ticket.layer_ready_gpu_ms(boundary))
         return ready
 
     def commit_ready_segment(
