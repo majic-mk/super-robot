@@ -282,6 +282,8 @@ class ServerScriptSafetyTests(unittest.TestCase):
         )
         self.assertIn("PROBEKV_PREBUILT_VLLM_SOURCE", text)
         self.assertIn("install_prebuilt_vllm_extensions.py", text)
+        self.assertNotIn("import vllm, vllm._C", text)
+        self.assertIn("dynamic loading is deferred to the A800 gate", text)
         self.assertIn("PROBEKV_ENV_DIR", text)
         self.assertIn(
             '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',

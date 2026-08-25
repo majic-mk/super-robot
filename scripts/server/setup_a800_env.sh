@@ -109,7 +109,7 @@ if [[ -n "${PROBEKV_PREBUILT_VLLM_SOURCE:-}" ]]; then
     --site-packages "$site_packages" \
     --cuobjdump "$(dirname "$nvcc_bin")/cuobjdump" \
     --output "$artifacts/vllm_install.json"
-  "$python" -c 'import vllm, vllm._C, vllm._moe_C; print(vllm.__file__)'
+  echo "Prebuilt vLLM extension dynamic loading is deferred to the A800 gate."
 else
   "$python" -m pip install --no-build-isolation -e "$cacheblend/vllm_blend"
 fi

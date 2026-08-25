@@ -99,6 +99,9 @@ base commit, neither tree changes native/build sources, and `cuobjdump` reports
 only `sm_80` cubins. `_C` and `_moe_C` SHA256 values plus the import path are
 written to `vllm_install.json`. This saves compilation memory; it does not count
 as GPU qualification and cannot unlock H1/H2.
+The CPU-only image may expose only a placeholder `libcuda.so.1`, so `_C` and
+`_moe_C` dynamic loading is deliberately deferred to the first A800 hardware
+gate. File validation must not be reported as a successful CUDA import.
 
 The preflight compiles sources, runs all tests, validates the experiment
 contract, runs both A and C local v6 configurations, audits storage and runtime
