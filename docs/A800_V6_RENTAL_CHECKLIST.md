@@ -73,6 +73,7 @@ source "$STAGE_ROOT/envs/probekv-py310/bin/activate"
 # export PROBEKV_PYTHON_BIN=/absolute/stage/envs/existing/bin/python
 # export PROBEKV_ENV_DIR=/absolute/stage/envs/existing
 # export PROBEKV_NVCC_BIN=/usr/local/cuda/bin/nvcc
+# export PROBEKV_CACHEBLEND_SOURCE=/absolute/clean/CacheBlend-mirror
 
 # Use `both` when storage.json selects dual_model_resident. In sequential mode
 # use `mistral` now and `qwen` after Mistral qualification and verified purge.

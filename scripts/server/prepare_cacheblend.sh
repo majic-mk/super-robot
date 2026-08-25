@@ -9,7 +9,7 @@ fi
 target="$1"
 mode="${2:-probekv}"
 expected_commit="b72d7945e6d6306f12be66520196e0f081fa2b0c"
-repository="https://github.com/YaoJiayi/CacheBlend.git"
+repository="${PROBEKV_CACHEBLEND_SOURCE:-https://github.com/YaoJiayi/CacheBlend.git}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 patch_dir="$repo_root/patches/cacheblend"
@@ -67,7 +67,17 @@ else
     echo "target exists but is not a Git repository: $target" >&2
     exit 1
   fi
-  git clone "$repository" "$target"
+  if [[ -d "$repository" ]]; then
+    if [[ ! -d "$repository/.git" ]]; then
+      echo "local CacheBlend source is not a Git repository: $repository" >&2
+      exit 1
+    fi
+    if ! git -C "$repository" cat-file -e "$expected_commit^{commit}"; then
+      echo "local CacheBlend source lacks the frozen commit" >&2
+      exit 1
+    fi
+  fi
+  git clone --no-hardlinks "$repository" "$target"
 fi
 
 git -C "$target" checkout --detach "$expected_commit"

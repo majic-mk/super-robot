@@ -289,6 +289,8 @@ class ServerScriptSafetyTests(unittest.TestCase):
         )
         self.assertIn('python_bin="${PROBEKV_PYTHON_BIN:-python3}"', patch_setup)
         self.assertIn('"$python_bin" - <<\'PY\'', patch_setup)
+        self.assertIn("PROBEKV_CACHEBLEND_SOURCE", patch_setup)
+        self.assertIn('git clone --no-hardlinks "$repository" "$target"', patch_setup)
         verifier = Path("scripts/server/verify_cacheblend_patch.py").read_text(
             encoding="utf-8"
         )
