@@ -22,7 +22,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-audit-root", required=True)
     parser.add_argument("--model-audit", required=True)
+    parser.add_argument("--patch-audit", required=True)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--contract", default="configs/experiment_contract.yaml")
+    parser.add_argument("--server-lock", default="configs/a800_server_lock.json")
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=20260726)
     parser.add_argument("--per-dataset", type=int, default=50)
@@ -32,8 +35,22 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[2]
+    code_commit = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=str(repo), text=True
+    ).strip()
+    if subprocess.check_output(
+        ("git", "status", "--porcelain"), cwd=str(repo), text=True
+    ).strip():
+        raise ValueError("v6 H1 data handoff requires a clean ProbeKV worktree")
     source_root = Path(args.source_audit_root).resolve()
     model_audit_path = Path(args.model_audit).resolve()
+    patch_audit_path = Path(args.patch_audit).resolve()
+    config_path = Path(args.config).resolve()
+    contract_path = Path(args.contract).resolve()
+    server_lock_path = Path(args.server_lock).resolve()
+    for required in (patch_audit_path, config_path, contract_path, server_lock_path):
+        if not required.is_file():
+            raise ValueError("missing frozen H1 input: %s" % required)
     model = json.loads(model_audit_path.read_text(encoding="utf-8"))
     if model.get("complete") is not True:
         raise ValueError("model snapshot audit is incomplete")
@@ -103,7 +120,7 @@ def main() -> int:
         sys.executable,
         str(repo / "scripts" / "build_e1_jobs.py"),
         "--manifest", str(manifest_output / "h1_pilot_cases.jsonl"),
-        "--config", str(Path(args.config).resolve()),
+        "--config", str(config_path),
         "--output", str(jobs_output),
         "--splits", "pilot",
         "--anchor-fraction", "0.20",
@@ -114,11 +131,15 @@ def main() -> int:
         "stage": "v6_h1_model_data_handoff",
         "paper_evidence": False,
         "locked_test_accessed": False,
+        "code_commit": code_commit,
         "model_id": model["model_id"],
         "model_revision": model["revision"],
         "tokenizer_hash": model["tokenizer_hash"],
         "model_audit_sha256": sha256_file(model_audit_path),
-        "config_sha256": sha256_file(Path(args.config).resolve()),
+        "patch_audit_sha256": sha256_file(patch_audit_path),
+        "config_sha256": sha256_file(config_path),
+        "contract_sha256": sha256_file(contract_path),
+        "server_lock_sha256": sha256_file(server_lock_path),
         "sources": source_rows,
         "pilot_manifest": str(manifest_output / "h1_pilot_cases.jsonl"),
         "pilot_manifest_sha256": sha256_file(manifest_output / "h1_pilot_cases.jsonl"),

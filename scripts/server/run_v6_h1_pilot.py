@@ -75,6 +75,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--jobs", required=True)
+    parser.add_argument("--handoff", required=True)
     parser.add_argument("--model-audit", required=True)
     parser.add_argument("--patch-audit", required=True)
     parser.add_argument("--environment", required=True)
@@ -91,6 +92,7 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[2]
     manifest_path = Path(args.manifest).resolve()
     jobs_path = Path(args.jobs).resolve()
+    handoff = json.loads(Path(args.handoff).read_text(encoding="utf-8"))
     model_audit = json.loads(Path(args.model_audit).read_text(encoding="utf-8"))
     patch = json.loads(Path(args.patch_audit).read_text(encoding="utf-8"))
     environment = Path(args.environment).resolve()
@@ -100,8 +102,25 @@ def main() -> int:
     gate_path = output / "gate.json"
     if results_path.exists() and not args.resume:
         raise FileExistsError("results exist; pass --resume or select a new output")
+    code_commit = _command("git", "rev-parse", "HEAD")
     if _command("git", "status", "--porcelain"):
         raise ValueError("v6 H1 requires a clean ProbeKV worktree")
+    if handoff.get("stage") != "v6_h1_model_data_handoff":
+        raise ValueError("invalid v6 H1 data handoff")
+    if handoff.get("paper_evidence") is not False or handoff.get("locked_test_accessed") is not False:
+        raise ValueError("v6 H1 handoff must remain an unlocked server pilot")
+    if handoff.get("ready_for_v6_h1_gpu_sentinel") is not True:
+        raise ValueError("v6 H1 handoff is not sentinel-ready")
+    if handoff.get("code_commit") != code_commit:
+        raise ValueError("v6 H1 handoff was built by a different ProbeKV commit")
+    if handoff.get("pilot_manifest_sha256") != sha256_file(manifest_path):
+        raise ValueError("v6 H1 manifest differs from its handoff")
+    if handoff.get("jobs_sha256") != sha256_file(jobs_path):
+        raise ValueError("v6 H1 jobs differ from their handoff")
+    if handoff.get("model_audit_sha256") != sha256_file(Path(args.model_audit)):
+        raise ValueError("v6 H1 model audit differs from its handoff")
+    if handoff.get("patch_audit_sha256") != sha256_file(Path(args.patch_audit)):
+        raise ValueError("v6 H1 CacheBlend patch audit differs from its handoff")
 
     cases = _rows(manifest_path, manifest_case_from_row)
     validate_manifest(cases)
@@ -119,6 +138,8 @@ def main() -> int:
         raise ValueError("v6 H1 jobs escape the pilot manifest")
     if model_audit.get("model_id") != spec.model_id or model_audit.get("revision") != spec.revision:
         raise ValueError("model audit does not match the selected adapter")
+    if handoff.get("model_id") != spec.model_id or handoff.get("model_revision") != spec.revision:
+        raise ValueError("handoff does not match the selected adapter")
     if any(case.model_signature != "%s@%s" % (spec.model_id, spec.revision) for case in cases):
         raise ValueError("manifest was not tokenized for the selected model")
 

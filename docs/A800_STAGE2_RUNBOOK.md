@@ -197,6 +197,7 @@ semantics required by v6. First re-tokenize each model independently:
 python scripts/server/prepare_v6_h1_model_data.py \
   --source-audit-root "$STAGE2/artifacts/prepared_stream" \
   --model-audit "$STAGE1/artifacts/model_audits/model_audit_qwen.json" \
+  --patch-audit "$STAGE1/artifacts/v6_setup/cacheblend_patch.json" \
   --config configs/a800_h1_pilot_v6_qwen.json \
   --output "$STAGE1/artifacts/v6_h1_data/qwen"
 ```
@@ -208,6 +209,7 @@ each Source/boundary grid and writes `h1_scan_allowed: false` on any mismatch:
 python scripts/server/run_v6_h1_pilot.py \
   --manifest "$STAGE1/artifacts/v6_h1_data/qwen/manifest/h1_pilot_cases.jsonl" \
   --jobs "$STAGE1/artifacts/v6_h1_data/qwen/jobs/jobs.jsonl" \
+  --handoff "$STAGE1/artifacts/v6_h1_data/qwen/handoff.json" \
   --model-audit "$STAGE1/artifacts/model_audits/model_audit_qwen.json" \
   --patch-audit "$STAGE1/artifacts/v6_setup/cacheblend_patch.json" \
   --environment "$STAGE1/artifacts/v6_setup/environment.json" \

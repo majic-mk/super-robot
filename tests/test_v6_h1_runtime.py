@@ -91,6 +91,9 @@ class V6H1ServerContractTests(unittest.TestCase):
         self.assertNotIn("CacheBlendCaseRuntime", text)
         self.assertIn("round(spec.num_layers * 0.15)", text)
         self.assertNotIn("job.reuse_layer == 5", text)
+        self.assertIn('parser.add_argument("--handoff", required=True)', text)
+        self.assertIn('handoff.get("code_commit") != code_commit', text)
+        self.assertIn('handoff.get("patch_audit_sha256")', text)
 
     def test_model_data_handoff_retokenizes_and_blocks_locked_test(self):
         root = Path(__file__).resolve().parents[1]
@@ -100,6 +103,8 @@ class V6H1ServerContractTests(unittest.TestCase):
         self.assertIn('"--tokenizer", str(snapshot)', text)
         self.assertIn('"locked_test_accessed": False', text)
         self.assertIn('"ready_for_v6_h1_gpu_sentinel": True', text)
+        self.assertIn('"code_commit": code_commit', text)
+        self.assertIn('"patch_audit_sha256": sha256_file(patch_audit_path)', text)
 
 
 if __name__ == "__main__":
