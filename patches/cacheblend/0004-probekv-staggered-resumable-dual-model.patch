@@ -69,6 +69,43 @@ index 9f6f6933cd79e8a9327434540a48cd11b2683150..4397416f81bd4a59fd2afdf7b54de350
              imp_indices = cache_fuse_metadata["imp_indices"]
              #key_old[imp_indices] = key[imp_indices]
              #value_old[imp_indices] = value[imp_indices]
+@@ -547,12 +587,33 @@ class XFormersImpl(AttentionImpl):
+             if status in [1,2]:
+-                #import pdb
+-                #pdb.set_trace()
++                partial_bias = cache_fuse_metadata["attn_bias"]
++                # xFormers 0.0.25 can issue an illegal Cutlass access for a
++                # materialized 5-D GQA bias when queries_per_kv is not one of
++                # its aligned group sizes (Qwen2.5 uses 7). Flatten the
++                # already-expanded GQA tensors to equivalent contiguous MHA
++                # heads while preserving the bias's padded final stride.
++                if (
++                    cache_fuse_metadata.get("probekv_resumable")
++                    and torch.is_tensor(partial_bias)
++                    and self.num_queries_per_kv not in (1, 2, 4, 8)
++                ):
++                    query = query.contiguous().view(
++                        query.shape[0], query.shape[1],
++                        self.num_heads, query.shape[-1])
++                    key = key.contiguous().view(
++                        key.shape[0], key.shape[1],
++                        self.num_heads, key.shape[-1])
++                    value = value.contiguous().view(
++                        value.shape[0], value.shape[1],
++                        self.num_heads, value.shape[-1])
++                    partial_bias = partial_bias.view(
++                        1, self.num_heads, partial_bias.shape[-2],
++                        partial_bias.shape[-1])
+                 out = xops.memory_efficient_attention_forward(
+                         query,
+                         key,
+                         value,
+-                        attn_bias=cache_fuse_metadata["attn_bias"],
++                        attn_bias=partial_bias,
+                         p=0.0,
+                         scale=self.scale,
+                     )
+             else:
 diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
 index dffe6da2d8714a624b4cb61eb9f8a7a6cc9dadc5..bb623f35323cd927b197b6436881f1dccbedb0a3 100644
 --- a/vllm_blend/vllm/model_executor/models/llama.py
