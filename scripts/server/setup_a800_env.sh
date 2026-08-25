@@ -21,28 +21,48 @@ if ! command -v "$python_bin" >/dev/null 2>&1; then
   echo "Python 3.10 is required; set PROBEKV_PYTHON_BIN if necessary" >&2
   exit 1
 fi
+python_bin="$(command -v "$python_bin")"
 python_version="$($python_bin -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 if [[ "$python_version" != "3.10" ]]; then
   echo "expected Python 3.10, found $python_version" >&2
   exit 1
 fi
-if ! command -v nvcc >/dev/null 2>&1 || ! nvcc --version | grep -q 'release 12\.1'; then
+nvcc_bin="${PROBEKV_NVCC_BIN:-}"
+if [[ -z "$nvcc_bin" ]]; then
+  if command -v nvcc >/dev/null 2>&1; then
+    nvcc_bin="$(command -v nvcc)"
+  elif [[ -x /usr/local/cuda/bin/nvcc ]]; then
+    nvcc_bin=/usr/local/cuda/bin/nvcc
+  fi
+fi
+if [[ -z "$nvcc_bin" || ! -x "$nvcc_bin" ]] || \
+   ! "$nvcc_bin" --version | grep -q 'release 12\.1'; then
   echo "CUDA toolkit 12.1 with nvcc is required before building vLLM" >&2
   exit 1
 fi
+export PATH="$(dirname "$nvcc_bin"):$PATH"
 
 mkdir -p "$stage_root"/{src,envs,hf,build,artifacts}
 export PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}"
-python "$repo/scripts/server/plan_server_storage.py" \
+"$python_bin" "$repo/scripts/server/plan_server_storage.py" \
   --stage-root "$stage_root" --system-root / \
   --output "$stage_root/artifacts/storage.json"
 
-env_dir="$stage_root/envs/probekv-py310"
+env_dir="${PROBEKV_ENV_DIR:-$stage_root/envs/probekv-py310}"
+case "$env_dir" in
+  "$stage_root"/envs/*) ;;
+  *) echo "PROBEKV_ENV_DIR must remain inside $stage_root/envs" >&2; exit 2 ;;
+esac
 cacheblend="$stage_root/src/CacheBlend-probekv-v6"
 artifacts="$stage_root/artifacts/v6_setup"
 mkdir -p "$artifacts"
 if [[ ! -x "$env_dir/bin/python" ]]; then
   "$python_bin" -m venv "$env_dir"
+fi
+env_python_version="$($env_dir/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [[ "$env_python_version" != "3.10" ]]; then
+  echo "selected ProbeKV environment is not Python 3.10: $env_dir" >&2
+  exit 1
 fi
 
 export MAX_JOBS="${MAX_JOBS:-8}"

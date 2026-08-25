@@ -31,6 +31,17 @@ output="$data_root/artifacts/v6_no_gpu_preflight"
 mkdir -p "$output"
 export PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}"
 
+# Storage admission is decided before downloading model snapshots. Reapplying
+# the 70/50 GiB pre-download thresholds after a valid dual-model download would
+# reject space intentionally occupied by the frozen snapshots. Preserve that
+# preparation audit and record the current steady-state reserve separately.
+pre_download_storage="$(dirname "$mistral_audit")/storage.json"
+if [[ ! -f "$pre_download_storage" ]]; then
+  echo "missing pre-download storage audit: $pre_download_storage" >&2
+  exit 1
+fi
+cp -- "$pre_download_storage" "$output/storage.json"
+
 python -m compileall -q src scripts tests
 python -m unittest discover -s tests -v
 python scripts/validate_contract.py \
@@ -42,9 +53,9 @@ python -m probekv.cli \
 python -m probekv.cli \
   --config configs/local_system_v6_immediate_staggered.json \
   --output "$output/local_v6_immediate_staggered"
-python scripts/server/plan_server_storage.py \
+python scripts/server/audit_post_download_storage.py \
   --stage-root "$data_root" --system-root / \
-  --output "$output/storage.json"
+  --output "$output/storage_post_download.json"
 python scripts/server/audit_v6_runtime_sources.py \
   --repo "$repo" --output "$output/runtime_sources.json"
 python scripts/server/build_v6_a800_jobs.py \

@@ -51,6 +51,11 @@ one final CacheBlend tree are retained, pip caching is disabled, build objects
 are removed after installation, datasets stream, and full-dataset KV is never
 stored.
 
+The 70/50GiB admission thresholds are evaluated and archived before model
+download. After download, a separate steady-state audit enforces the 15GiB
+system-filesystem reserve; it does not reapply the pre-download thresholds to
+space intentionally occupied by the frozen snapshots.
+
 ## CPU-only preparation
 
 ```bash
@@ -64,6 +69,11 @@ bash "$PROBEKV_SRC/scripts/server/setup_a800_env.sh" \
   "$PROBEKV_SRC" "$STAGE_ROOT"
 source "$STAGE_ROOT/envs/probekv-py310/bin/activate"
 
+# A reused server may select one already verified Python 3.10 environment:
+# export PROBEKV_PYTHON_BIN=/absolute/stage/envs/existing/bin/python
+# export PROBEKV_ENV_DIR=/absolute/stage/envs/existing
+# export PROBEKV_NVCC_BIN=/usr/local/cuda/bin/nvcc
+
 # Use `both` when storage.json selects dual_model_resident. In sequential mode
 # use `mistral` now and `qwen` after Mistral qualification and verified purge.
 bash "$PROBEKV_SRC/scripts/server/prepare_dual_model_snapshots.sh" \
@@ -75,6 +85,10 @@ bash "$PROBEKV_SRC/scripts/server/run_v6_no_gpu_preflight.sh" \
   "$STAGE_ROOT/artifacts/model_audits/model_audit_qwen.json" \
   "$STAGE_ROOT/artifacts/v6_setup/cacheblend_patch.json"
 ```
+
+`PROBEKV_ENV_DIR` is accepted only below the selected stage's `envs/`
+directory. This avoids keeping a second multi-gigabyte environment solely for
+renaming consistency.
 
 The preflight compiles sources, runs all tests, validates the experiment
 contract, runs both A and C local v6 configurations, audits storage and runtime

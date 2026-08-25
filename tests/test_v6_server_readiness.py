@@ -10,6 +10,7 @@ from probekv.v6_server_readiness import (
     evaluate_dual_model_no_gpu_readiness,
     evaluate_no_gpu_readiness,
 )
+from scripts.server.audit_post_download_storage import audit_post_download_storage
 from scripts.server.download_model_snapshot import audit_snapshot
 
 
@@ -272,6 +273,13 @@ class ServerScriptSafetyTests(unittest.TestCase):
         lowered = text.lower()
         self.assertNotIn("password=", lowered)
         self.assertNotIn("hf_token=", lowered)
+        self.assertIn('python_bin="$(command -v "$python_bin")"', text)
+        self.assertIn("PROBEKV_NVCC_BIN", text)
+        self.assertIn("PROBEKV_ENV_DIR", text)
+        self.assertIn(
+            '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',
+            text,
+        )
         legacy = Path("scripts/server/run_preflight.sh").read_text(
             encoding="utf-8"
         )
@@ -319,6 +327,25 @@ class ServerScriptSafetyTests(unittest.TestCase):
                 "%s==%s" % (package, lock["stack"][package]),
                 requirements,
             )
+
+    def test_no_gpu_preflight_separates_pre_and_post_download_storage(self):
+        text = Path("scripts/server/run_v6_no_gpu_preflight.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'pre_download_storage="$(dirname "$mistral_audit")/storage.json"',
+            text,
+        )
+        self.assertIn("audit_post_download_storage.py", text)
+
+    def test_post_download_storage_enforces_system_reserve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = audit_post_download_storage(
+                Path(directory), Path(directory)
+            )
+        self.assertIn("stage_filesystem_free_gib", result)
+        self.assertIn("system_free_gib", result)
+        self.assertEqual(result["system_reserve_gib"], 15)
 
 
 if __name__ == "__main__":
