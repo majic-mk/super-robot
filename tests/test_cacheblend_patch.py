@@ -118,6 +118,21 @@ class CacheBlendPatchTests(unittest.TestCase):
             "local_imp_indices", "BlockDiagonalCausalMask.from_seqlens",
         ):
             self.assertIn(marker, patch)
+        self.assertIn(
+            " attn_metadata: AttentionMetadata,\n"
+            "         residual: Optional[torch.Tensor],\n"
+            "+        status: int,",
+            patch,
+        )
+        self.assertNotIn(
+            "return hidden_states\n \n"
+            "+        if self.model.cache_fuse_metadata.get(\"capture_logits\"",
+            patch,
+        )
+        self.assertIn(
+            "+        if self.model.cache_fuse_metadata.get(\"capture_logits\"",
+            patch,
+        )
         self.assertEqual(
             patch_files_for_mode(MANIFEST, "probekv_v6_multiregion"),
             paths[:3],
