@@ -280,11 +280,19 @@ class ServerScriptSafetyTests(unittest.TestCase):
             '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',
             text,
         )
+        self.assertEqual(
+            text.count('--manifest "$repo/patches/cacheblend/manifest.json"'),
+            2,
+        )
         patch_setup = Path("scripts/server/prepare_cacheblend.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn('python_bin="${PROBEKV_PYTHON_BIN:-python3}"', patch_setup)
         self.assertIn('"$python_bin" - <<\'PY\'', patch_setup)
+        verifier = Path("scripts/server/verify_cacheblend_patch.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Path(__file__).resolve().parents[2]", verifier)
         legacy = Path("scripts/server/run_preflight.sh").read_text(
             encoding="utf-8"
         )

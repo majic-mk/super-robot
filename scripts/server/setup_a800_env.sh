@@ -85,6 +85,7 @@ python="$env_dir/bin/python"
 if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
   --cacheblend "$cacheblend" \
   --mode probekv_v6_staggered_runtime \
+  --manifest "$repo/patches/cacheblend/manifest.json" \
   --output "$artifacts/cacheblend_patch.json" >/dev/null 2>&1; then
   if [[ -d "$cacheblend/.git" && -n "$(git -C "$cacheblend" status --porcelain)" ]]; then
     echo "existing CacheBlend tree is neither verified nor clean: $cacheblend" >&2
@@ -95,6 +96,7 @@ if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
   "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
     --cacheblend "$cacheblend" \
     --mode probekv_v6_staggered_runtime \
+    --manifest "$repo/patches/cacheblend/manifest.json" \
     --output "$artifacts/cacheblend_patch.json"
 fi
 

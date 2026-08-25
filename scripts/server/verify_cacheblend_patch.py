@@ -48,12 +48,17 @@ def main() -> int:
             "probekv_v6_staggered_runtime",
         ),
     )
-    parser.add_argument("--manifest", default="patches/cacheblend/manifest.json")
+    parser.add_argument("--manifest")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
     cacheblend = Path(args.cacheblend).resolve()
-    manifest_path = Path(args.manifest).resolve()
+    manifest_path = (
+        Path(args.manifest).resolve()
+        if args.manifest
+        else Path(__file__).resolve().parents[2]
+        / "patches" / "cacheblend" / "manifest.json"
+    )
     manifest = load_patch_manifest(manifest_path)
     actual_commit = _git(cacheblend, "rev-parse", "HEAD")
     if actual_commit != manifest["base_commit"]:
