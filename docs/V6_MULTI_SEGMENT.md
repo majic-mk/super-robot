@@ -24,6 +24,12 @@ candidate set.
 The comparison algorithm is linear in `sum(K_i)` and never enumerates a
 Cartesian product of Source combinations.
 
+Counts such as 1/2/5/10/15/17/37 are only correctness or profiling sample
+points. They are not accepted by any runtime `max_segments` check. The real
+limit is the model context window and the request-level comparison, memory and
+time budgets; when a Segment cannot receive comparison budget it remains
+explicitly assigned to dense execution rather than being dropped.
+
 ```mermaid
 flowchart LR
   P["Prefix Cache lookup"] -->|"remaining non-prefix regions"| D["Detect all exact repeated segments"]
@@ -33,7 +39,7 @@ flowchart LR
   E --> S["Independent per-segment early Source lock"]
   S --> L["Load at most one winner per selected segment"]
   L --> Q["Scheduler returns actual layer readiness and A-resume timing"]
-  Q --> R["Refined common-boundary request cost"]
+  Q --> R["Refined per-segment-boundary request cost"]
   R -->|"accepted subset"| U["Partial or all-segment reuse"]
   R -->|"no feasible request plan"| F["Dense non-prefix recomputation"]
 ```
@@ -62,6 +68,25 @@ locked, neither scheduler nor refined planner may replace the Source.
 The request audit records `stored_k`, `eligible_k`, `compared_k`, dropped IDs,
 budget use, lock layer, safe-ratio upper bound and predicted-cost upper bound.
 
+## A/C selection-execution policies
+
+Only two new policies are retained. The shadow-dense proposal was removed.
+
+- A, `causal_commit_wait`: a locked Segment may affect execution only after it
+  and every downstream reuse candidate is terminal (`SELECTED` or abstained).
+  For ordered decisions with terminal layers `d_i`, its clean-state floor is
+  `b_i = 1 + max(d_j for j >= i)`. If every Segment locks at layer 1, every
+  floor is layer 2; there is no fixed freeze layer and no computation to an
+  arbitrary layer 4.
+- C, `immediate_staggered_closed_loop`: a Segment may affect execution at
+  `b_i = d_i + 1`. Downstream probe state can therefore include upstream
+  repaired reuse. Calibration and deployment policy must match, and every
+  audit records `probe_state_origin=policy_conditioned_closed_loop`.
+
+Both policies prefetch the one locked winner immediately. Source selection is
+still immutable; scheduler/refined admission may accept or reject it but may
+not replace it. `shadow_dense_probe` is rejected by the config parser.
+
 ## Selection, admission and execution are separate states
 
 The three state axes must not be collapsed:
@@ -76,7 +101,7 @@ An abstaining segment is `NOT_SELECTED + NOT_EVALUATED + DENSE`. A Source that
 was loaded but failed refined admission remains recorded as
 `SELECTED + REJECTED + DENSE`; its bytes are charged as waste.
 
-## Scheduler and common reuse boundary
+## Scheduler and staggered reuse boundaries
 
 The scheduler accepts only locked winners and reports, per Source, load start,
 load finish, first usable ready time, an ordered `layer_ready_ms` schedule,
@@ -86,18 +111,28 @@ post-ready blocking, load-compute interference and useful B/C work.
 HBM or transfer failure is represented explicitly as `source_ready=false`;
 the locked Source remains audited but only that segment becomes dense.
 
-For each actual candidate boundary the planner:
+For each Segment the scheduler combines the selection floor with actual Source
+readiness:
+
+```text
+b_i_actual = max(b_i_selection, b_i_source_ready, b_i_scheduler)
+```
+
+The staggered controller profiles this single linear boundary vector; it does
+not enumerate a Cartesian product of boundary combinations. It then:
 
 1. retains Sources ready through that boundary;
 2. removes segments whose refined marginal saving is non-positive;
 3. re-profiles the request with the remaining union repair mask;
 4. applies simultaneous request-level quality coverage;
 5. requires `T_reuse <= gamma * T_dense-reference`;
-6. chooses the feasible common boundary with minimum refined total cost.
+6. records one actual boundary for every accepted Segment.
 
-All accepted segments share the resulting `actual_reuse_boundary`. Other
-segments are dense. If no request-level plan passes, all remaining non-prefix
-work is dense.
+Other segments are dense. If no request-level plan passes, all remaining
+non-prefix work is dense. The scalar `actual_reuse_boundary` is populated only
+when all accepted Segment boundaries happen to be equal; the authoritative new
+field is `actual_reuse_boundary_by_segment`. The legacy common-boundary
+controller remains available only through its explicit reproduction config.
 
 ## One cost identity
 
@@ -134,6 +169,11 @@ semantics while enforcing v6 boundaries:
 - when every candidate ratio is one, generated token IDs must exactly equal the
   same-stack dense reference and 32-token teacher-forced logit relative-L2 must
   be at most `1e-4`.
+
+The A/C adapter additionally builds `execution_indices_by_layer`: before a
+Segment's boundary it is dense, and from its boundary onward only its selected
+repair tokens enter that layer's union mask. Each layer has its own absolute
+mask digest. The pinned runtime must echo every boundary, token set and digest.
 
 The local adapter and fake-runtime invariants are implemented and tested. The
 pinned CacheBlend CUDA/vLLM execution must still pass the A800 correctness and
@@ -178,8 +218,11 @@ unload deletes only the selected namespace.
 
 ## Configurations and local checks
 
-- `configs/local_system_v6.json`: deterministic non-paper local simulation.
+- `configs/local_system_v6.json`: A (`causal_commit_wait`) local simulation.
+- `configs/local_system_v6_immediate_staggered.json`: C, execution-matched local ablation.
+- `configs/local_system_v6_common_legacy.json`: old common-boundary reproduction.
 - `configs/a800_closed_loop_v6.json`: capability-gated A800 server pilot.
+- `configs/a800_closed_loop_v6_immediate_staggered.json`: C A800 ablation.
 - `configs/v6_a800_microbench.json`: frozen 140-job correctness/profile matrix.
 - v6 configuration files must not contain legacy `online_kmax`.
 - v6 GPU runs use `cacheblend_multisegment_closed_loop`; the legacy
@@ -195,3 +238,25 @@ python -m probekv.cli --config configs/local_system_v6.json
 ```
 
 All local outputs are permanently marked `paper_evidence: false`.
+
+## Related-system segment-count audit
+
+The absence of a hard Segment-count cap follows the problem definition in the
+closest systems, not an assumption that all counts are equally cheap.
+
+- CacheBlend explicitly targets inputs containing multiple text chunks and its
+  sensitivity figure varies chunk count through 3/6/9/12; these are evaluation
+  settings, not an architectural whitelist:
+  https://arxiv.org/abs/2405.16444
+- Cache-Craft manages chunk-caches for retrieved chunks at arbitrary prompt
+  locations; its runtime policy is cache/recompute management rather than a
+  fixed allowed-count API: https://arxiv.org/abs/2502.15734
+- QCFuse constructs per-chunk anchors and implements multi-chunk fusion in
+  SGLang: https://arxiv.org/abs/2606.05875
+- RAGCache stores retrieved knowledge in a dynamic knowledge tree rather than
+  imposing ProbeKV-style fixed Segment cardinalities:
+  https://arxiv.org/abs/2404.12457
+
+ProbeKV therefore processes all detected exact non-prefix repeats, while
+budgets decide comparison/reuse versus dense execution. Experimental counts
+remain finite sample points for reproducible plots and stress tests.

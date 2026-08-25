@@ -6,7 +6,10 @@ from typing import Any, Mapping, Protocol, Tuple
 from .backend import RepairBackend, RepairResult
 from .contracts import HistoricalSource, KVLocation
 from .repair_semantics import repaired_segment_token_count
-from .repair_semantics import MultiSegmentRepairSelection
+from .repair_semantics import (
+    MultiSegmentRepairSelection,
+    StaggeredMultiSegmentRepairPlan,
+)
 from .v6_contracts import RequestSpec
 
 
@@ -197,6 +200,27 @@ class MultiSegmentRepairMeasurement:
     rope_alignment_mode: str = "unspecified"
 
 
+@dataclass(frozen=True)
+class StaggeredMultiSegmentRepairMeasurement:
+    request_id: str
+    boundary_by_segment: Mapping[str, int]
+    selected_indices_by_segment_layer: Mapping[
+        str, Mapping[int, Tuple[int, ...]]
+    ]
+    execution_indices_by_layer: Mapping[int, Tuple[int, ...]]
+    union_mask_digest_by_layer: Mapping[int, str]
+    digest_before_by_segment: Mapping[str, str]
+    digest_after_by_segment: Mapping[str, str]
+    repair_gpu_ms: float
+    repair_host_ms: float
+    output_token_ids: Tuple[int, ...] = ()
+    dense_reference_token_ids: Tuple[int, ...] = ()
+    teacher_forced_logit_relative_l2: float = 0.0
+    teacher_forced_logit_positions: int = 0
+    causal_mask_mode: str = "unspecified"
+    rope_alignment_mode: str = "unspecified"
+
+
 class MultiSegmentCacheBlendRuntime(Protocol):
     """Pinned-stack interface for v6 multi-region execution."""
 
@@ -215,6 +239,14 @@ class MultiSegmentCacheBlendRuntime(Protocol):
         start_layer: int,
         repair_selection: MultiSegmentRepairSelection,
     ) -> MultiSegmentRepairMeasurement:
+        ...
+
+    def execute_staggered_multisegment_prefill(
+        self,
+        request: RequestSpec,
+        sources_by_segment: Mapping[str, HistoricalSource],
+        repair_plan: StaggeredMultiSegmentRepairPlan,
+    ) -> StaggeredMultiSegmentRepairMeasurement:
         ...
 
     def dense_remaining_profile(
@@ -396,6 +428,89 @@ class MultiSegmentCacheBlendBackend:
         if latency < 0:
             raise ValueError("dense profile latency must be non-negative")
         return latency
+
+    def repair_request_staggered(
+        self,
+        request: RequestSpec,
+        sources_by_segment: Mapping[str, HistoricalSource],
+        repair_plan: StaggeredMultiSegmentRepairPlan,
+    ) -> StaggeredMultiSegmentRepairMeasurement:
+        """Validate the A/C layer-indexed data-plane contract.
+
+        This adapter intentionally exposes no fixed Segment-count limit.  The
+        pinned runtime must echo every per-layer absolute union mask and keep
+        every canonical Source immutable.
+        """
+
+        self._validate_sources(request, sources_by_segment)
+        repair_plan.validate(request)
+        if repair_plan.total_layers != self.total_layers:
+            raise ValueError("staggered repair plan uses another model depth")
+        if set(sources_by_segment) != set(repair_plan.requested_ratios):
+            raise ValueError("every staggered segment requires one locked Source")
+        result = self.runtime.execute_staggered_multisegment_prefill(
+            request, sources_by_segment, repair_plan
+        )
+        if result.request_id != request.request_id:
+            raise ValueError("runtime returned another request")
+        if dict(result.boundary_by_segment) != dict(
+            repair_plan.boundary_by_segment
+        ):
+            raise ValueError("runtime changed staggered boundaries")
+        if {
+            segment_id: dict(by_layer)
+            for segment_id, by_layer in result.selected_indices_by_segment_layer.items()
+        } != {
+            segment_id: dict(by_layer)
+            for segment_id, by_layer in repair_plan.selected_indices_by_segment_layer.items()
+        }:
+            raise ValueError("runtime changed staggered repair tokens")
+        if dict(result.execution_indices_by_layer) != dict(
+            repair_plan.execution_indices_by_layer
+        ):
+            raise ValueError("runtime changed staggered union masks")
+        if dict(result.union_mask_digest_by_layer) != dict(
+            repair_plan.union_mask_digest_by_layer
+        ):
+            raise ValueError("runtime staggered union-mask digest mismatch")
+        required = set(sources_by_segment)
+        if set(result.digest_before_by_segment) != required or set(
+            result.digest_after_by_segment
+        ) != required:
+            raise ValueError("staggered Source digest audit is incomplete")
+        if any(
+            result.digest_before_by_segment[segment_id]
+            != result.digest_after_by_segment[segment_id]
+            for segment_id in required
+        ):
+            raise RuntimeError("staggered repair mutated a canonical Source")
+        if min(
+            result.repair_gpu_ms,
+            result.repair_host_ms,
+            result.teacher_forced_logit_relative_l2,
+        ) < 0:
+            raise ValueError("staggered runtime measurements must be non-negative")
+        if result.causal_mask_mode != "absolute_query_positions_per_layer":
+            raise ValueError("staggered repair requires per-layer absolute causal rows")
+        if result.rope_alignment_mode != "pre_rope_derotate_rerotate":
+            raise ValueError("staggered repair requires explicit RoPE alignment")
+        all_r_one = (
+            required == {segment.segment_id for segment in request.segments}
+            and all(
+                abs(float(ratio) - 1.0) <= 1e-12
+                for ratio in repair_plan.requested_ratios.values()
+            )
+        )
+        if all_r_one:
+            if not result.dense_reference_token_ids:
+                raise ValueError("staggered r=1 requires dense reference tokens")
+            if result.output_token_ids != result.dense_reference_token_ids:
+                raise RuntimeError("staggered r=1 output differs from dense")
+            if result.teacher_forced_logit_relative_l2 > 1e-4:
+                raise RuntimeError("staggered r=1 logit fidelity exceeds 1e-4")
+            if result.teacher_forced_logit_positions < 32:
+                raise ValueError("staggered r=1 requires the first 32 logits")
+        return result
 
     def provenance(self) -> Mapping[str, Any]:
         record = dict(self.runtime.provenance())

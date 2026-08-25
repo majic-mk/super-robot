@@ -40,6 +40,11 @@ def lock_record():
             "required_capabilities": [
                 "async_multisource_loading",
                 "layer_resumable_prefill",
+                "layer_indexed_union_repair_masks",
+                "per_segment_staggered_boundaries",
+                "causal_commit_wait_execution",
+                "immediate_staggered_closed_loop_execution",
+                "policy_conditioned_probe_state",
             ],
         },
     }
@@ -163,6 +168,11 @@ class RuntimeQualificationTests(unittest.TestCase):
             "capabilities": {
                 "async_multisource_loading": True,
                 "layer_resumable_prefill": True,
+                "layer_indexed_union_repair_masks": True,
+                "per_segment_staggered_boundaries": True,
+                "causal_commit_wait_execution": True,
+                "immediate_staggered_closed_loop_execution": True,
+                "policy_conditioned_probe_state": True,
             },
             "code_commit": "code",
             "job_digest": "job-digest",

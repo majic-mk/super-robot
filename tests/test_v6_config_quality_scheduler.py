@@ -22,6 +22,7 @@ from probekv.scheduler import (
     SchedulerScenario,
     simulate_multisource_schedule,
 )
+from probekv.v6_contracts import SelectionExecutionPolicy
 
 
 class V6ConfigTests(unittest.TestCase):
@@ -31,6 +32,35 @@ class V6ConfigTests(unittest.TestCase):
         self.assertFalse(config.legacy_online_kmax_present)
         self.assertEqual(config.max_stored_variants_per_content, 16)
         self.assertIsNone(config.max_detected_segments)
+        self.assertEqual(
+            config.selection_execution_policy,
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+        )
+
+    def test_immediate_staggered_config_is_explicit_and_policy_matched(self):
+        config = load_config("configs/local_system_v6_immediate_staggered.json")
+        self.assertEqual(config.boundary_policy, "immediate_staggered")
+        self.assertEqual(
+            config.selection_execution_policy,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        )
+        self.assertTrue(config.calibration_policy_match_required)
+
+    def test_shadow_policy_is_not_part_of_the_v6_protocol(self):
+        raw = json.loads(
+            Path("configs/local_system_v6.json").read_text(encoding="utf-8")
+        )
+        raw["selection_execution_policy"] = "shadow_dense_probe"
+        with self.assertRaises(ValueError):
+            ExperimentConfig.from_mapping(raw)
+
+    def test_a_c_boundary_and_execution_policy_cannot_be_mixed(self):
+        raw = json.loads(
+            Path("configs/local_system_v6.json").read_text(encoding="utf-8")
+        )
+        raw["boundary_policy"] = "immediate_staggered"
+        with self.assertRaisesRegex(ValueError, "inconsistent"):
+            ExperimentConfig.from_mapping(raw)
 
     def test_a800_v6_uses_explicit_multisegment_runtime(self):
         config = load_config("configs/a800_closed_loop_v6.json")

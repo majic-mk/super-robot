@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from probekv.candidate_budget import (
     VariantComparisonCandidate,
@@ -14,14 +15,16 @@ from probekv.contracts import (
 from probekv.multisegment_orchestration import (
     MultiSegmentOnlinePipeline,
     MultiSegmentReuseController,
+    StaggeredMultiSegmentReuseController,
 )
 from probekv.multisegment_selector import MultiSegmentProbeSelector
-from probekv.selector import DynamicProbeSelector, ProbePolicy
+from probekv.selector import DynamicProbeSelector, ProbePolicy, SelectorPolicy
 from probekv.v6_contracts import (
     RequestExecutionMode,
     RequestRefinedCost,
     RequestSchedulingFeedback,
     RequestSelectionPlan,
+    SelectionExecutionPolicy,
     SegmentExecutionPath,
     SegmentSchedulingFeedback,
     SegmentSelectionDecision,
@@ -167,6 +170,132 @@ class RejectRuntime(PartialRuntime):
 
 
 class V6ClosedLoopTests(unittest.TestCase):
+    def test_a_and_c_close_selector_scheduler_refinement_with_staggered_boundaries(self):
+        candidates = (
+            VariantComparisonCandidate("c0", "c0-s", 0.0, 50.0, 0.01),
+            VariantComparisonCandidate("c1", "c1-a", 0.0, 50.0, 0.01),
+            VariantComparisonCandidate("c1", "c1-b", 0.1, 49.0, 0.01),
+        )
+        allocation = allocate_variant_comparisons(
+            candidates,
+            full_reference_ms=100.0,
+            probe_ms=0.1,
+            metadata_ms=0.1,
+            segment_ids=("c0", "c1"),
+        )
+        bounds = {
+            "c0": {1: (CandidateBounds("c0-s", 0.1, 10.0, 20.0),)},
+            "c1": {
+                layer: (
+                    CandidateBounds("c1-a", 0.1, 10.0, 30.0),
+                    CandidateBounds("c1-b", 0.1, 11.0, 31.0),
+                )
+                for layer in (1, 2, 3, 4)
+            },
+        }
+
+        class StaggeredRuntime:
+            def __init__(self, policy):
+                self.probe_state_origin = (
+                    "policy_conditioned_closed_loop"
+                    if policy is SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+                    else "dense_clean"
+                )
+                self.eligible = []
+                self.action = None
+
+            def on_source_locked(self, segment_id, decision):
+                pass
+
+            def on_reuse_eligible(self, segment_id, earliest_layer):
+                self.eligible.append((segment_id, earliest_layer))
+
+            def load_and_schedule(self, selection):
+                return RequestSchedulingFeedback(
+                    "request",
+                    (
+                        SegmentSchedulingFeedback("c0", "c0-s", 0, 1, 2, 32, 10),
+                        SegmentSchedulingFeedback("c1", "c1-a", 0, 1, 2, 32, 10),
+                    ),
+                    5,
+                    5,
+                    0,
+                    0,
+                    4,
+                    0,
+                    tuple(range(2, 33)),
+                )
+
+            def measure_staggered_refined_cost(
+                self, selection, scheduling, boundary_by_segment, active
+            ):
+                value = refined(active, min(boundary_by_segment.values()), 60.0)
+                return replace(
+                    value,
+                    boundary_by_segment=dict(boundary_by_segment),
+                    selected_source_ids={
+                        item.segment_id: str(
+                            item.source_decision.selected_source_id
+                        )
+                        for item in selection.selected
+                        if item.segment_id in active
+                    },
+                )
+
+            def execute_reuse(self, selection, execution):
+                self.action = "reuse"
+                return "reuse"
+
+            def execute_dense(self, selection, execution):
+                self.action = "dense"
+                return "dense"
+
+        observed = {}
+        for policy in (
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        ):
+            selector = MultiSegmentProbeSelector(
+                DynamicProbeSelector(
+                    ProbePolicy(
+                        (1, 2, 3, 4),
+                        4,
+                        selector_policy=SelectorPolicy.FINAL_ECONOMIC_MIN_COST,
+                        preliminary_economic_filter=True,
+                    )
+                ),
+                policy,
+            )
+            runtime = StaggeredRuntime(policy)
+            result = MultiSegmentOnlinePipeline(
+                selector, StaggeredMultiSegmentReuseController()
+            ).execute(
+                "request",
+                allocation,
+                (
+                    (lambda segment_id, layer: bounds.get(segment_id, {}).get(layer, ()))
+                    if policy is SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+                    else bounds
+                ),
+                runtime,
+            )
+            observed[policy] = dict(
+                result.execution.actual_reuse_boundary_by_segment
+            )
+            self.assertEqual(runtime.action, "reuse")
+            self.assertEqual(result.execution.mode, RequestExecutionMode.ALL_REUSE)
+
+        self.assertEqual(
+            observed[SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT],
+            {"c0": 5, "c1": 5},
+        )
+        self.assertEqual(
+            observed[
+                SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+            ],
+            {"c0": 2, "c1": 5},
+        )
+
     def test_selector_scheduler_refined_cost_and_admission_form_one_chain(self):
         candidates = (
             VariantComparisonCandidate("c0", "c0-s", 0.1, 40.0, 0.01),

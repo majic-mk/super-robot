@@ -14,6 +14,7 @@ class V6A800JobMatrixTests(unittest.TestCase):
         raw = json.loads(
             Path("configs/v6_a800_microbench.json").read_text(encoding="utf-8")
         )
+        self.assertIs(raw["segment_count_samples_are_not_runtime_caps"], True)
         jobs = build_v6_a800_jobs(raw)
         self.assertTrue(all(not job.paper_evidence for job in jobs))
         correctness = {

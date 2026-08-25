@@ -10,7 +10,8 @@ This checklist separates three claims that must never be conflated:
 3. **Ready to rent for qualification**: the concrete layer-resumable engine
    hook exists in source and the immutable 140-job worker can exercise it.
 4. **Ready for H1/H2 or paper timing**: the concrete layer-resumable
-   CacheBlend/vLLM engine has passed all 140 jobs, `r=1` dense equivalence and
+   CacheBlend/vLLM engine has passed all 140 jobs, both A/C execution hooks,
+   execution-matched C probe-state capture, `r=1` dense equivalence and
    CUDA timing gates.
 
 Passing item 1 does not imply item 3 or 4. At the current repository revision the
@@ -90,7 +91,8 @@ The concrete worker must then consume the frozen
 `v6_no_gpu_preflight/jobs/jobs.jsonl` and produce a runtime audit bound to the
 same `code_commit`, `job_digest`, model revision and CacheBlend patch hash. It
 must prove all capabilities listed in `a800_server_lock.json`, complete all
-140 jobs, preserve canonical Source digests, and pass:
+140 jobs, preserve canonical Source digests, exercise A
+(`causal_commit_wait`) and C (`immediate_staggered_closed_loop`), and pass:
 
 ```text
 r=1 generated token IDs == dense generated token IDs

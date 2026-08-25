@@ -5,7 +5,7 @@ core_claim: >-
   historical KV variants of the same exact non-prefix segment, using
   variant-specific conservative safe total-reuse cost bounds and abstention
 frozen_at: 2026-07-26
-amended_at: 2026-08-01
+amended_at: 2026-08-25
 amendment_note: >-
   Following the pre-experiment design review, every layer through the 25%
   ceiling is the main probe policy. The original sparse checkpoints remain a
@@ -40,8 +40,17 @@ amendment_note: >-
   artifacts. It replaces the legacy per-request Kmax rule with a global pool of
   up to 16 canonical variants per retained content, plans every detected exact
   non-prefix segment, compares summaries only within a request-level 5% budget,
-  and performs multi-segment partial reuse through one actual common boundary.
+  and originally performed multi-segment partial reuse through one actual
+  common boundary; that exact legacy configuration remains reproducible below.
   Selection, per-segment admission, and request execution mode remain separate.
+  Before the concrete v6 GPU data plane and any formal H1/H2 measurement, the
+  fixed common-boundary main policy was replaced explicitly by two A/C
+  selection-execution policies. A waits only on causally downstream unresolved
+  Segment decisions; C permits immediate repaired reuse and requires
+  execution-matched closed-loop calibration. The shadow-dense proposal is
+  removed. Numeric Segment counts are experiment sample points, never runtime
+  support limits; every exact non-prefix repeat receives reuse or dense
+  execution subject only to the model context and resource budgets.
 
 invariants:
   canonical_source_origin: full_prefill
@@ -110,7 +119,13 @@ protocol_versions:
     probe_metadata_compare_budget_fraction: 0.05
     segment_planning_policy: all_exact_nonprefix
     max_detected_segments: null
-    boundary_policy: common
+    main_boundary_policy: causal_staggered
+    main_selection_execution_policy: causal_commit_wait
+    ablation_boundary_policy: immediate_staggered
+    ablation_selection_execution_policy: immediate_staggered_closed_loop
+    legacy_boundary_policy: common
+    shadow_dense_probe_enabled: false
+    calibration_policy_match_required: true
     partial_reuse_enabled: true
     joint_quality_policy: simultaneous_conformal
     interference_accounting_mode: explicit_penalty
@@ -137,7 +152,7 @@ protocol_versions:
     comparison_complexity: sum_per_segment_candidates
     forbidden_comparison_complexity: cartesian_source_combinations
     correctness_grid:
-      segment_counts: [1, 2, 5, 10]
+      segment_count_samples: [1, 2, 5, 10, 17, 37]
       variant_counts: [1, 4, 16]
     multisegment_pilot:
       segment_counts: [5, 10, 15]
@@ -311,7 +326,13 @@ source_lifecycle:
 multisegment_policy:
   ordered_region_types: [PREFIX_EXACT, REUSE_CANDIDATE, DENSE, MANDATORY_SUFFIX]
   one_locked_winner_loaded_per_segment: true
-  common_actual_reuse_boundary: true
+  max_detected_segments: null
+  segment_count_samples_are_not_runtime_caps: true
+  main_selection_execution_policy: causal_commit_wait
+  ablation_selection_execution_policy: immediate_staggered_closed_loop
+  shadow_dense_probe_enabled: false
+  legacy_common_actual_reuse_boundary: true
+  actual_reuse_boundary_by_segment_required_for_staggered: true
   request_execution_modes: [ALL_REUSE, PARTIAL_REUSE, FULL_RECOMPUTE]
   per_segment_repair_ratios: true
   union_repair_mask_uses_absolute_positions: true

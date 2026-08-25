@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from .candidate_budget import RequestComparisonAllocation
 from .contracts import (
@@ -17,6 +27,7 @@ from .v6_contracts import (
     RequestRefinedCost,
     RequestSchedulingFeedback,
     RequestSelectionPlan,
+    SelectionExecutionPolicy,
     SegmentExecutionDecision,
     SegmentExecutionPath,
 )
@@ -39,6 +50,16 @@ class MultiSegmentClosedLoopRuntime(Protocol):
     ) -> RequestRefinedCost:
         ...
 
+    def measure_staggered_refined_cost(
+        self,
+        selection: RequestSelectionPlan,
+        scheduling: RequestSchedulingFeedback,
+        boundary_by_segment: Mapping[str, int],
+        active_segment_ids: Tuple[str, ...],
+    ) -> RequestRefinedCost:
+        """Profile one non-Cartesian per-segment boundary plan."""
+        ...
+
     def execute_reuse(
         self,
         selection: RequestSelectionPlan,
@@ -55,10 +76,16 @@ class MultiSegmentClosedLoopRuntime(Protocol):
 
 
 class StreamingMultiSegmentRuntime(MultiSegmentClosedLoopRuntime, Protocol):
+    probe_state_origin: str
+
     def on_source_locked(
         self, segment_id: str, decision: SourceDecision
     ) -> None:
         """Start or register winner-only prefetch at the lock checkpoint."""
+        ...
+
+    def on_reuse_eligible(self, segment_id: str, earliest_layer: int) -> None:
+        """Allow policy A/C to expose a locked winner to the execution lane."""
         ...
 
 
@@ -91,12 +118,18 @@ class MultiSegmentClosedLoopResult:
                     ),
                     "selected_source_id": source.selected_source_id,
                     "probe_layer": source.probe_layer,
+                    "earliest_reuse_layer": (
+                        self.selection.earliest_reuse_layer_by_segment.get(
+                            item.segment_id
+                        )
+                    ),
                     "safe_repair_ratio_upper": source.safe_repair_ratio_upper,
                     "predicted_cost_upper_ms": source.predicted_cost_upper_ms,
                     "selection_state": source.selection_state.value,
                     "selection_reason": source.selection_reason.value,
                     "admission_state": execution.admission_state.value,
                     "execution_path": execution.path.value,
+                    "actual_reuse_boundary": execution.actual_reuse_boundary,
                     "rejection_reason": execution.rejection_reason,
                 }
             )
@@ -153,7 +186,14 @@ class MultiSegmentClosedLoopResult:
                 for item in self.execution.segment_decisions
             ),
             "execution_mode": self.execution.mode.value,
+            "selection_execution_policy": (
+                self.selection.selection_execution_policy.value
+            ),
+            "probe_state_origin": self.selection.probe_state_origin,
             "actual_reuse_boundary": self.execution.actual_reuse_boundary,
+            "actual_reuse_boundary_by_segment": dict(
+                self.execution.actual_reuse_boundary_by_segment
+            ),
             "transferred_bytes": self.execution.transferred_bytes,
             "wasted_loaded_bytes": self.execution.wasted_loaded_bytes,
             "refined_reuse_total_ms": (
@@ -304,9 +344,11 @@ class MultiSegmentReuseController:
         selection: RequestSelectionPlan,
         accepted: Sequence[str] = (),
         refined_ratios: Optional[Mapping[str, float]] = None,
+        boundary_by_segment: Optional[Mapping[str, int]] = None,
     ) -> Tuple[SegmentExecutionDecision, ...]:
         accepted_set = set(accepted)
         refined_ratios = dict(refined_ratios or {})
+        boundary_by_segment = dict(boundary_by_segment or {})
         result = []
         for item in selection.segment_decisions:
             source = item.source_decision
@@ -319,6 +361,7 @@ class MultiSegmentReuseController:
                         selection_state=SourceSelectionState.SELECTED,
                         admission_state=ReuseAdmissionState.ACCEPTED,
                         repair_ratio_upper=refined_ratios[item.segment_id],
+                        actual_reuse_boundary=boundary_by_segment[item.segment_id],
                     )
                 )
             else:
@@ -367,6 +410,7 @@ class MultiSegmentReuseController:
             refined_cost=refined,
             transferred_bytes=transferred,
             wasted_loaded_bytes=transferred,
+            actual_reuse_boundary_by_segment={},
         )
 
     def execute(
@@ -434,7 +478,10 @@ class MultiSegmentReuseController:
             key=lambda item: (item[0], item[1], item[2]),
         )
         decisions = self._dense_decisions(
-            selection, accepted, refined.repair_ratio_upper_by_segment
+            selection,
+            accepted,
+            refined.repair_ratio_upper_by_segment,
+            {segment_id: boundary for segment_id in accepted},
         )
         if len(accepted) == len(decisions):
             mode = RequestExecutionMode.ALL_REUSE
@@ -458,10 +505,167 @@ class MultiSegmentReuseController:
             refined_cost=refined,
             transferred_bytes=transferred,
             wasted_loaded_bytes=wasted,
+            actual_reuse_boundary_by_segment={
+                segment_id: boundary for segment_id in accepted
+            },
         )
         runtime_result = runtime.execute_reuse(selection, execution)
         return MultiSegmentClosedLoopResult(
             selection, scheduling, refined, execution, runtime_result
+        )
+
+
+class StaggeredMultiSegmentReuseController(MultiSegmentReuseController):
+    """Refined admission for the A/C per-segment boundary policies.
+
+    Each selected segment receives exactly one earliest feasible boundary.  The
+    controller never enumerates a Cartesian product of boundary choices; a
+    runtime profile may prune segments with non-positive marginal saving, then
+    the same request-level quality and gamma gates used by the common policy
+    decide final reuse.
+    """
+
+    @classmethod
+    def _validate_staggered_refined(
+        cls,
+        selection: RequestSelectionPlan,
+        refined: RequestRefinedCost,
+        boundaries: Mapping[str, int],
+        active: Tuple[str, ...],
+    ) -> None:
+        if refined.request_id != selection.request_id:
+            raise ValueError("refined cost belongs to another request")
+        if tuple(refined.active_segment_ids) != tuple(active):
+            raise ValueError("refined cost changed the active segment set")
+        expected_boundaries = {
+            segment_id: int(boundaries[segment_id]) for segment_id in active
+        }
+        if dict(refined.boundary_by_segment) != expected_boundaries:
+            raise ValueError("refined cost changed staggered reuse boundaries")
+        locked = cls._selected_map(selection)
+        if dict(refined.selected_source_ids) != {
+            segment_id: locked[segment_id] for segment_id in active
+        }:
+            raise ValueError("refined cost changed a locked Source")
+        if (
+            refined.cost_origin != "request_arrival"
+            or refined.cost_endpoint != "first_token_ready"
+        ):
+            raise ValueError("refined cost uses a different accounting scope")
+        if abs(refined.full_reference_ms - selection.full_reference_ms) > 1e-6:
+            raise ValueError("selection and admission use different dense references")
+
+    def execute(
+        self,
+        selection: RequestSelectionPlan,
+        runtime: MultiSegmentClosedLoopRuntime,
+    ) -> MultiSegmentClosedLoopResult:
+        if selection.selection_execution_policy not in {
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        }:
+            raise ValueError("staggered controller requires policy A or C")
+        if not selection.selected:
+            execution = self._full_plan(selection, None, None)
+            runtime_result = runtime.execute_dense(selection, execution)
+            return MultiSegmentClosedLoopResult(
+                selection, None, None, execution, runtime_result
+            )
+
+        scheduling = runtime.load_and_schedule(selection)
+        self._validate_scheduling(selection, scheduling)
+        floors = dict(selection.earliest_reuse_layer_by_segment)
+        boundaries: Dict[str, int] = {}
+        for feedback in scheduling.segments:
+            if not feedback.source_ready:
+                continue
+            boundary = max(
+                floors[feedback.segment_id], feedback.first_ready_layer
+            )
+            if boundary <= feedback.ready_through_layer:
+                boundaries[feedback.segment_id] = boundary
+
+        active = tuple(
+            item.segment_id
+            for item in selection.segment_decisions
+            if item.segment_id in boundaries
+        )
+        last_refined = None
+        while active:
+            active_boundaries = {
+                segment_id: boundaries[segment_id] for segment_id in active
+            }
+            refined = runtime.measure_staggered_refined_cost(
+                selection, scheduling, active_boundaries, active
+            )
+            self._validate_staggered_refined(
+                selection, refined, active_boundaries, active
+            )
+            last_refined = refined
+            positive = tuple(
+                segment_id
+                for segment_id in active
+                if refined.marginal_saved_ms[segment_id] > 0
+            )
+            if positive != active:
+                active = positive
+                continue
+            break
+
+        if (
+            not active
+            or last_refined is None
+            or not last_refined.joint_quality_covered
+            or last_refined.reuse_total_ms
+            > self.gamma * last_refined.full_reference_ms
+        ):
+            execution = self._full_plan(selection, scheduling, last_refined)
+            runtime_result = runtime.execute_dense(selection, execution)
+            return MultiSegmentClosedLoopResult(
+                selection, scheduling, last_refined, execution, runtime_result
+            )
+
+        accepted_boundaries = {
+            segment_id: boundaries[segment_id] for segment_id in active
+        }
+        decisions = self._dense_decisions(
+            selection,
+            active,
+            last_refined.repair_ratio_upper_by_segment,
+            accepted_boundaries,
+        )
+        mode = (
+            RequestExecutionMode.ALL_REUSE
+            if len(active) == len(decisions)
+            else RequestExecutionMode.PARTIAL_REUSE
+        )
+        accepted_set = set(active)
+        transferred = sum(item.transferred_bytes for item in scheduling.segments)
+        wasted = sum(
+            (
+                item.wasted_bytes
+                if item.segment_id in accepted_set
+                else item.transferred_bytes
+            )
+            for item in scheduling.segments
+        )
+        unique_boundaries = set(accepted_boundaries.values())
+        common_boundary = (
+            next(iter(unique_boundaries)) if len(unique_boundaries) == 1 else None
+        )
+        execution = RequestExecutionPlan(
+            request_id=selection.request_id,
+            mode=mode,
+            segment_decisions=decisions,
+            actual_reuse_boundary=common_boundary,
+            refined_cost=last_refined,
+            transferred_bytes=transferred,
+            wasted_loaded_bytes=wasted,
+            actual_reuse_boundary_by_segment=accepted_boundaries,
+        )
+        runtime_result = runtime.execute_reuse(selection, execution)
+        return MultiSegmentClosedLoopResult(
+            selection, scheduling, last_refined, execution, runtime_result
         )
 
 
@@ -480,15 +684,30 @@ class MultiSegmentOnlinePipeline:
         self,
         request_id: str,
         allocation: RequestComparisonAllocation,
-        bounds_by_segment_layer: Mapping[
-            str, Mapping[int, Sequence[CandidateBounds]]
+        bounds_by_segment_layer: Union[
+            Mapping[str, Mapping[int, Sequence[CandidateBounds]]],
+            Callable[[str, int], Sequence[CandidateBounds]],
         ],
         runtime: StreamingMultiSegmentRuntime,
     ) -> MultiSegmentClosedLoopResult:
+        policy = self.selector.selection_execution_policy
+        reuse_callback = None
+        probe_state_origin = "dense_clean"
+        if policy is not SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION:
+            reuse_callback = getattr(runtime, "on_reuse_eligible", None)
+            if reuse_callback is None:
+                raise RuntimeError(
+                    "A/C selection execution requires a reuse-eligibility runtime hook"
+                )
+            probe_state_origin = str(
+                getattr(runtime, "probe_state_origin", "")
+            )
         selection = self.selector.select(
             request_id,
             allocation,
             bounds_by_segment_layer,
             on_source_locked=runtime.on_source_locked,
+            on_reuse_eligible=reuse_callback,
+            probe_state_origin=probe_state_origin,
         )
         return self.controller.execute(selection, runtime)

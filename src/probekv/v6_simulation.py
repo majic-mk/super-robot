@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import statistics
+from dataclasses import replace
 from typing import Any, Dict, Tuple
 
 from .candidate_budget import (
@@ -18,26 +19,44 @@ from .cost import cost_breakdown_from_total
 from .multisegment_orchestration import (
     MultiSegmentOnlinePipeline,
     MultiSegmentReuseController,
+    StaggeredMultiSegmentReuseController,
 )
 from .multisegment_selector import MultiSegmentProbeSelector
 from .selector import DynamicProbeSelector, ProbePolicy
 from .v6_contracts import (
     RequestRefinedCost,
     RequestSchedulingFeedback,
+    SelectionExecutionPolicy,
     SegmentSchedulingFeedback,
 )
 
 
 class _PreparedV6Runtime:
-    def __init__(self, total_layers: int) -> None:
+    def __init__(
+        self,
+        total_layers: int,
+        selection_execution_policy: SelectionExecutionPolicy,
+    ) -> None:
         self.total_layers = total_layers
+        self.selection_execution_policy = selection_execution_policy
+        self.probe_state_origin = (
+            "policy_conditioned_closed_loop"
+            if selection_execution_policy is (
+                SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+            )
+            else "dense_clean"
+        )
         self.action = None
         self.lock_events = []
+        self.reuse_eligible_events = []
 
     def on_source_locked(self, segment_id, decision):
         self.lock_events.append(
             (decision.probe_layer, segment_id, decision.selected_source_id)
         )
+
+    def on_reuse_eligible(self, segment_id, earliest_layer):
+        self.reuse_eligible_events.append((earliest_layer, segment_id))
 
     def load_and_schedule(self, selection):
         feedback = []
@@ -126,6 +145,18 @@ class _PreparedV6Runtime:
             joint_quality_covered=True,
         )
 
+    def measure_staggered_refined_cost(
+        self, selection, scheduling, boundary_by_segment, active_segment_ids
+    ):
+        boundary = min(boundary_by_segment.values())
+        common_profile = self.measure_refined_cost(
+            selection, scheduling, boundary, active_segment_ids
+        )
+        return replace(
+            common_profile,
+            boundary_by_segment=dict(boundary_by_segment),
+        )
+
     def execute_reuse(self, selection, execution):
         self.action = "multisegment_prefill"
         return {"action": self.action}
@@ -152,15 +183,27 @@ def run_v6_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 preliminary_economic_filter=True,
                 require_component_cost_bounds=True,
             )
-        )
+        ),
+        config.selection_execution_policy,
     )
-    controller = MultiSegmentReuseController(config.gamma)
+    controller = (
+        MultiSegmentReuseController(config.gamma)
+        if config.selection_execution_policy is (
+            SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION
+        )
+        else StaggeredMultiSegmentReuseController(config.gamma)
+    )
     rows = []
-    segment_counts = (1, 2, 5, 10)
+    # These are deterministic coverage samples, never a runtime ceiling.  The
+    # request contracts and planner accept every detected segment that fits the
+    # model context window and available resources.
+    segment_count_samples = (1, 2, 5, 10, 17)
     variant_counts = (1, 4, 16)
     for case_index in range(config.cases):
         request_id = "v6-sim-%04d" % case_index
-        segment_count = segment_counts[case_index % len(segment_counts)]
+        segment_count = segment_count_samples[
+            case_index % len(segment_count_samples)
+        ]
         variant_count = variant_counts[case_index % len(variant_counts)]
         full_ms = 180.0 + segment_count * 8.0
         probe_ms = 1.0 + 0.05 * segment_count
@@ -242,9 +285,18 @@ def run_v6_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                         )
                     )
                 bounds[segment_id][layer] = tuple(layer_bounds)
-        runtime = _PreparedV6Runtime(config.total_layers)
+        runtime = _PreparedV6Runtime(
+            config.total_layers, config.selection_execution_policy
+        )
+        bounds_input = (
+            (lambda segment_id, layer: bounds.get(segment_id, {}).get(layer, ()))
+            if config.selection_execution_policy is (
+                SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+            )
+            else bounds
+        )
         result = MultiSegmentOnlinePipeline(selector, controller).execute(
-            request_id, allocation, bounds, runtime
+            request_id, allocation, bounds_input, runtime
         )
         row = result.to_audit_record()
         row.update(
@@ -254,6 +306,7 @@ def run_v6_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 "paper_evidence": False,
                 "evidence_class": "local_simulation",
                 "lock_events": runtime.lock_events,
+                "reuse_eligible_events": runtime.reuse_eligible_events,
             }
         )
         rows.append(row)
@@ -269,7 +322,7 @@ def run_v6_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
     )
     expected_cells = {
         (segments, variants)
-        for segments in segment_counts
+        for segments in segment_count_samples
         for variants in variant_counts
     }
     return {

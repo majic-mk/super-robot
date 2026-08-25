@@ -70,6 +70,10 @@ def _job(kind: V6A800JobKind, **values: Any) -> V6A800Job:
 def build_v6_a800_jobs(
     raw: Mapping[str, Any]
 ) -> Tuple[V6A800Job, ...]:
+    if raw.get("segment_count_samples_are_not_runtime_caps") is not True:
+        raise ValueError(
+            "v6 A800 segment counts must be declared as samples, not runtime caps"
+        )
     correctness_segments = tuple(int(v) for v in raw["correctness_segments"])
     correctness_variants = tuple(int(v) for v in raw["correctness_variants"])
     profile_segments = tuple(int(v) for v in raw["profile_segments"])

@@ -15,9 +15,13 @@ use one request-arrival-to-first-token component cost identity. Once selected,
 the Source is locked; refinement can only accept reuse or fall back to full.
 Protocol v6 adds a global 1-16-variant pool and plans every exact non-prefix
 repeated segment in one request. It compares lightweight summaries within a
-request-level 5% budget, locks Sources independently during the shared early
-pass, then uses actual multi-source scheduler feedback to choose one common
-reuse boundary and an economical subset of segments. v3-v5 remain unchanged.
+request-level 5% budget and locks Sources independently during the shared early
+pass. The current main policy is A (`causal_commit_wait`); C
+(`immediate_staggered_closed_loop`) is retained as an explicit execution-matched
+ablation. The removed shadow-dense policy is not accepted by configuration.
+Both A and C use actual multi-source scheduler feedback and per-segment refined
+boundaries. The old common-boundary configuration remains separately available
+for reproduction. v3-v5 remain unchanged.
 The real CacheBlend path is split into an H1-only case runner and a
 capability-gated online adapter; the case runner cannot silently satisfy the
 online closed-loop contract.
@@ -52,7 +56,7 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
 - `docs/UNIFIED_COST_ACCOUNTING.md`: v5 shared-cost and Source-lock protocol.
-- `docs/V6_MULTI_SEGMENT.md`: v6 global-pool, multi-segment and common-boundary contract.
+- `docs/V6_MULTI_SEGMENT.md`: v6 global-pool, arbitrary-count multi-segment and A/C staggered contract.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.

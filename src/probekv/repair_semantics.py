@@ -290,3 +290,161 @@ def assert_nested_multisegment_selections(
         if not previous.issubset(current):
             raise ValueError("multi-segment repair selections are not nested")
         previous = current
+
+
+@dataclass(frozen=True)
+class StaggeredMultiSegmentRepairPlan:
+    """Layer-indexed execution masks for per-segment reuse boundaries."""
+
+    requested_ratios: Mapping[str, float]
+    boundary_by_segment: Mapping[str, int]
+    selected_indices_by_segment_layer: Mapping[
+        str, Mapping[int, Tuple[int, ...]]
+    ]
+    execution_indices_by_layer: Mapping[int, Tuple[int, ...]]
+    union_mask_digest_by_layer: Mapping[int, str]
+    total_layers: int
+
+    def validate(self, request: RequestSpec) -> None:
+        request.validate()
+        if self.total_layers < 1:
+            raise ValueError("staggered repair requires positive total_layers")
+        segments = {segment.segment_id: segment for segment in request.segments}
+        accepted = set(self.requested_ratios)
+        if accepted != set(self.boundary_by_segment):
+            raise ValueError("ratio and boundary segment sets disagree")
+        if accepted != set(self.selected_indices_by_segment_layer):
+            raise ValueError("repair selections omit an accepted segment")
+        if not accepted.issubset(segments):
+            raise ValueError("staggered repair references an unknown segment")
+        expected_layers = set(range(1, self.total_layers + 1))
+        if set(self.execution_indices_by_layer) != expected_layers:
+            raise ValueError("staggered execution masks must cover every layer")
+        if set(self.union_mask_digest_by_layer) != expected_layers:
+            raise ValueError("staggered mask digests must cover every layer")
+        for segment_id in accepted:
+            ratio = float(self.requested_ratios[segment_id])
+            boundary = int(self.boundary_by_segment[segment_id])
+            if not 0 <= ratio <= 1:
+                raise ValueError("segment repair ratio must be in [0, 1]")
+            if not 1 <= boundary <= self.total_layers:
+                raise ValueError("segment boundary lies outside model layers")
+            selected_by_layer = self.selected_indices_by_segment_layer[segment_id]
+            expected_active_layers = set(range(boundary, self.total_layers + 1))
+            if set(selected_by_layer) != expected_active_layers:
+                raise ValueError("segment repair masks do not match its boundary")
+            segment = segments[segment_id]
+            allowed = set(range(segment.token_start, segment.token_end))
+            expected_count = repaired_segment_token_count(
+                segment.token_count, ratio
+            )
+            for indices in selected_by_layer.values():
+                if len(indices) != len(set(indices)):
+                    raise ValueError("segment repair indices must be unique")
+                if len(indices) != expected_count:
+                    raise ValueError("segment repair count does not match ratio")
+                if not set(indices).issubset(allowed):
+                    raise ValueError("repair index lies outside its segment")
+
+        for layer in range(1, self.total_layers + 1):
+            expected = set()
+            for region in request.regions:
+                if region.kind is RegionKind.PREFIX_EXACT:
+                    continue
+                segment_id = str(region.segment_id) if region.segment_id else None
+                if (
+                    region.kind is RegionKind.REUSE_CANDIDATE
+                    and segment_id in accepted
+                    and layer >= self.boundary_by_segment[segment_id]
+                ):
+                    expected.update(
+                        self.selected_indices_by_segment_layer[segment_id][layer]
+                    )
+                else:
+                    expected.update(range(region.start, region.end))
+            observed = self.execution_indices_by_layer[layer]
+            if observed != tuple(sorted(expected)):
+                raise ValueError("layer union mask does not match staggered regions")
+            if any(index < request.exact_prefix_tokens for index in observed):
+                raise ValueError("exact prefix token entered a staggered repair mask")
+            payload = json.dumps(list(observed), separators=(",", ":")).encode(
+                "ascii"
+            )
+            if self.union_mask_digest_by_layer[layer] != hashlib.sha256(
+                payload
+            ).hexdigest():
+                raise ValueError("staggered union mask digest mismatch")
+
+
+def select_staggered_multisegment_repair_tokens(
+    drift_scores_by_layer: Mapping[int, Sequence[float]],
+    request: RequestSpec,
+    requested_ratios: Mapping[str, float],
+    boundary_by_segment: Mapping[str, int],
+    total_layers: int,
+) -> StaggeredMultiSegmentRepairPlan:
+    """Build absolute-position union masks without a Segment-count ceiling."""
+
+    request.validate()
+    if total_layers < 1:
+        raise ValueError("total_layers must be positive")
+    expected_layers = set(range(1, total_layers + 1))
+    if set(drift_scores_by_layer) != expected_layers:
+        raise ValueError("drift scores must cover every model layer")
+    if set(requested_ratios) != set(boundary_by_segment):
+        raise ValueError("ratio and boundary segment sets disagree")
+    segments = {segment.segment_id: segment for segment in request.segments}
+    if not set(requested_ratios).issubset(segments):
+        raise ValueError("ratio supplied for an unknown segment")
+    selected: Dict[str, Dict[int, Tuple[int, ...]]] = {
+        segment_id: {} for segment_id in requested_ratios
+    }
+    execution_by_layer: Dict[int, Tuple[int, ...]] = {}
+    digests: Dict[int, str] = {}
+    for layer in range(1, total_layers + 1):
+        scores = tuple(float(value) for value in drift_scores_by_layer[layer])
+        if len(scores) != len(request.token_ids):
+            raise ValueError("drift scores must cover the complete request")
+        execution = set()
+        for region in request.regions:
+            if region.kind is RegionKind.PREFIX_EXACT:
+                continue
+            segment_id = str(region.segment_id) if region.segment_id else None
+            if (
+                region.kind is RegionKind.REUSE_CANDIDATE
+                and segment_id in requested_ratios
+                and layer >= int(boundary_by_segment[segment_id])
+            ):
+                count = repaired_segment_token_count(
+                    region.token_count, float(requested_ratios[segment_id])
+                )
+                ranked = sorted(
+                    range(region.start, region.end),
+                    key=lambda index: (-scores[index], index),
+                )
+                indices = tuple(sorted(ranked[:count]))
+                selected[segment_id][layer] = indices
+                execution.update(indices)
+            else:
+                execution.update(range(region.start, region.end))
+        ordered = tuple(sorted(execution))
+        execution_by_layer[layer] = ordered
+        payload = json.dumps(list(ordered), separators=(",", ":")).encode(
+            "ascii"
+        )
+        digests[layer] = hashlib.sha256(payload).hexdigest()
+    result = StaggeredMultiSegmentRepairPlan(
+        requested_ratios=dict(requested_ratios),
+        boundary_by_segment={
+            segment_id: int(layer)
+            for segment_id, layer in boundary_by_segment.items()
+        },
+        selected_indices_by_segment_layer={
+            segment_id: dict(by_layer) for segment_id, by_layer in selected.items()
+        },
+        execution_indices_by_layer=execution_by_layer,
+        union_mask_digest_by_layer=digests,
+        total_layers=total_layers,
+    )
+    result.validate(request)
+    return result

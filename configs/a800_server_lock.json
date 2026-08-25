@@ -44,6 +44,11 @@
       "boundary_conditioned_profiles",
       "canonical_sources_read_only",
       "absolute_union_repair_mask",
+      "layer_indexed_union_repair_masks",
+      "per_segment_staggered_boundaries",
+      "causal_commit_wait_execution",
+      "immediate_staggered_closed_loop_execution",
+      "policy_conditioned_probe_state",
       "cuda_event_timing"
     ],
     "implementation_status": "contract_and_patch_complete_concrete_engine_hook_missing",

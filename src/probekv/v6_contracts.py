@@ -35,6 +35,19 @@ class SegmentExecutionPath(str, Enum):
     DENSE = "dense"
 
 
+class SelectionExecutionPolicy(str, Enum):
+    """How locked reuse interacts with still-unresolved later segments.
+
+    ``LEGACY_COMMON_AFTER_SELECTION`` preserves the original v6 protocol.
+    The two experiment policies are deliberately limited to the user-approved
+    A/C alternatives; a shadow-dense probe path is not part of the protocol.
+    """
+
+    LEGACY_COMMON_AFTER_SELECTION = "legacy_common_after_selection"
+    CAUSAL_COMMIT_WAIT = "causal_commit_wait"
+    IMMEDIATE_STAGGERED_CLOSED_LOOP = "immediate_staggered_closed_loop"
+
+
 @dataclass(frozen=True)
 class RegionSpec:
     region_id: str
@@ -252,6 +265,13 @@ class RequestSelectionPlan:
     metadata_ms: float
     compare_ms: float
     full_reference_ms: float
+    selection_execution_policy: SelectionExecutionPolicy = (
+        SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION
+    )
+    earliest_reuse_layer_by_segment: Mapping[str, int] = field(
+        default_factory=dict
+    )
+    probe_state_origin: str = "dense_clean"
 
     def __post_init__(self) -> None:
         if not self.request_id:
@@ -268,6 +288,42 @@ class RequestSelectionPlan:
             raise ValueError("selection timings must be non-negative")
         if self.full_reference_ms <= 0:
             raise ValueError("full reference time must be positive")
+        selected_ids = {
+            decision.segment_id
+            for decision in self.segment_decisions
+            if not decision.source_decision.abstained
+        }
+        floors = {
+            str(segment_id): int(layer)
+            for segment_id, layer in self.earliest_reuse_layer_by_segment.items()
+        }
+        if self.selection_execution_policy is (
+            SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION
+        ):
+            if floors:
+                raise ValueError("legacy common selection cannot carry staggered floors")
+        else:
+            if set(floors) != selected_ids:
+                raise ValueError(
+                    "staggered selection requires one reuse floor per locked Source"
+                )
+            decision_by_id = {
+                decision.segment_id: decision for decision in self.segment_decisions
+            }
+            for segment_id, layer in floors.items():
+                if layer <= decision_by_id[segment_id].source_decision.probe_layer:
+                    raise ValueError("reuse must start after the Source decision layer")
+        if self.selection_execution_policy is (
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+        ) and self.probe_state_origin != "policy_conditioned_closed_loop":
+            raise ValueError(
+                "immediate staggered selection requires policy-conditioned probe state"
+            )
+        if self.selection_execution_policy is (
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT
+        ) and self.probe_state_origin != "dense_clean":
+            raise ValueError("causal commit selection requires clean dense probe state")
+        object.__setattr__(self, "earliest_reuse_layer_by_segment", floors)
 
     @property
     def selected(self) -> Tuple[SegmentSelectionDecision, ...]:
@@ -401,6 +457,7 @@ class RequestRefinedCost:
     repair_selection_ms: float
     repair_ms: float
     remaining_ms: float
+    boundary_by_segment: Mapping[str, int] = field(default_factory=dict)
     joint_quality_covered: bool = True
     cost_origin: str = "request_arrival"
     cost_endpoint: str = "first_token_ready"
@@ -413,6 +470,23 @@ class RequestRefinedCost:
             raise ValueError("refined boundary must be 1-based")
         if len(self.active_segment_ids) != len(set(self.active_segment_ids)):
             raise ValueError("active segment IDs must be unique")
+        boundaries = {
+            str(segment_id): int(layer)
+            for segment_id, layer in self.boundary_by_segment.items()
+        }
+        if not boundaries:
+            boundaries = {
+                segment_id: self.boundary for segment_id in self.active_segment_ids
+            }
+        if set(boundaries) != set(self.active_segment_ids):
+            raise ValueError("every active segment needs an actual reuse boundary")
+        if any(layer < 1 for layer in boundaries.values()):
+            raise ValueError("segment reuse boundaries are 1-based")
+        if boundaries and self.boundary != min(boundaries.values()):
+            raise ValueError(
+                "request boundary must equal the earliest active segment boundary"
+            )
+        object.__setattr__(self, "boundary_by_segment", boundaries)
         if set(self.active_segment_ids) != set(self.selected_source_ids):
             raise ValueError("active segments and locked Sources disagree")
         if set(self.active_segment_ids) != set(self.marginal_saved_ms):
@@ -481,6 +555,7 @@ class SegmentExecutionDecision:
     admission_state: ReuseAdmissionState
     repair_ratio_upper: Optional[float] = None
     rejection_reason: Optional[str] = None
+    actual_reuse_boundary: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.path is SegmentExecutionPath.REUSE:
@@ -490,8 +565,12 @@ class SegmentExecutionDecision:
                 raise ValueError("reuse requires selected state")
             if self.admission_state is not ReuseAdmissionState.ACCEPTED:
                 raise ValueError("reuse requires accepted admission")
+            if self.actual_reuse_boundary is None:
+                raise ValueError("reuse requires a per-segment actual boundary")
         elif self.admission_state is ReuseAdmissionState.ACCEPTED:
             raise ValueError("only reuse path may have accepted admission")
+        elif self.actual_reuse_boundary is not None:
+            raise ValueError("dense segment cannot have an actual reuse boundary")
         if self.selected_source_id is None and (
             self.selection_state is SourceSelectionState.SELECTED
         ):
@@ -507,6 +586,9 @@ class RequestExecutionPlan:
     refined_cost: Optional[RequestRefinedCost]
     transferred_bytes: int
     wasted_loaded_bytes: int
+    actual_reuse_boundary_by_segment: Mapping[str, int] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if min(self.transferred_bytes, self.wasted_loaded_bytes) < 0:
@@ -517,10 +599,30 @@ class RequestExecutionPlan:
             decision for decision in self.segment_decisions
             if decision.path is SegmentExecutionPath.REUSE
         ]
-        if reused and self.actual_reuse_boundary is None:
-            raise ValueError("reuse requires an actual common boundary")
-        if not reused and self.actual_reuse_boundary is not None:
+        boundaries = {
+            str(segment_id): int(layer)
+            for segment_id, layer in self.actual_reuse_boundary_by_segment.items()
+        }
+        if reused and not boundaries:
+            boundaries = {
+                decision.segment_id: int(decision.actual_reuse_boundary)
+                for decision in reused
+            }
+        reused_ids = {decision.segment_id for decision in reused}
+        if set(boundaries) != reused_ids:
+            raise ValueError("execution requires one boundary per reused segment")
+        if any(layer < 1 for layer in boundaries.values()):
+            raise ValueError("execution boundaries are 1-based")
+        if reused:
+            unique = set(boundaries.values())
+            if self.actual_reuse_boundary is not None and (
+                len(unique) != 1
+                or self.actual_reuse_boundary != next(iter(unique))
+            ):
+                raise ValueError("common boundary disagrees with segment boundaries")
+        elif self.actual_reuse_boundary is not None:
             raise ValueError("dense execution cannot have reuse boundary")
+        object.__setattr__(self, "actual_reuse_boundary_by_segment", boundaries)
         if self.mode is RequestExecutionMode.FULL_RECOMPUTE and reused:
             raise ValueError("full recomputation cannot contain reused segments")
         if self.mode is RequestExecutionMode.ALL_REUSE and (

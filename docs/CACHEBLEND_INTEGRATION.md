@@ -116,10 +116,10 @@ hardware gate. Until CB4 passes, closed-loop records remain
 `MultiSegmentCacheBlendBackend` adds a separate v6 interface; it does not
 silently change the v5 case runner. `stage_canonical_sources` stages at most one
 locked winner per selected segment and must return per-segment, layer-wise
-ready times. `execute_multisegment_prefill` receives ordered request regions,
-independent segment ratios, one common boundary and one absolute-position union
-repair mask. Dense gaps, misses, abstentions, rejected segments and the suffix
-remain dense.
+ready times. The legacy `execute_multisegment_prefill` receives one common
+boundary. The A/C contract adds a boundary per accepted Segment and one
+absolute-position union repair mask per layer. Dense gaps, misses, abstentions,
+rejected segments and the suffix remain dense.
 
 The adapter rejects Source replacement, incomplete layer readiness, digest
 mutation, non-nested or wrong-denominator masks, non-absolute causal rows and

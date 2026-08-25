@@ -24,11 +24,13 @@ python scripts/audit_environment.py --output artifacts/local_validation/environm
 selection and bounded-overrun scheduling. Both are deterministic software
 checks and never paper performance evidence.
 
-`local_system_v6.json` additionally exercises 1/2/5/10 repeated segments and
-1/4/16 stored variants, budgeted comparisons, independent early locks,
-multi-source feedback, common-boundary admission and rich audit output. Unit
-tests separately cover all miss, partial/all reuse, 16th-variant selection,
-global pool pressure, model switching and multi-region repair invariants.
+`local_system_v6.json` samples 1/2/5/10/17 repeated segments and 1/4/16 stored
+variants, budgeted comparisons, independent early locks, multi-source feedback,
+A-policy staggered admission and rich audit output. These counts are coverage
+points, not runtime limits; contracts and repair-mask tests additionally run a
+37-Segment request. Unit tests separately cover all miss, partial/all reuse,
+16th-variant selection, global pool pressure, model switching and multi-region
+repair invariants.
 
 For a locally cached Hugging Face causal LM:
 

@@ -21,6 +21,7 @@ from probekv.v6_contracts import (
     RegionKind,
     RegionSpec,
     RequestSpec,
+    SelectionExecutionPolicy,
     SegmentSpec,
 )
 from probekv.v6_manifest import (
@@ -123,6 +124,13 @@ class V6RequestContractTests(unittest.TestCase):
         request = request_with_segments(5, 16)
         self.assertEqual(len(request.segments), 5)
         self.assertEqual(sum(len(item.sources) for item in request.segments), 80)
+
+    def test_arbitrary_thirty_seven_segment_request_has_no_runtime_count_cap(self):
+        request = request_with_segments(37, 1)
+        self.assertEqual(len(request.segments), 37)
+        self.assertEqual(
+            [segment.order for segment in request.segments], list(range(37))
+        )
 
     def test_unstructured_model_signature_is_rejected(self):
         request = request_with_segments(1, 1)
@@ -400,6 +408,160 @@ class CandidateBudgetTests(unittest.TestCase):
         )
         self.assertEqual(plan.segment_decisions[0].source_decision.selected_source_id, "c0-s")
         self.assertTrue(plan.segment_decisions[1].source_decision.abstained)
+
+    def test_a_and_c_compute_distinct_dynamic_staggered_reuse_floors(self):
+        candidates = (
+            VariantComparisonCandidate("c0", "c0-s", 0.0, 50.0, 0.01),
+            VariantComparisonCandidate("c1", "c1-a", 0.0, 50.0, 0.01),
+            VariantComparisonCandidate("c1", "c1-b", 0.1, 49.0, 0.01),
+            VariantComparisonCandidate("c2", "c2-s", 0.0, 50.0, 0.01),
+        )
+        allocation = allocate_variant_comparisons(
+            candidates,
+            full_reference_ms=100.0,
+            probe_ms=0.1,
+            metadata_ms=0.1,
+            segment_ids=("c0", "c1", "c2"),
+        )
+        bounds = {
+            "c0": {1: (CandidateBounds("c0-s", 0.1, 10.0, 20.0),)},
+            "c1": {
+                layer: (
+                    CandidateBounds("c1-a", 0.1, 10.0, 30.0),
+                    CandidateBounds("c1-b", 0.1, 11.0, 31.0),
+                )
+                for layer in (1, 2, 3, 4)
+            },
+            "c2": {1: (CandidateBounds("c2-s", 0.1, 10.0, 20.0),)},
+        }
+        probe = DynamicProbeSelector(
+            ProbePolicy(
+                (1, 2, 3, 4),
+                4,
+                SelectorPolicy.FINAL_ECONOMIC_MIN_COST,
+                preliminary_economic_filter=True,
+            )
+        )
+        a_events = []
+        plan_a = MultiSegmentProbeSelector(
+            probe, SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT
+        ).select(
+            "request-a",
+            allocation,
+            bounds,
+            on_reuse_eligible=lambda segment_id, layer: a_events.append(
+                (segment_id, layer)
+            ),
+        )
+        self.assertEqual(
+            plan_a.earliest_reuse_layer_by_segment,
+            {"c0": 5, "c1": 5, "c2": 2},
+        )
+        self.assertEqual(a_events, [("c2", 2), ("c0", 5), ("c1", 5)])
+
+        c_events = []
+        plan_c = MultiSegmentProbeSelector(
+            probe,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        ).select(
+            "request-c",
+            allocation,
+            lambda segment_id, layer: bounds.get(segment_id, {}).get(layer, ()),
+            on_reuse_eligible=lambda segment_id, layer: c_events.append(
+                (segment_id, layer)
+            ),
+            probe_state_origin="policy_conditioned_closed_loop",
+        )
+        self.assertEqual(
+            plan_c.earliest_reuse_layer_by_segment,
+            {"c0": 2, "c1": 5, "c2": 2},
+        )
+        self.assertEqual(c_events, [("c0", 2), ("c2", 2), ("c1", 5)])
+
+    def test_immediate_policy_rejects_unmatched_clean_probe_state(self):
+        allocation = allocate_variant_comparisons(
+            (VariantComparisonCandidate("c0", "s0", 0.0, 10.0, 0.01),),
+            full_reference_ms=100.0,
+            probe_ms=0.1,
+            metadata_ms=0.1,
+        )
+        selector = MultiSegmentProbeSelector(
+            DynamicProbeSelector(ProbePolicy((1,), 1)),
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        )
+        with self.assertRaisesRegex(ValueError, "policy-conditioned"):
+            selector.select(
+                "request",
+                allocation,
+                lambda segment_id, layer: (
+                    (CandidateBounds("s0", 0.1, 1.0, 2.0),)
+                ),
+                probe_state_origin="dense_clean",
+            )
+
+    def test_immediate_policy_reads_post_commit_state_at_next_checkpoint(self):
+        allocation = allocate_variant_comparisons(
+            (
+                VariantComparisonCandidate("c0", "c0-s", 0.0, 50.0, 0.01),
+                VariantComparisonCandidate(
+                    "c1", "c1-clean", 0.0, 40.0, 0.01
+                ),
+                VariantComparisonCandidate(
+                    "c1", "c1-polluted", 0.1, 39.0, 0.01
+                ),
+            ),
+            full_reference_ms=100.0,
+            probe_ms=0.1,
+            metadata_ms=0.1,
+            segment_ids=("c0", "c1"),
+        )
+        committed = set()
+        observations = []
+
+        def dynamic_bounds(segment_id, layer):
+            polluted = "c0" in committed
+            observations.append((segment_id, layer, polluted))
+            if segment_id == "c0":
+                return (CandidateBounds("c0-s", 0.1, 10.0, 20.0),)
+            if layer == 1:
+                return (
+                    CandidateBounds("c1-clean", 0.1, 10.0, 30.0),
+                    CandidateBounds("c1-polluted", 0.1, 11.0, 31.0),
+                )
+            if polluted:
+                return (
+                    CandidateBounds("c1-clean", 0.1, 40.0, 50.0),
+                    CandidateBounds("c1-polluted", 0.1, 10.0, 20.0),
+                )
+            return (
+                CandidateBounds("c1-clean", 0.1, 10.0, 20.0),
+                CandidateBounds("c1-polluted", 0.1, 40.0, 50.0),
+            )
+
+        selector = MultiSegmentProbeSelector(
+            DynamicProbeSelector(
+                ProbePolicy(
+                    (1, 2),
+                    2,
+                    SelectorPolicy.FINAL_ECONOMIC_MIN_COST,
+                    preliminary_economic_filter=True,
+                )
+            ),
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        )
+        plan = selector.select(
+            "request-closed-loop",
+            allocation,
+            dynamic_bounds,
+            on_reuse_eligible=lambda segment_id, layer: committed.add(segment_id),
+            probe_state_origin="policy_conditioned_closed_loop",
+        )
+        decisions = {
+            item.segment_id: item.source_decision.selected_source_id
+            for item in plan.segment_decisions
+        }
+        self.assertEqual(decisions["c1"], "c1-polluted")
+        self.assertIn(("c1", 2, True), observations)
 
 
 if __name__ == "__main__":

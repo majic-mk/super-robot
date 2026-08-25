@@ -1,6 +1,7 @@
 {
   "protocol_version": 6,
   "evidence_class": "server_pilot",
+  "segment_count_samples_are_not_runtime_caps": true,
   "correctness_segments": [1, 2, 5, 10],
   "correctness_variants": [1, 4, 16],
   "profile_segments": [1, 5, 10, 15],

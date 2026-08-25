@@ -10,6 +10,7 @@ from .orchestration import ClosedLoopPolicy
 from .scheduler import SchedulerPolicy
 from .selector import SelectorPolicy, default_probe_checkpoints
 from .source_store import ReplicaEvictionPolicy, SourceEvictionPolicy
+from .v6_contracts import SelectionExecutionPolicy
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,10 @@ class ExperimentConfig:
     summary_format: str = "exact_bf16"
     model_serving_mode: str = "single"
     model_soft_quota_fraction: float = 0.8
+    selection_execution_policy: SelectionExecutionPolicy = (
+        SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION
+    )
+    calibration_policy_match_required: bool = False
     legacy_online_kmax_present: bool = True
     interference_accounting_mode: InterferenceAccountingMode = (
         InterferenceAccountingMode.INCLUDED_IN_LOAD
@@ -180,6 +185,17 @@ class ExperimentConfig:
             model_serving_mode=str(raw.get("model_serving_mode", "single")),
             model_soft_quota_fraction=float(
                 raw.get("model_soft_quota_fraction", 0.8)
+            ),
+            selection_execution_policy=SelectionExecutionPolicy(
+                str(
+                    raw.get(
+                        "selection_execution_policy",
+                        "legacy_common_after_selection",
+                    )
+                )
+            ),
+            calibration_policy_match_required=bool(
+                raw.get("calibration_policy_match_required", False)
             ),
             legacy_online_kmax_present="online_kmax" in raw,
             interference_accounting_mode=InterferenceAccountingMode(
@@ -329,8 +345,25 @@ class ExperimentConfig:
             raise ValueError("v6 must plan every exact non-prefix segment")
         if self.max_detected_segments is not None:
             raise ValueError("v6 cannot impose a hard detected-segment cap")
-        if self.boundary_policy != "common":
-            raise ValueError("v6 main policy requires a common boundary")
+        policy_pairs = {
+            "common": SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION,
+            "causal_staggered": SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+            "immediate_staggered": (
+                SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP
+            ),
+        }
+        if self.boundary_policy not in policy_pairs:
+            raise ValueError("unsupported v6 boundary policy")
+        if policy_pairs[self.boundary_policy] is not self.selection_execution_policy:
+            raise ValueError(
+                "boundary and selection-execution policies are inconsistent"
+            )
+        if (
+            self.selection_execution_policy
+            is not SelectionExecutionPolicy.LEGACY_COMMON_AFTER_SELECTION
+            and not self.calibration_policy_match_required
+        ):
+            raise ValueError("A/C policies require execution-matched calibration")
         if not self.partial_reuse_enabled:
             raise ValueError("v6 requires partial segment reuse")
         if self.joint_quality_policy != "simultaneous_conformal":

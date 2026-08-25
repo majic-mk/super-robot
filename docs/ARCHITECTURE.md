@@ -52,8 +52,9 @@ without altering old artifacts. It keeps up to 16 variants per retained
 content in a global byte pool, compares summaries within one 5% request budget,
 and applies the same call order independently to all detected candidate
 segments. The multi-source scheduler feeds actual layer readiness into a
-request planner that selects one common boundary and may accept only an
-economical subset (`PARTIAL_REUSE`). See `V6_MULTI_SEGMENT.md`.
+request planner that uses the explicit A or C per-Segment boundary policy and
+may accept only an economical subset (`PARTIAL_REUSE`). The old common path is
+an explicit reproduction configuration. See `V6_MULTI_SEGMENT.md`.
 
 ## Probe depth objective
 
@@ -157,7 +158,7 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Repair label | `labeling.py` | suffix-monotone safe ratio |
 | Reuse planner | `cost.py` | refined total-cost admission; selection retained on rejection |
 | Closed-loop controller | `orchestration.py` | selector abstention guard and scheduler-before-admission state machine |
-| v6 request controller | `multisegment_orchestration.py` | multi-source feedback, marginal pruning, common boundary and partial reuse |
+| v6 request controller | `multisegment_orchestration.py` | multi-source feedback, marginal pruning, A/C staggered boundaries, legacy common reproduction and partial reuse |
 | Prefetch | `prefetch.py` | P0-P4 and HBM-aware Dynamic |
 | Scheduler | `scheduler.py` | strict atomic and bounded-overrun policies |
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |

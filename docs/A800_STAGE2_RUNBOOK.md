@@ -22,7 +22,7 @@ real layer-boundary scheduler feedback and CUDA event timing.
 
 Protocol v6 is a separate follow-on gate using
 `configs/a800_closed_loop_v6.json`. Before any v6 H1/H2 timing run, execute the
-1/2/5/10-segment by K=1/4/16 correctness and microbenchmark grid described in
+sampled 1/2/5/10-Segment by K=1/4/16 correctness and microbenchmark grid described in
 `V6_MULTI_SEGMENT.md`. v5 artifacts cannot be relabeled as v6, and a fake/local
 runtime remains `paper_evidence:false`.
 
@@ -52,10 +52,10 @@ python scripts/server/build_v6_a800_jobs.py \
   --output "$ARTIFACTS/v6_jobs"
 ```
 
-The manifest covers 1/2/5/10-segment correctness at K=1/4/16, per-layer
-summary and K=1/2/4/8/16 comparison profiles, 1/5/10/15-segment comparison and
+The manifest samples 1/2/5/10-Segment correctness at K=1/4/16, per-layer
+summary and K=1/2/4/8/16 comparison profiles, 1/5/10/15-Segment comparison and
 multi-source loading, and the full union-repair ratio grid. It defines work;
-it does not claim the A800 jobs have run.
+it does not claim the A800 jobs have run or impose a runtime Segment cap.
 
 Protocol v4 preserves current-only chunks after C as `current_suffix_context`;
 that field is part of the case digest. Therefore every earlier 150-case

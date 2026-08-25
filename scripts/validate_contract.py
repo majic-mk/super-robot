@@ -45,7 +45,15 @@ def main() -> int:
         "probe_metadata_compare_budget_fraction": 0.05,
         "segment_planning_policy": "all_exact_nonprefix",
         "max_detected_segments": None,
-        "boundary_policy": "common",
+        "main_boundary_policy": "causal_staggered",
+        "main_selection_execution_policy": "causal_commit_wait",
+        "ablation_boundary_policy": "immediate_staggered",
+        "ablation_selection_execution_policy": (
+            "immediate_staggered_closed_loop"
+        ),
+        "legacy_boundary_policy": "common",
+        "shadow_dense_probe_enabled": False,
+        "calibration_policy_match_required": True,
         "partial_reuse_enabled": True,
         "joint_quality_policy": "simultaneous_conformal",
         "interference_accounting_mode": "explicit_penalty",

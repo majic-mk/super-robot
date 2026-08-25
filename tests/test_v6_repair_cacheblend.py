@@ -6,12 +6,14 @@ from probekv.cacheblend_backend import (
     MultiSegmentRepairMeasurement,
     MultiSourceStageMeasurement,
     SegmentRuntimeRepairMeasurement,
+    StaggeredMultiSegmentRepairMeasurement,
 )
 from probekv.causal_mask import absolute_causal_rows
 from probekv.contracts import KVLocation
 from probekv.repair_semantics import (
     assert_nested_multisegment_selections,
     select_multisegment_repair_tokens,
+    select_staggered_multisegment_repair_tokens,
 )
 from tests.test_v6_contracts_budget import request_with_segments
 
@@ -87,6 +89,43 @@ class FakeMultiRegionRuntime:
     def dense_remaining_profile(self, request, start_layer):
         return float(33 - start_layer)
 
+    def execute_staggered_multisegment_prefill(
+        self, request, sources_by_segment, repair_plan
+    ):
+        before = {
+            segment_id: "digest-" + source.source_id
+            for segment_id, source in sources_by_segment.items()
+        }
+        after = dict(before)
+        if self.mutate_on_repair and after:
+            after[next(iter(after))] += "-mutated"
+        return StaggeredMultiSegmentRepairMeasurement(
+            request_id=request.request_id,
+            boundary_by_segment=dict(repair_plan.boundary_by_segment),
+            selected_indices_by_segment_layer={
+                segment_id: dict(by_layer)
+                for segment_id, by_layer in (
+                    repair_plan.selected_indices_by_segment_layer.items()
+                )
+            },
+            execution_indices_by_layer=dict(
+                repair_plan.execution_indices_by_layer
+            ),
+            union_mask_digest_by_layer=dict(
+                repair_plan.union_mask_digest_by_layer
+            ),
+            digest_before_by_segment=before,
+            digest_after_by_segment=after,
+            repair_gpu_ms=2.0,
+            repair_host_ms=2.2,
+            output_token_ids=(7, 8),
+            dense_reference_token_ids=(7, 8),
+            teacher_forced_logit_relative_l2=1e-5,
+            teacher_forced_logit_positions=32,
+            causal_mask_mode="absolute_query_positions_per_layer",
+            rope_alignment_mode="pre_rope_derotate_rerotate",
+        )
+
     def provenance(self):
         return {
             "cacheblend_commit": "b72d7945",
@@ -100,6 +139,69 @@ class FakeMultiRegionRuntime:
 
 
 class MultiSegmentRepairTests(unittest.TestCase):
+    def test_staggered_masks_change_by_layer_and_keep_unaccepted_segments_dense(self):
+        request = request_with_segments(3, 1)
+        scores = {
+            layer: [float((index + layer) % 7) for index in range(len(request.token_ids))]
+            for layer in range(1, 7)
+        }
+        plan = select_staggered_multisegment_repair_tokens(
+            scores,
+            request,
+            {"c0": 0.5, "c2": 0.5},
+            {"c0": 2, "c2": 5},
+            6,
+        )
+        c0 = request.segments[0]
+        c1 = request.segments[1]
+        c2 = request.segments[2]
+        self.assertTrue(
+            set(range(c0.token_start, c0.token_end)).issubset(
+                plan.execution_indices_by_layer[1]
+            )
+        )
+        self.assertEqual(
+            len(
+                set(range(c0.token_start, c0.token_end))
+                & set(plan.execution_indices_by_layer[2])
+            ),
+            1,
+        )
+        self.assertTrue(
+            set(range(c2.token_start, c2.token_end)).issubset(
+                plan.execution_indices_by_layer[4]
+            )
+        )
+        self.assertEqual(
+            len(
+                set(range(c2.token_start, c2.token_end))
+                & set(plan.execution_indices_by_layer[5])
+            ),
+            1,
+        )
+        for layer in range(1, 7):
+            self.assertTrue(
+                set(range(c1.token_start, c1.token_end)).issubset(
+                    plan.execution_indices_by_layer[layer]
+                )
+            )
+
+    def test_staggered_mask_builder_accepts_thirty_seven_segments(self):
+        request = request_with_segments(37, 1)
+        scores = {
+            layer: [float(index % 11) for index in range(len(request.token_ids))]
+            for layer in range(1, 3)
+        }
+        ratios = {segment.segment_id: 0.5 for segment in request.segments}
+        boundaries = {
+            segment.segment_id: 1 + (segment.order % 2)
+            for segment in request.segments
+        }
+        plan = select_staggered_multisegment_repair_tokens(
+            scores, request, ratios, boundaries, 2
+        )
+        self.assertEqual(len(plan.boundary_by_segment), 37)
+
     def test_union_mask_uses_absolute_positions_and_keeps_other_regions_dense(self):
         request = request_with_segments(3, 1)
         scores = [float(index) for index in range(len(request.token_ids))]
@@ -155,6 +257,29 @@ class MultiSegmentRepairTests(unittest.TestCase):
 
 
 class MultiSegmentCacheBlendAdapterTests(unittest.TestCase):
+    def test_staggered_backend_validates_per_layer_masks_and_boundaries(self):
+        request = request_with_segments(3, 1)
+        sources = {
+            segment.segment_id: segment.sources[0]
+            for segment in request.segments
+        }
+        plan = select_staggered_multisegment_repair_tokens(
+            {
+                layer: [float(index % 5) for index in range(len(request.token_ids))]
+                for layer in range(1, 33)
+            },
+            request,
+            {segment.segment_id: 1.0 for segment in request.segments},
+            {"c0": 2, "c1": 5, "c2": 3},
+            32,
+        )
+        backend = MultiSegmentCacheBlendBackend(FakeMultiRegionRuntime(), 32)
+        measured = backend.repair_request_staggered(request, sources, plan)
+        self.assertEqual(
+            measured.boundary_by_segment, {"c0": 2, "c1": 5, "c2": 3}
+        )
+        self.assertEqual(len(measured.execution_indices_by_layer), 32)
+
     def test_staging_and_repair_preserve_canonical_sources(self):
         request = request_with_segments(3, 1)
         sources = {

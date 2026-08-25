@@ -1,5 +1,5 @@
 {
-  "name": "probekv-local-system-v6-multisegment",
+  "name": "probekv-local-system-v6-immediate-staggered",
   "protocol_version": 6,
   "evidence_class": "local_simulation",
   "seed": 20260726,
@@ -28,8 +28,8 @@
   "probe_compare_budget_fraction": 0.05,
   "segment_planning_policy": "all_exact_nonprefix",
   "max_detected_segments": null,
-  "boundary_policy": "causal_staggered",
-  "selection_execution_policy": "causal_commit_wait",
+  "boundary_policy": "immediate_staggered",
+  "selection_execution_policy": "immediate_staggered_closed_loop",
   "calibration_policy_match_required": true,
   "partial_reuse_enabled": true,
   "joint_quality_policy": "simultaneous_conformal",
@@ -38,5 +38,5 @@
   "model_serving_mode": "single",
   "model_soft_quota_fraction": 0.8,
   "repair_ratios": [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0],
-  "output_dir": "artifacts/local_system_v6"
+  "output_dir": "artifacts/local_system_v6_immediate_staggered"
 }
