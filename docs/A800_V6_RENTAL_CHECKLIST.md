@@ -75,6 +75,8 @@ source "$STAGE_ROOT/envs/probekv-py310/bin/activate"
 # export PROBEKV_NVCC_BIN=/usr/local/cuda/bin/nvcc
 # export PROBEKV_CACHEBLEND_SOURCE=/absolute/clean/CacheBlend-mirror
 # PROBEKV_CUDA_ARCH_LIST defaults to the frozen A800 capability: 8.0
+# If the CPU-only container cannot compile under its cgroup memory limit:
+# export PROBEKV_PREBUILT_VLLM_SOURCE=/absolute/same-commit/sm80-build
 
 # Use `both` when storage.json selects dual_model_resident. In sequential mode
 # use `mistral` now and `qwen` after Mistral qualification and verified purge.
@@ -91,6 +93,12 @@ bash "$PROBEKV_SRC/scripts/server/run_v6_no_gpu_preflight.sh" \
 `PROBEKV_ENV_DIR` is accepted only below the selected stage's `envs/`
 directory. This avoids keeping a second multi-gigabyte environment solely for
 renaming consistency.
+
+The prebuilt path is permitted only when both trees have the frozen CacheBlend
+base commit, neither tree changes native/build sources, and `cuobjdump` reports
+only `sm_80` cubins. `_C` and `_moe_C` SHA256 values plus the import path are
+written to `vllm_install.json`. This saves compilation memory; it does not count
+as GPU qualification and cannot unlock H1/H2.
 
 The preflight compiles sources, runs all tests, validates the experiment
 contract, runs both A and C local v6 configurations, audits storage and runtime

@@ -101,7 +101,18 @@ if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
     --output "$artifacts/cacheblend_patch.json"
 fi
 
-"$python" -m pip install --no-build-isolation -e "$cacheblend/vllm_blend"
+if [[ -n "${PROBEKV_PREBUILT_VLLM_SOURCE:-}" ]]; then
+  site_packages="$($python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  "$python" "$repo/scripts/server/install_prebuilt_vllm_extensions.py" \
+    --donor "$PROBEKV_PREBUILT_VLLM_SOURCE" \
+    --target "$cacheblend" \
+    --site-packages "$site_packages" \
+    --cuobjdump "$(dirname "$nvcc_bin")/cuobjdump" \
+    --output "$artifacts/vllm_install.json"
+  "$python" -c 'import vllm, vllm._C, vllm._moe_C; print(vllm.__file__)'
+else
+  "$python" -m pip install --no-build-isolation -e "$cacheblend/vllm_blend"
+fi
 "$python" "$repo/scripts/server/capture_environment.py" \
   --output "$artifacts/environment.json"
 

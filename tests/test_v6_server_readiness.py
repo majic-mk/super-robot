@@ -12,6 +12,7 @@ from probekv.v6_server_readiness import (
 )
 from scripts.server.audit_post_download_storage import audit_post_download_storage
 from scripts.server.download_model_snapshot import audit_snapshot
+from scripts.server.install_prebuilt_vllm_extensions import parse_sm_arches
 
 
 def lock_record():
@@ -279,6 +280,8 @@ class ServerScriptSafetyTests(unittest.TestCase):
             'TORCH_CUDA_ARCH_LIST="${PROBEKV_CUDA_ARCH_LIST:-8.0}"',
             text,
         )
+        self.assertIn("PROBEKV_PREBUILT_VLLM_SOURCE", text)
+        self.assertIn("install_prebuilt_vllm_extensions.py", text)
         self.assertIn("PROBEKV_ENV_DIR", text)
         self.assertIn(
             '"$python_bin" "$repo/scripts/server/plan_server_storage.py"',
@@ -365,6 +368,17 @@ class ServerScriptSafetyTests(unittest.TestCase):
         self.assertIn("stage_filesystem_free_gib", result)
         self.assertIn("system_free_gib", result)
         self.assertEqual(result["system_reserve_gib"], 15)
+
+    def test_prebuilt_extension_arch_parser_requires_exact_sm80(self):
+        output = (
+            "ELF file 1: _C.cpython-310-x86_64-linux-gnu.1.sm_80.cubin\n"
+            "ELF file 2: _C.cpython-310-x86_64-linux-gnu.2.sm_80.cubin\n"
+        )
+        self.assertEqual(parse_sm_arches(output), {"80"})
+        self.assertEqual(
+            parse_sm_arches(output + "ELF file 3: x.sm_90.cubin\n"),
+            {"80", "90"},
+        )
 
 
 if __name__ == "__main__":
