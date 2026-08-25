@@ -2,7 +2,7 @@ diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/at
 index 9f6f6933cd79e8a9327434540a48cd11b2683150..4397416f81bd4a59fd2afdf7b54de350b77912bb 100644
 --- a/vllm_blend/vllm/attention/backends/xformers.py
 +++ b/vllm_blend/vllm/attention/backends/xformers.py
-@@ -202,7 +202,38 @@ class XFormersImpl(AttentionImpl):
+@@ -202,7 +202,47 @@ class XFormersImpl(AttentionImpl):
              value_old = old_kv[1].view(-1, self.num_kv_heads, self.head_size)
          
          repair_regions = cache_fuse_metadata.get("repair_regions")
@@ -30,12 +30,21 @@ index 9f6f6933cd79e8a9327434540a48cd11b2683150..4397416f81bd4a59fd2afdf7b54de350
 +            value = value_old
 +            cache_fuse_metadata["local_imp_indices"] = local_indices
 +            cache_fuse_metadata["imp_indices"] = target_positions
-+            cache_fuse_metadata["attn_bias"] = _make_partial_bias_gqa(
-+                cache_fuse_metadata,
-+                query.device,
-+                self.num_kv_heads,
-+                self.num_queries_per_kv,
-+            )
++            if torch.equal(active_positions, target_positions):
++                # r=1 keeps every query row. Use the identical dense causal
++                # bias object so full repair is numerically dense-equivalent.
++                cache_fuse_metadata["attn_bias"] = (
++                    BlockDiagonalCausalMask.from_seqlens(
++                        attn_metadata.prefill_metadata.prompt_lens
++                    )
++                )
++            else:
++                cache_fuse_metadata["attn_bias"] = _make_partial_bias_gqa(
++                    cache_fuse_metadata,
++                    query.device,
++                    self.num_kv_heads,
++                    self.num_queries_per_kv,
++                )
 +            attn_metadata.prefill_metadata.attn_bias = None
 +
 +        if status in [1] and repair_regions is not None and not resumable_mode:

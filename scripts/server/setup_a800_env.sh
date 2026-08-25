@@ -53,7 +53,11 @@ case "$env_dir" in
   "$stage_root"/envs/*) ;;
   *) echo "PROBEKV_ENV_DIR must remain inside $stage_root/envs" >&2; exit 2 ;;
 esac
-cacheblend="$stage_root/src/CacheBlend-probekv-v6"
+cacheblend="${PROBEKV_CACHEBLEND_TARGET:-$stage_root/src/CacheBlend-probekv-v6}"
+case "$cacheblend" in
+  "$stage_root"/src/*) ;;
+  *) echo "PROBEKV_CACHEBLEND_TARGET must stay under $stage_root/src" >&2; exit 2;;
+esac
 artifacts="$stage_root/artifacts/v6_setup"
 mkdir -p "$artifacts"
 if [[ ! -x "$env_dir/bin/python" ]]; then

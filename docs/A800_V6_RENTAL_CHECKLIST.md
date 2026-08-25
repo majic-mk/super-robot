@@ -102,6 +102,10 @@ as GPU qualification and cannot unlock H1/H2.
 The CPU-only image may expose only a placeholder `libcuda.so.1`, so `_C` and
 `_moe_C` dynamic loading is deliberately deferred to the first A800 hardware
 gate. File validation must not be reported as a successful CUDA import.
+When qualifying a revised patch without destroying the prior audited tree, set
+`PROBEKV_CACHEBLEND_TARGET` to a new directory under the stage `src/` folder.
+The installer rejects targets outside that boundary and records the selected
+tree in the extension audit.
 
 The preflight compiles sources, runs all tests, validates the experiment
 contract, runs both A and C local v6 configurations, audits storage and runtime

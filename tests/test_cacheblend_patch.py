@@ -75,7 +75,7 @@ class CacheBlendPatchTests(unittest.TestCase):
 
     def test_all_tracked_patches_have_valid_hunk_counts(self):
         for path in patch_files_for_mode(
-            MANIFEST, "probekv_v6_multiregion"
+            MANIFEST, "probekv_v6_staggered_runtime"
         ):
             validate_unified_diff(path)
 
@@ -115,7 +115,7 @@ class CacheBlendPatchTests(unittest.TestCase):
         for marker in (
             "class Qwen2Model", "probekv_begin_prefill",
             "probekv_advance_prefill", "target_active_positions",
-            "local_imp_indices",
+            "local_imp_indices", "BlockDiagonalCausalMask.from_seqlens",
         ):
             self.assertIn(marker, patch)
         self.assertEqual(

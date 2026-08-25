@@ -288,6 +288,7 @@ class ServerScriptSafetyTests(unittest.TestCase):
             text,
         )
         self.assertIn("PROBEKV_PREBUILT_VLLM_SOURCE", text)
+        self.assertIn("PROBEKV_CACHEBLEND_TARGET", text)
         self.assertIn("install_prebuilt_vllm_extensions.py", text)
         self.assertNotIn("import vllm, vllm._C", text)
         self.assertIn("dynamic loading is deferred to the A800 gate", text)
