@@ -39,13 +39,13 @@ artifact may unlock a v6 gate, and no v6 qualification gate may unlock v7 H1.
 | A chunker-version mismatch was conflated with KV mathematical incompatibility | Canonicalizer namespace controls provenance and calibration eligibility, not exact token-content identity. |
 | Model mathematics and runtime/storage format were mixed in one identity | Separate `ModelMathSignature`, `TokenizerSignature`, Source Variant provenance, KV Artifact format, and Physical Replica placement. |
 | Different historical positions could collapse into one Source | Source Variant identity includes the historical prefix and position-ID provenance. |
-| GPU/CPU/SSD copies could appear to be different Sources | A Source Variant owns Artifacts; an Artifact owns physical Replicas. Tier movement never changes the Source Variant. |
+| GPU/CPU/SSD copies could appear to be different Sources | A Source Variant owns one canonical Artifact; that Artifact owns physical Replicas. Tier movement never changes the Source Variant. |
 | Artifact fields were checked before an Artifact had been chosen | Split Source Variant correctness, calibration coverage, Artifact compatibility, Replica feasibility, and runtime admission. |
-| Moving all Artifact checks after Source selection would hide storage cost from the selector | Preview compatible Artifact/Replica access plans before selection; bind and revalidate the concrete plan after Source lock. |
+| Moving all storage checks after Source selection would hide access cost from the selector | Validate the unique canonical Artifact and preview its Replica access plans before selection; bind and revalidate one Replica after Source lock. |
 | Probe cost was multiplied by the number of candidates | Shared early forward, request metadata, and current-state extraction are request-level sunk costs and are charged once. |
 | Only the selected candidate's comparison cost was charged | Charge the actual comparison batch covering every compared candidate. |
 | A preview could become stale under concurrency | Version every preview and use compare-and-bind with entity generations, placement epochs, leases, and same-Source replanning. |
-| Independent multi-Segment admissions ignore shared resources | Per-Segment Source locks feed a request-level joint Artifact/Replica, load, boundary, union-repair, and admission planner. |
+| Independent multi-Segment admissions ignore shared resources | Per-Segment Source locks feed a request-level joint Replica, load, boundary, union-repair, and admission planner. |
 
 ## 2. Prefix Cache and non-prefix Segment granularity
 
@@ -290,9 +290,9 @@ attention and positions. A short-prefix and a long-prefix occurrence of the
 same exact Segment are therefore separate Source Variants in the same content
 bucket. Selective-repair results never become canonical Source Variants.
 
-### 4.4 KV Artifact identity and digest domains
+### 4.4 Canonical KV Artifact identity and digest domains
 
-A Source Variant may have multiple KV representations:
+The v7 main protocol permits exactly one full-KV Artifact per Source Variant:
 
 \[
 ID_{artifact}=H(
@@ -301,8 +301,10 @@ S_{artifact-format},
 artifact\ bytes\ digest).
 \]
 
-Artifact format covers dtype, layout, layer/head geometry, pre/post-RoPE form,
-serialization version, producer runtime, and patch compatibility.
+The canonical Artifact is lossless BF16, stores pre-RoPE K and raw V, and
+covers layer/head geometry, RoPE semantics, serialization version, producer
+runtime, and patch compatibility. Tier-specific packing and paged layouts are
+Replica properties rather than additional Artifacts.
 
 The Source Variant stores:
 
@@ -310,20 +312,20 @@ The Source Variant stores:
 canonical_source_state_digest
 ```
 
-Each Artifact stores:
+The unique Artifact stores:
 
 ```text
 parent_source_state_digest
 artifact_logical_digest
 artifact_bytes_digest
-fidelity_class: lossless|lossy
+fidelity_class: lossless
 ```
 
-Digest domains are tagged and cannot be compared blindly across formats. A
-lossy INT8 Artifact derives from the BF16 canonical state but its decoded
-logical digest need not equal the canonical digest. Main H1/H2 use lossless
-BF16 full-KV Artifacts. INT8 summaries remain a separate selector-storage
-choice; INT8 full-KV Artifacts belong to an explicitly labeled H4 ablation.
+Digest domains are tagged and cannot be compared blindly. INT8 summaries are
+selector metadata and are not full-KV Artifacts. Lossy or compressed full-KV
+representations are outside v7; a future H4b protocol must introduce a new
+explicit compatibility and calibration contract rather than silently adding a
+second Artifact to v7.
 
 ### 4.5 Physical Replica and mutable locator
 
@@ -408,16 +410,16 @@ Failure means the KV might be mathematically valid, but ProbeKV cannot provide
 the frozen quality guarantee. The Segment abstains and executes dense; the
 Source remains stored.
 
-### 6.3 ArtifactCompatibilityPreview and ReplicaFeasibilityPreview
+### 6.3 ArtifactCompatibility and ReplicaFeasibilityPreview
 
-Before Source selection, ProbeKV reads versioned metadata only. It enumerates
-compatible Artifact formats and currently plausible Replica access routes for
-each eligible Source Variant. It does not yet lease, copy, or bind a concrete
-Artifact/Replica.
+Before Source selection, ProbeKV verifies the unique canonical Artifact and
+reads versioned Replica metadata only. It enumerates currently plausible
+Replica access routes for each eligible Source Variant. It does not yet lease,
+copy, or bind a concrete Replica.
 
 This preview is necessary because the Source selector minimizes safe total
-cost. Moving every Artifact/Replica check after selection would make it choose
-a historical state without knowing whether it is on GPU, CPU, SSD, or not
+cost. Moving every Replica check after selection would make it choose a
+historical state without knowing whether it is on GPU, CPU, SSD, or not
 loadable at all.
 
 ### 6.4 Source selection and freeze
@@ -429,8 +431,8 @@ plan. Once selected, scheduler and refined planner may not replace it with
 
 ### 6.5 Artifact binding and RuntimeEligibility
 
-After Source lock, ProbeKV revalidates the preview and atomically binds a
-compatible Artifact/Replica. `RuntimeEligibility` has predicted and refined
+After Source lock, ProbeKV revalidates the unique Artifact and preview, then
+atomically binds a Replica. `RuntimeEligibility` has predicted and refined
 states:
 
 - predicted admission uses the current binding, profiles, and economic bound;
@@ -438,7 +440,7 @@ states:
   post-ready blocking, actual boundary, and union-repair profile.
 
 Runtime rejection makes the current Segment/request dense while retaining the
-Source Variant and valid Artifacts.
+Source Variant and its valid canonical Artifact.
 
 ## 7. Shared and candidate-contingent cost accounting
 
@@ -458,13 +460,13 @@ T_{shared-probe,q}
 comparison batch is measured/profiled as a batch and is not assumed to equal
 the sum of isolated candidate timings.
 
-For Source Variant `s`, compatible Artifacts `A_s`, and feasible Replicas
-`R_a`, define future conditional cost:
+For Source Variant `s`, its unique Artifact `A(s)`, and feasible Replicas
+`R(A(s))`, define future conditional cost:
 
 \[
 \widehat F_s^{upper}=
-\min_{a\in A_s}\min_{\rho\in R_a}
-\widehat F^{upper}(s,a,\rho),
+\min_{\rho\in R(A(s))}
+\widehat F^{upper}(s,A(s),\rho),
 \]
 
 \[
@@ -530,8 +532,8 @@ entity generations, placement, lease state, and resource reservation.
 After Source Variant `A` is frozen:
 
 1. If the preferred `A1/R1` plan is still valid, bind and use it.
-2. If it is stale, acquire a selection lease and replan only among compatible
-   Artifacts/Replicas belonging to Source `A`.
+2. If it is stale, acquire a selection lease and replan only among Replicas of
+   Source `A`'s unique Artifact.
 3. Charge replan latency, extra waiting, and wasted transfer to refined cost.
 4. If Source `A` has no economically feasible plan, execute dense.
 5. Never switch to Source `B` under the v7 main protocol.
@@ -550,14 +552,14 @@ v7 therefore uses:
 
 ```text
 per-Segment current-state Source ranking and Source freeze
-  -> request-level joint Artifact/Replica and execution planner
+  -> request-level joint Replica and execution planner
 ```
 
 For locked Source `s_i`, the joint planner chooses:
 
 ```text
 x_i: reuse or dense
-a_i: Artifact
+A(s_i): unique canonical Artifact
 rho_i: Replica
 b_i: actual reuse boundary
 q_i: repair ratio
@@ -644,7 +646,7 @@ calibration_ineligibility_reasons
 locked_source_variant_id
 source_lock_layer and reason
 predicted_access_plan_id
-artifact_preview_count / replica_preview_count
+canonical_artifact_compatible / replica_preview_count
 bound_artifact_id / bound_replica_id
 replica_generation / placement_epoch
 predicted_runtime_admission
@@ -683,7 +685,7 @@ v7 does not allow:
 - treating CPU/GPU/SSD copies as different historical Sources;
 - using a CUDA pointer or block ID as a persistent Replica identity;
 - checking a concrete Artifact digest before an Artifact has been bound;
-- hiding Artifact/Replica cost from the Source selector;
+- hiding Replica access cost from the Source selector;
 - multiplying a shared probe by the number of candidates;
 - charging only the winning candidate's comparison after comparing many;
 - switching to `latest`, default, or second-ranked Source after Source lock;
@@ -717,11 +719,11 @@ short-tail, Unicode, special-token, and tokenizer-isolation tests pass.
 
 ### Phase C: identity-aware Source Store
 
-1. Add Source Variant, KV Artifact, Physical Replica, and locator objects.
+1. Add Source Variant, one canonical KV Artifact, Physical Replica, and locator objects.
 2. Preserve global byte capacity, 1-16 variants, value-density eviction,
    probation, leases, and model namespace lifecycle.
 3. Make cross-tier copy create/audit Replicas without changing Source Variant.
-4. Add canonical/logical/bytes digest domains and lossless/lossy policy.
+4. Add canonical/logical/bytes digest domains and enforce the lossless-only v7 policy.
 
 Gate: identity collision, ABA, copy, relocation, eviction, purge, corruption,
 and model-isolation tests pass.
@@ -729,7 +731,7 @@ and model-isolation tests pass.
 ### Phase D: layered eligibility and versioned access preview
 
 1. Implement `SourceVariantEligibility` and `CalibrationEligibility`.
-2. Implement Artifact compatibility and Replica feasibility previews.
+2. Implement canonical Artifact compatibility and Replica feasibility previews.
 3. Add predicted access-plan snapshots and atomic compare-and-bind.
 4. Add same-Source-only replan and dense fallback.
 
