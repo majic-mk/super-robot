@@ -42,6 +42,19 @@ def compose_manifest_prompt_regions(
     return prefix, middle, suffix
 
 
+def manifest_segment_token_ids(case: ManifestCase, tokenizer: Any) -> Tuple[int, ...]:
+    """Use exact frozen IDs in v7; preserve the legacy v6 text audit."""
+    if case.protocol_version == 7:
+        return tuple(int(value) for value in case.segment_token_ids)
+    segment = tuple(
+        int(value)
+        for value in tokenizer.encode(case.segment_text, add_special_tokens=False)
+    )
+    if segment != case.segment_token_ids:
+        raise ValueError("manifest C tokens differ from the frozen tokenizer")
+    return segment
+
+
 class V6H1CorrectnessError(RuntimeError):
     """Hard gate: a v6 r=1 path failed to reproduce dense execution."""
 
@@ -167,11 +180,7 @@ class V6H1CaseRuntime:
         tokenizer = self.executor.tokenizer
         case = self.case
         prefix = self._prefix_ids(case.current_context)
-        segment = tuple(int(value) for value in tokenizer.encode(
-            case.segment_text, add_special_tokens=False
-        ))
-        if segment != case.segment_token_ids:
-            raise ValueError("manifest C tokens differ from the frozen tokenizer")
+        segment = manifest_segment_token_ids(case, tokenizer)
         suffix = tuple(int(value) for value in tokenizer.encode(
             "%s\n\nQuestion: %s\nAnswer briefly:"
             % (case.current_suffix_context, case.question),

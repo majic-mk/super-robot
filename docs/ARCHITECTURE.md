@@ -78,6 +78,11 @@ have versioned GPU, pinned-CPU and SSD Replicas. Selection freezes the Variant,
 then a stale placement may only be replanned among Replicas of the same
 Artifact. If none is feasible, that Segment becomes dense.
 
+For v7, the manifest's frozen token IDs are authoritative. Decoded
+`segment_text` is display/provenance data and is never re-tokenized to build KV;
+arbitrary BPE token slices need not survive a standalone decode/encode round
+trip. The parent left/right token slices restore the complete retrieved text.
+
 The v7 joint planner receives one locked Variant per selected Segment, actual
 layer readiness and shared-resource state. It does not enumerate candidate
 products. It chooses per-Segment staggered boundaries and returns full reuse,

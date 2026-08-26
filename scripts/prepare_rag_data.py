@@ -154,14 +154,6 @@ def main() -> int:
                 text = tokenizer.decode(
                     list(segment.token_ids), skip_special_tokens=False
                 )
-                roundtrip = tuple(
-                    int(value)
-                    for value in tokenizer.encode(text, add_special_tokens=False)
-                )
-                if roundtrip != segment.token_ids:
-                    raise ValueError(
-                        "canonical Segment text is not tokenizer round-trip exact"
-                    )
                 provenance = hashlib.sha256(
                     (
                         "%s|%s|%d|%d|%d"

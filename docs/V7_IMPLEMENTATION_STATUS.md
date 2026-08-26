@@ -5,7 +5,7 @@ Status at the v7 local freeze candidate:
 ```text
 v7_local_implementation_complete = true
 v7_local_contract_valid = true
-v7_local_tests_passed = 310
+v7_local_tests_passed = 311
 v7_runtime_source_static_audit = true
 v7_server_no_gpu_readiness = pending_server_artifact_rebuild
 mistral_v7_runtime_qualified = false

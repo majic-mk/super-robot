@@ -7,7 +7,10 @@ from probekv.manifest import (
     token_content_hash,
     validate_manifest,
 )
-from probekv.v6_h1_runtime import compose_manifest_prompt_regions
+from probekv.v6_h1_runtime import (
+    compose_manifest_prompt_regions,
+    manifest_segment_token_ids,
+)
 
 
 def _sources(count):
@@ -74,6 +77,17 @@ class V7ManifestTests(unittest.TestCase):
         self.assertEqual(prefix, (100, 1, 2))
         self.assertEqual(segment, (3, 4, 5))
         self.assertEqual(suffix, (6, 7, 200))
+
+    def test_v7_uses_frozen_ids_even_when_display_text_is_not_roundtrip_exact(self):
+        class NonRoundTripTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                return [999]
+
+        case = self.make_case(4)
+        self.assertEqual(
+            manifest_segment_token_ids(case, NonRoundTripTokenizer()),
+            case.segment_token_ids,
+        )
 
     def test_legacy_default_still_rejects_more_than_four_sources(self):
         v7 = self.make_case(5)
