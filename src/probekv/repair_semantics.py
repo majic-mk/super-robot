@@ -106,8 +106,10 @@ class RepairSelection:
         }
 
 
-def repaired_segment_token_count(segment_tokens: int, ratio: float) -> int:
-    """Return the frozen repair count for C, excluding mandatory suffix tokens."""
+def repaired_segment_token_count(
+    segment_tokens: int, ratio: float, rounding_policy: str = "floor"
+) -> int:
+    """Return repair count for C; v6=floor and conservative v7=ceil."""
 
     if segment_tokens <= 0:
         raise ValueError("segment_tokens must be positive")
@@ -117,7 +119,11 @@ def repaired_segment_token_count(segment_tokens: int, ratio: float) -> int:
         return 0
     if ratio == 1.0:
         return segment_tokens
-    return int(math.floor(segment_tokens * ratio))
+    if rounding_policy == "floor":
+        return int(math.floor(segment_tokens * ratio))
+    if rounding_policy == "ceil":
+        return min(segment_tokens, int(math.ceil(segment_tokens * ratio)))
+    raise ValueError("rounding_policy must be floor or ceil")
 
 
 def select_repair_tokens(
@@ -167,6 +173,7 @@ class MultiSegmentRepairSelection:
     dense_indices: Tuple[int, ...]
     execution_indices: Tuple[int, ...]
     union_mask_digest: str
+    rounding_policy: str = "floor"
 
     def validate(self, request: RequestSpec) -> None:
         request.validate()
@@ -186,7 +193,9 @@ class MultiSegmentRepairSelection:
             allowed = set(range(segment.token_start, segment.token_end))
             if not set(indices).issubset(allowed):
                 raise ValueError("repair index lies outside its segment")
-            expected = repaired_segment_token_count(segment.token_count, ratio)
+            expected = repaired_segment_token_count(
+                segment.token_count, ratio, self.rounding_policy
+            )
             if len(indices) != expected:
                 raise ValueError("segment repair count does not match ratio")
             selected_union.update(indices)
@@ -226,6 +235,7 @@ def select_multisegment_repair_tokens(
     drift_scores: Sequence[float],
     request: RequestSpec,
     requested_ratios: Mapping[str, float],
+    rounding_policy: str = "floor",
 ) -> MultiSegmentRepairSelection:
     """Build one absolute-position union mask for a v6 request.
 
@@ -251,7 +261,9 @@ def select_multisegment_repair_tokens(
         ):
             segment_id = str(region.segment_id)
             ratio = float(requested_ratios[segment_id])
-            count = repaired_segment_token_count(region.token_count, ratio)
+            count = repaired_segment_token_count(
+                region.token_count, ratio, rounding_policy
+            )
             ranked = sorted(
                 range(region.start, region.end),
                 key=lambda index: (-float(drift_scores[index]), index),
@@ -270,6 +282,7 @@ def select_multisegment_repair_tokens(
         dense_indices=tuple(sorted(dense)),
         execution_indices=execution,
         union_mask_digest=hashlib.sha256(payload).hexdigest(),
+        rounding_policy=rounding_policy,
     )
     result.validate(request)
     return result
@@ -304,6 +317,7 @@ class StaggeredMultiSegmentRepairPlan:
     execution_indices_by_layer: Mapping[int, Tuple[int, ...]]
     union_mask_digest_by_layer: Mapping[int, str]
     total_layers: int
+    rounding_policy: str = "floor"
 
     def validate(self, request: RequestSpec) -> None:
         request.validate()
@@ -336,7 +350,7 @@ class StaggeredMultiSegmentRepairPlan:
             segment = segments[segment_id]
             allowed = set(range(segment.token_start, segment.token_end))
             expected_count = repaired_segment_token_count(
-                segment.token_count, ratio
+                segment.token_count, ratio, self.rounding_policy
             )
             for indices in selected_by_layer.values():
                 if len(indices) != len(set(indices)):
@@ -382,6 +396,7 @@ def select_staggered_multisegment_repair_tokens(
     requested_ratios: Mapping[str, float],
     boundary_by_segment: Mapping[str, int],
     total_layers: int,
+    rounding_policy: str = "floor",
 ) -> StaggeredMultiSegmentRepairPlan:
     """Build absolute-position union masks without a Segment-count ceiling."""
 
@@ -416,7 +431,9 @@ def select_staggered_multisegment_repair_tokens(
                 and layer >= int(boundary_by_segment[segment_id])
             ):
                 count = repaired_segment_token_count(
-                    region.token_count, float(requested_ratios[segment_id])
+                    region.token_count,
+                    float(requested_ratios[segment_id]),
+                    rounding_policy,
                 )
                 ranked = sorted(
                     range(region.start, region.end),
@@ -445,6 +462,7 @@ def select_staggered_multisegment_repair_tokens(
         execution_indices_by_layer=execution_by_layer,
         union_mask_digest_by_layer=digests,
         total_layers=total_layers,
+        rounding_policy=rounding_policy,
     )
     result.validate(request)
     return result

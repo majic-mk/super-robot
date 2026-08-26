@@ -64,6 +64,25 @@ class ExperimentConfig:
     interference_accounting_mode: InterferenceAccountingMode = (
         InterferenceAccountingMode.INCLUDED_IN_LOAD
     )
+    artifact_policy: str = "legacy_unspecified"
+    max_artifacts_per_source_variant: int = 0
+    canonical_kv_dtype: str = ""
+    canonical_k_semantics: str = ""
+    canonical_v_semantics: str = ""
+    canonical_kv_lossless: bool = False
+    lossy_full_kv_artifacts_enabled: bool = False
+    replica_policy: str = "legacy_tier_map"
+    max_replicas_per_artifact_per_tier: int = 0
+    replica_tiers: Tuple[str, ...] = ()
+    canonicalizer_version: str = ""
+    target_tokens: int = 512
+    min_tokens: int = 128
+    max_tokens: int = 640
+    alignment_quantum: int = 16
+    search_window_tokens: int = 64
+    alignment_policy: str = "soft"
+    tail_policy: str = "semantic_rebalance"
+    padding: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -210,6 +229,39 @@ class ExperimentConfig:
                     )
                 )
             ),
+            artifact_policy=str(
+                raw.get("artifact_policy", "legacy_unspecified")
+            ),
+            max_artifacts_per_source_variant=int(
+                raw.get("max_artifacts_per_source_variant", 0)
+            ),
+            canonical_kv_dtype=str(raw.get("canonical_kv_dtype", "")),
+            canonical_k_semantics=str(
+                raw.get("canonical_k_semantics", "")
+            ),
+            canonical_v_semantics=str(
+                raw.get("canonical_v_semantics", "")
+            ),
+            canonical_kv_lossless=bool(
+                raw.get("canonical_kv_lossless", False)
+            ),
+            lossy_full_kv_artifacts_enabled=bool(
+                raw.get("lossy_full_kv_artifacts_enabled", False)
+            ),
+            replica_policy=str(raw.get("replica_policy", "legacy_tier_map")),
+            max_replicas_per_artifact_per_tier=int(
+                raw.get("max_replicas_per_artifact_per_tier", 0)
+            ),
+            replica_tiers=tuple(str(value) for value in raw.get("replica_tiers", [])),
+            canonicalizer_version=str(raw.get("canonicalizer_version", "")),
+            target_tokens=int(raw.get("target_tokens", 512)),
+            min_tokens=int(raw.get("min_tokens", 128)),
+            max_tokens=int(raw.get("max_tokens", 640)),
+            alignment_quantum=int(raw.get("alignment_quantum", 16)),
+            search_window_tokens=int(raw.get("search_window_tokens", 64)),
+            alignment_policy=str(raw.get("alignment_policy", "soft")),
+            tail_policy=str(raw.get("tail_policy", "semantic_rebalance")),
+            padding=bool(raw.get("padding", False)),
         )
         result.validate()
         return result
@@ -225,6 +277,8 @@ class ExperimentConfig:
             raise ValueError("cases must be positive")
         if self.protocol_version == 6:
             self._validate_v6()
+        elif self.protocol_version == 7:
+            self._validate_v7()
         elif not 1 <= self.online_kmax <= 4:
             raise ValueError("online_kmax must be in [1, 4]")
         if not 0 < self.gamma <= 1:
@@ -283,11 +337,13 @@ class ExperimentConfig:
             "cacheblend_case_runner",
             "cacheblend_closed_loop",
             "cacheblend_multisegment_closed_loop",
+            "cacheblend_v7_closed_loop",
         }:
             raise ValueError("unsupported runtime_backend")
         if self.runtime_backend in {
             "cacheblend_closed_loop",
             "cacheblend_multisegment_closed_loop",
+            "cacheblend_v7_closed_loop",
         }:
             if (
                 self.closed_loop_policy
@@ -396,6 +452,78 @@ class ExperimentConfig:
             raise ValueError(
                 "v6 server runs require the explicit multi-segment runtime"
             )
+
+    def _validate_v7(self) -> None:
+        if self.legacy_online_kmax_present:
+            raise ValueError("v7 forbids legacy online_kmax")
+        if self.max_stored_variants_per_content != 16:
+            raise ValueError("v7 stores at most 16 variants per content")
+        if self.min_variants_per_retained_content != 1:
+            raise ValueError("v7 retained content minimum must be one variant")
+        if not 1 <= self.max_compared_variants_per_segment <= 16:
+            raise ValueError("v7 comparison maximum must be in [1, 16]")
+        if self.candidate_compare_policy != "all_within_request_budget":
+            raise ValueError("v7 requires budgeted all-candidate comparison")
+        if self.probe_compare_budget_fraction != 0.05:
+            raise ValueError("v7 freezes the probe/compare budget at 5%")
+        if self.segment_planning_policy != "all_exact_nonprefix":
+            raise ValueError("v7 must plan every exact non-prefix Segment")
+        if self.max_detected_segments is not None:
+            raise ValueError("v7 cannot impose a detected-Segment cap")
+        if self.boundary_policy != "per_segment_staggered":
+            raise ValueError("v7 requires per-Segment staggered boundaries")
+        if self.selection_execution_policy not in {
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        }:
+            raise ValueError("v7 supports only the frozen A/C policies")
+        if not self.calibration_policy_match_required:
+            raise ValueError("v7 A/C policies require matched calibration")
+        if not self.partial_reuse_enabled:
+            raise ValueError("v7 requires partial reuse")
+        if self.joint_quality_policy != "simultaneous_conformal":
+            raise ValueError("v7 requires simultaneous request-level quality")
+        if self.source_pool_policy != "global_hard_model_soft":
+            raise ValueError("v7 requires the global Source pool")
+        if self.artifact_policy != "single_canonical_lossless":
+            raise ValueError("v7 requires one canonical lossless Artifact")
+        if self.max_artifacts_per_source_variant != 1:
+            raise ValueError("v7 permits exactly one Artifact per Source Variant")
+        if (
+            self.canonical_kv_dtype != "bfloat16"
+            or self.canonical_k_semantics != "pre_rope"
+            or self.canonical_v_semantics != "raw"
+            or not self.canonical_kv_lossless
+            or self.lossy_full_kv_artifacts_enabled
+        ):
+            raise ValueError("v7 canonical Artifact must be lossless BF16 pre-RoPE")
+        if self.replica_policy != "one_backing_plus_transient_hot":
+            raise ValueError("v7 requires the frozen Replica policy")
+        if self.max_replicas_per_artifact_per_tier != 1:
+            raise ValueError("v7 permits one Replica per Artifact per tier")
+        if tuple(self.replica_tiers) != ("gpu", "pinned_cpu", "ssd"):
+            raise ValueError("v7 Replica tiers must be gpu/pinned_cpu/ssd")
+        if self.canonicalizer_version != "semantic_block_v1":
+            raise ValueError("v7 requires semantic_block_v1")
+        if (self.target_tokens, self.min_tokens, self.max_tokens) != (512, 128, 640):
+            raise ValueError("v7 canonical token defaults changed")
+        if self.alignment_quantum != 16 or self.search_window_tokens != 64:
+            raise ValueError("v7 canonical alignment defaults changed")
+        if (
+            self.alignment_policy != "soft"
+            or self.tail_policy != "semantic_rebalance"
+            or self.padding
+        ):
+            raise ValueError("v7 canonical semantic policy changed")
+        if (
+            self.interference_accounting_mode
+            is not InterferenceAccountingMode.EXPLICIT_PENALTY
+        ):
+            raise ValueError("v7 requires explicit interference accounting")
+        if self.evidence_class != "local_simulation" and (
+            self.runtime_backend != "cacheblend_v7_closed_loop"
+        ):
+            raise ValueError("v7 server runs require the explicit v7 runtime")
 
 
 def load_config(path: str) -> ExperimentConfig:

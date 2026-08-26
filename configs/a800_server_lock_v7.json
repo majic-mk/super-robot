@@ -1,0 +1,86 @@
+{
+  "schema_version": 3,
+  "protocol_version": 7,
+  "purpose": "non-paper A800 v7 single-Artifact runtime qualification",
+  "paper_evidence": false,
+  "platform": {
+    "os": "Ubuntu 22.04",
+    "python_major_minor": "3.10",
+    "minimum_cpu_count": 16,
+    "minimum_host_memory_gib": 110,
+    "minimum_combined_free_gib": 70,
+    "minimum_largest_writable_free_gib": 50,
+    "minimum_system_free_gib": 15
+  },
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "numpy": "1.26.4",
+    "transformers": "4.40.2",
+    "tokenizers": "0.19.1",
+    "huggingface-hub": "0.36.2",
+    "ray": "2.10.0",
+    "cmake": "4.4.0",
+    "ninja": "1.13.0",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v7_single_artifact_runtime"
+  },
+  "models": {
+    "mistral": {
+      "role": "cacheblend_runtime_qualification_and_secondary",
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "adapter_name": "mistral_cacheblend_llama_v041",
+      "num_layers": 32,
+      "primary_reuse_layer": 5,
+      "probe_checkpoints": [1, 2, 4, 6, 8],
+      "dtype": "bfloat16"
+    },
+    "qwen": {
+      "role": "formal_primary",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "adapter_name": "qwen2_5_vllm041",
+      "num_layers": 28,
+      "primary_reuse_layer": 4,
+      "probe_checkpoints": [1, 2, 4, 5, 7],
+      "dtype": "bfloat16"
+    }
+  },
+  "runtime": {
+    "backend": "cacheblend_v7_closed_loop",
+    "required_capabilities": [
+      "async_multisource_loading",
+      "layer_resumable_prefill",
+      "scheduler_feedback",
+      "boundary_conditioned_profiles",
+      "canonical_sources_read_only",
+      "absolute_union_repair_mask",
+      "layer_indexed_union_repair_masks",
+      "per_segment_staggered_boundaries",
+      "causal_commit_wait_execution",
+      "immediate_staggered_closed_loop_execution",
+      "policy_conditioned_probe_state",
+      "cuda_event_timing",
+      "native_prefix_cache_block_metadata",
+      "single_lossless_bf16_artifact",
+      "multiple_physical_replicas",
+      "conservative_repair_rounding",
+      "same_source_replica_replan"
+    ],
+    "artifact_policy": "single_canonical_lossless",
+    "repair_rounding_policy": "ceil",
+    "alignment_quantum": 16,
+    "runtime_vllm_block_size": 16,
+    "implementation_status": "requires_dual_model_a800_qualification",
+    "qualification_required_before_h1_h2": true
+  }
+}

@@ -16,6 +16,9 @@ class QualificationJobResult:
     r1_dense_token_ids_equal: bool = True
     teacher_forced_logit_relative_l2: float = 0.0
     canonical_source_digests_unchanged: bool = True
+    # Added for protocol v7.  The default preserves schema compatibility with
+    # historical v6 JSONL rows, which predate the one-Artifact contract.
+    artifact_digests_unchanged: bool = True
     absolute_union_mask_verified: bool = True
     error: str = ""
 
@@ -108,5 +111,7 @@ def validate_qualification_results(
             raise RuntimeError("teacher-forced logit relative-L2 exceeds 1e-4")
         if not result.canonical_source_digests_unchanged:
             raise RuntimeError("qualification mutated a canonical Source")
+        if not result.artifact_digests_unchanged:
+            raise RuntimeError("qualification mutated a canonical Artifact")
         if not result.absolute_union_mask_verified:
             raise RuntimeError("absolute-position union mask was not verified")

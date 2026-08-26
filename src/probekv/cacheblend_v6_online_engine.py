@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .model_adapters import PinnedCacheBlendResumableAdapter, ResumableModelSpec
 from .resumable_prefill import ProbeKVResumablePrefillSession
+from .v7_contracts import CanonicalKVArtifact, PhysicalReplica
 
 
 @dataclass
@@ -136,6 +137,12 @@ class OnlineRequestAudit:
     wasted_bytes_by_segment: Dict[str, int] = field(default_factory=dict)
     useful_other_request_work_ms: float = 0.0
     load_interference_ms: float = 0.0
+    artifact_id_by_segment: Dict[str, str] = field(default_factory=dict)
+    replica_id_by_segment: Dict[str, str] = field(default_factory=dict)
+    artifact_digest_unchanged_by_segment: Dict[str, bool] = field(
+        default_factory=dict
+    )
+    repair_rounding_policy: str = "floor"
 
 
 class CacheBlendV6OnlineEngine:
@@ -399,3 +406,77 @@ class CacheBlendV6OnlineEngine:
         ticket = self.tickets.get(segment_id)
         if ticket is not None:
             self.audit.wasted_bytes_by_segment[segment_id] = ticket.requested_bytes
+
+
+class CacheBlendV7OnlineEngine(CacheBlendV6OnlineEngine):
+    """v7 single-Artifact runtime over the pinned CacheBlend data plane."""
+
+    patch_mode = "probekv_v7_single_artifact_runtime"
+    implementation_status = "requires_dual_model_a800_qualification"
+
+    @staticmethod
+    def capabilities() -> Mapping[str, bool]:
+        result = dict(CacheBlendV6OnlineEngine.capabilities())
+        result.update(
+            {
+                "single_lossless_bf16_artifact": True,
+                "multiple_physical_replicas": True,
+                "conservative_repair_rounding": True,
+                "same_source_replica_replan": True,
+            }
+        )
+        return result
+
+    def begin_prefill(
+        self,
+        *,
+        exact_prefix_layers: Sequence[Tuple[Any, Any]] = (),
+        **kwargs: Any,
+    ) -> ProbeKVResumablePrefillSession:
+        session = super().begin_prefill(
+            exact_prefix_layers=exact_prefix_layers, **kwargs
+        )
+        self.adapter.inner_model.cache_fuse_metadata[
+            "repair_rounding_policy"
+        ] = "ceil"
+        self.audit.repair_rounding_policy = "ceil"
+        return session
+
+    def start_artifact_replica_prefetch(
+        self,
+        *,
+        segment_id: str,
+        source_variant_id: str,
+        artifact: CanonicalKVArtifact,
+        replica: PhysicalReplica,
+        canonical_layers: Sequence[Tuple[Any, Any]],
+        segment_positions: Sequence[int],
+    ) -> LayerwiseLoadTicket:
+        if artifact.source_variant_id != source_variant_id:
+            raise ValueError("Artifact belongs to another Source Variant")
+        if replica.artifact_id != artifact.artifact_id:
+            raise ValueError("Replica belongs to another Artifact")
+        if (
+            artifact.dtype != "bfloat16"
+            or artifact.k_semantics != "pre_rope"
+            or artifact.v_semantics != "raw"
+        ):
+            raise ValueError("v7 requires a lossless BF16 pre-RoPE Artifact")
+        if replica.logical_digest != artifact.artifact_logical_digest:
+            raise RuntimeError("Replica logical digest differs from Artifact")
+        ticket = super().start_winner_prefetch(
+            segment_id=segment_id,
+            source_id=source_variant_id,
+            canonical_layers=canonical_layers,
+            segment_positions=segment_positions,
+        )
+        if ticket.source_digest_before != artifact.artifact_logical_digest:
+            raise RuntimeError("loaded KV differs from canonical Artifact digest")
+        self.audit.artifact_id_by_segment[segment_id] = artifact.artifact_id
+        self.audit.replica_id_by_segment[segment_id] = replica.replica_id
+        self.audit.artifact_digest_unchanged_by_segment[segment_id] = (
+            ticket.source_digest_before
+            == ticket.source_digest_after
+            == artifact.artifact_logical_digest
+        )
+        return ticket

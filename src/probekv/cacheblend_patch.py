@@ -74,6 +74,7 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_v6_multiregion",
         "probekv_v6_staggered_runtime",
         "probekv_v6_prefix_hardened_runtime",
+        "probekv_v7_single_artifact_runtime",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
@@ -148,6 +149,20 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
     ):
         if hardened.get(key) is not True:
             raise ValueError("prefix hardening must require %s" % key)
+    v7 = runtime_modes.get("single_artifact_runtime_v7")
+    if not isinstance(v7, dict):
+        raise ValueError("patch manifest must define single_artifact_runtime_v7")
+    if v7.get("patch_mode") != "probekv_v7_single_artifact_runtime":
+        raise ValueError("v7 runtime must use its explicit patch mode")
+    for key in (
+        "single_lossless_bf16_artifact",
+        "multiple_physical_replicas",
+        "per_segment_staggered_boundaries",
+    ):
+        if v7.get(key) is not True:
+            raise ValueError("v7 runtime must require %s" % key)
+    if v7.get("repair_rounding_policy") != "ceil":
+        raise ValueError("v7 runtime must use conservative ceil repair rounding")
     return manifest
 
 

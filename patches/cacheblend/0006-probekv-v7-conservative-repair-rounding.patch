@@ -1,0 +1,28 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+index e1dfe4a..6a85dbe 100644
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -278,6 +278,11 @@ class XFormersImpl(AttentionImpl):
+                     topk_num = segment_len
+                 else:
+                     topk_num = int(segment_len * ratio)
++                    if (
++                        cache_fuse_metadata.get("repair_rounding_policy") == "ceil"
++                        and topk_num < segment_len * ratio
++                    ):
++                        topk_num += 1
+                 temp_diff = torch.sum(
+                     (value[start:end] - value_old[start:end]) ** 2,
+                     dim=[1, 2],
+@@ -346,6 +351,11 @@ class XFormersImpl(AttentionImpl):
+                 topk_num = segment_len
+             else:
+                 topk_num = int(segment_len * ratio)
++                if (
++                    cache_fuse_metadata.get("repair_rounding_policy") == "ceil"
++                    and topk_num < segment_len * ratio
++                ):
++                    topk_num += 1
+             temp_diff = torch.sum(
+                 (
+                     value[segment_start:segment_end, :, :]

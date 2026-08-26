@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--contract", default="configs/experiment_contract.yaml")
     parser.add_argument("--server-lock", default="configs/a800_server_lock.json")
+    parser.add_argument("--protocol-version", type=int, choices=(6, 7), default=6)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=20260726)
     parser.add_argument("--per-dataset", type=int, default=50)
@@ -41,7 +42,7 @@ def main() -> int:
     if subprocess.check_output(
         ("git", "status", "--porcelain"), cwd=str(repo), text=True
     ).strip():
-        raise ValueError("v6 H1 data handoff requires a clean ProbeKV worktree")
+        raise ValueError("H1 data handoff requires a clean ProbeKV worktree")
     source_root = Path(args.source_audit_root).resolve()
     model_audit_path = Path(args.model_audit).resolve()
     patch_audit_path = Path(args.patch_audit).resolve()
@@ -79,6 +80,8 @@ def main() -> int:
             "--output", str(target),
             "--tokenizer", str(snapshot),
             "--model-signature", model_signature,
+            "--protocol-version", str(args.protocol_version),
+            "--tokenizer-signature", str(model["tokenizer_hash"]),
             "--source-url", str(audit["official_source_url"]),
             "--source-revision", str(audit["official_source_revision"]),
             "--license", str(audit["dataset_license"]),
@@ -127,8 +130,11 @@ def main() -> int:
     ], cwd=str(repo))
 
     handoff = {
-        "schema_version": 1,
-        "stage": "v6_h1_model_data_handoff",
+        "schema_version": 3 if args.protocol_version == 7 else 1,
+        "protocol_version": args.protocol_version,
+        "stage": "%s_h1_model_data_handoff" % (
+            "v7" if args.protocol_version == 7 else "v6"
+        ),
         "paper_evidence": False,
         "locked_test_accessed": False,
         "code_commit": code_commit,
@@ -145,8 +151,13 @@ def main() -> int:
         "pilot_manifest_sha256": sha256_file(manifest_output / "h1_pilot_cases.jsonl"),
         "jobs": str(jobs_output / "jobs.jsonl"),
         "jobs_sha256": sha256_file(jobs_output / "jobs.jsonl"),
+        # Keep the historical v6 handoff field literal and readable by old
+        # static auditors; v7 receives a distinct field below.
         "ready_for_v6_h1_gpu_sentinel": True,
     }
+    if args.protocol_version == 7:
+        handoff["ready_for_v6_h1_gpu_sentinel"] = False
+        handoff["ready_for_v7_h1_gpu_sentinel"] = True
     atomic_write_json(output / "handoff.json", handoff)
     print(json.dumps(handoff, ensure_ascii=False, indent=2))
     return 0

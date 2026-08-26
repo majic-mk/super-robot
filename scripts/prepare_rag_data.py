@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 from probekv.io import atomic_write_json, sha256_file, write_jsonl
+from probekv.canonical_segment import canonicalize_token_ids
+from probekv.manifest import token_content_hash
 from probekv.manifest import manifest_digest, validate_manifest
 from probekv.rag_data import (
     build_controlled_cases,
@@ -35,6 +39,8 @@ def main() -> int:
         default="both",
     )
     parser.add_argument("--seed", type=int, default=20260726)
+    parser.add_argument("--protocol-version", type=int, choices=(6, 7), default=6)
+    parser.add_argument("--tokenizer-signature", default="")
     parser.add_argument("--limit-records", type=int, default=0)
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument(
@@ -135,6 +141,64 @@ def main() -> int:
                         max_cases=corpus_limit,
                     )
                 )
+    if args.protocol_version == 7:
+        tokenizer_signature = args.tokenizer_signature or str(args.tokenizer)
+        canonical_cases = []
+        for case in cases:
+            segments = canonicalize_token_ids(
+                case.segment_token_ids,
+                tokenizer_signature=tokenizer_signature,
+                document_revision=args.source_revision,
+            )
+            for segment in segments:
+                text = tokenizer.decode(
+                    list(segment.token_ids), skip_special_tokens=False
+                )
+                roundtrip = tuple(
+                    int(value)
+                    for value in tokenizer.encode(text, add_special_tokens=False)
+                )
+                if roundtrip != segment.token_ids:
+                    raise ValueError(
+                        "canonical Segment text is not tokenizer round-trip exact"
+                    )
+                provenance = hashlib.sha256(
+                    (
+                        "%s|%s|%d|%d|%d"
+                        % (
+                            case.document_id,
+                            args.source_revision,
+                            segment.ordinal,
+                            segment.token_start,
+                            segment.token_end,
+                        )
+                    ).encode("utf-8")
+                ).hexdigest()
+                canonical_cases.append(
+                    replace(
+                        case,
+                        case_id="%s-c%03d" % (case.case_id, segment.ordinal),
+                        segment_text=text,
+                        segment_token_ids=segment.token_ids,
+                        content_hash=token_content_hash(segment.token_ids),
+                        protocol_version=7,
+                        canonicalizer_signature=segment.canonicalizer_signature,
+                        segment_provenance_id=provenance,
+                        reuse_content_key=segment.reuse_content_key(
+                            args.model_signature, tokenizer_signature
+                        ),
+                        canonical_parent_content_hash=case.content_hash,
+                        canonical_parent_left_token_ids=tuple(
+                            int(value)
+                            for value in case.segment_token_ids[:segment.token_start]
+                        ),
+                        canonical_parent_right_token_ids=tuple(
+                            int(value)
+                            for value in case.segment_token_ids[segment.token_end:]
+                        ),
+                    )
+                )
+        cases = canonical_cases
     if not cases and not args.allow_empty:
         raise RuntimeError(
             "construction produced zero cases; inspect document counts/repetition or use --allow-empty"
@@ -166,6 +230,8 @@ def main() -> int:
             "corpus_repeat_is_production_trace": False,
             "evidence_class": "data_preparation",
             "paper_evidence": False,
+            "protocol_version": args.protocol_version,
+            "canonical_segmentation": args.protocol_version == 7,
         }
     )
     atomic_write_json(output / "audit.json", audit)

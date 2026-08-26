@@ -31,6 +31,9 @@ class CacheBlendPatchTests(unittest.TestCase):
         prefix_hardened = patch_files_for_mode(
             MANIFEST, "probekv_v6_prefix_hardened_runtime"
         )
+        v7 = patch_files_for_mode(
+            MANIFEST, "probekv_v7_single_artifact_runtime"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
         self.assertEqual(closed_loop, probekv)
@@ -40,6 +43,8 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertEqual(staggered[:3], multiregion)
         self.assertEqual(len(prefix_hardened), 5)
         self.assertEqual(prefix_hardened[:4], staggered)
+        self.assertEqual(len(v7), 6)
+        self.assertEqual(v7[:5], prefix_hardened)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
@@ -62,6 +67,21 @@ class CacheBlendPatchTests(unittest.TestCase):
                 "absolute_union_mask"
             ]
         )
+        self.assertEqual(
+            manifest["v7_full_kv_artifact_policy"],
+            "one lossless BF16 Artifact per Source Variant",
+        )
+
+    def test_v7_patch_changes_only_the_protocol_selected_rounding(self):
+        paths = patch_files_for_mode(MANIFEST, "probekv_v7_single_artifact_runtime")
+        additions = "\n".join(
+            line[1:]
+            for line in paths[-1].read_text(encoding="utf-8").splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertIn('repair_rounding_policy") == "ceil"', additions)
+        self.assertIn("topk_num += 1", additions)
+        self.assertEqual(additions.count("topk_num += 1"), 2)
 
     def test_runtime_patch_freezes_segment_only_denominator(self):
         patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(

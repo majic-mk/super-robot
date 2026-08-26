@@ -36,6 +36,15 @@ must be requalified before H1. H1 now requires a schema-v2 qualification gate
 bound to the exact code, model, patch/tree, 140-job audit, GPU UUID and native
 Prefix Cache block-metadata sentinel.
 
+Protocol v7 is a separately versioned path. It adds deterministic
+semantic-block canonical Segments, exact model/tokenizer-scoped content
+buckets, historical Source Variant identity, exactly one lossless BF16
+pre-RoPE KV Artifact per Variant, and versioned GPU/pinned-CPU/SSD Replicas.
+Source selection reads lightweight Summaries, not full-KV Artifacts. A locked
+Source may replan among Replicas of its Artifact but may never switch Variant.
+The request-level joint planner uses per-Segment staggered boundaries and may
+accept all, some, or none of the locked Segments. v6 gates cannot authorize v7.
+
 Mistral-7B-Instruct-v0.3 is the CacheBlend qualification and secondary model;
 Qwen2.5-7B-Instruct is the formal primary model. Llama 3.1 is deferred until
 the Qwen end-to-end gain is at least 5%.
@@ -60,6 +69,8 @@ python -m probekv simulate --config configs/local_system_v3.json
 python -m probekv simulate --config configs/local_system_v4.json
 python -m probekv simulate --config configs/local_system_v5.json
 python -m probekv.cli --config configs/local_system_v6.json
+python -m probekv.cli --config configs/local_system_v7_causal_wait.json
+python -m probekv.cli --config configs/local_system_v7_immediate_staggered.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -71,10 +82,14 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
 - `docs/UNIFIED_COST_ACCOUNTING.md`: v5 shared-cost and Source-lock protocol.
 - `docs/V6_MULTI_SEGMENT.md`: v6 global-pool, arbitrary-count multi-segment and A/C staggered contract.
-- `docs/PROBEKV_V7_NEXT_PHASE_PLAN.md`: next-phase v7 canonical-Segment,
-  layered identity, versioned access-plan and request-level joint-planning
-  implementation contract. It is a plan, not a completed or GPU-qualified
-  runtime.
+- `docs/PROBEKV_V7_NEXT_PHASE_PLAN.md`: v7 canonical-Segment, layered identity,
+  single-Artifact/multi-Replica, versioned access-plan and request-level
+  joint-planning contract. Its local implementation is testable; A800 evidence
+  remains unqualified until both schema-v3 model gates pass.
+- `docs/A800_V7_RUNBOOK.md`: immutable no-GPU handoff, two-model A800
+  qualification and one-case H1 sentinel procedure.
+- `docs/V7_IMPLEMENTATION_STATUS.md`: explicit local-complete versus
+  server/GPU-pending boundary; never treat it as GPU evidence.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.
@@ -129,3 +144,8 @@ hashes of the job manifest, runtime audit and Prefix Cache audit. The concrete
 dual-model source hooks are implemented and statically audited. Model-specific
 H1 manifests must be rebuilt with `prepare_v6_h1_model_data.py`; Mistral token
 IDs and content hashes must never be reused by Qwen.
+
+For protocol v7, use `configs/a800_server_lock_v7.json`, patch mode
+`probekv_v7_single_artifact_runtime`, the v7 job/readiness scripts, and a
+schema-v3 qualification gate. A v6 gate is deliberately rejected. Full H1 is
+not started by the qualification scripts.

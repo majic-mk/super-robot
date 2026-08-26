@@ -65,6 +65,24 @@ request planner that uses the explicit A or C per-Segment boundary policy and
 may accept only an economical subset (`PARTIAL_REUSE`). The old common path is
 an explicit reproduction configuration. See `V6_MULTI_SEGMENT.md`.
 
+Protocol v7 separates logical history from physical storage:
+
+`canonical provenance -> exact content bucket -> Source Variant -> one canonical Artifact -> tier Replicas`.
+
+The content key depends on model mathematics, tokenizer identity, token count
+and exact token IDs. Chunker provenance remains a calibration/audit namespace,
+not a Transformer correctness identity. Historical prefix and position IDs
+distinguish Source Variants. Each Variant owns exactly one lossless BF16
+pre-RoPE/raw-V Artifact; Summary features remain separate. That Artifact may
+have versioned GPU, pinned-CPU and SSD Replicas. Selection freezes the Variant,
+then a stale placement may only be replanned among Replicas of the same
+Artifact. If none is feasible, that Segment becomes dense.
+
+The v7 joint planner receives one locked Variant per selected Segment, actual
+layer readiness and shared-resource state. It does not enumerate candidate
+products. It chooses per-Segment staggered boundaries and returns full reuse,
+partial reuse or all dense under one request-level `gamma` gate.
+
 ## Probe depth objective
 
 Increasing raw drift at deeper layers does not prove that Source ranking becomes
@@ -134,7 +152,8 @@ layer-wise repair ratio is
 
 The pinned CacheBlend backend ranks C tokens by its V-drift rule. For a
 requested ratio `r`, it recomputes zero tokens at `r=0`, all C tokens at
-`r=1`, and otherwise `floor(r * |C|)` tokens. Ratio grids must use nested
+`r=1`, and otherwise `floor(r * |C|)` tokens in frozen v3-v6 protocols. v7
+uses `ceil(r * |C|)` as the conservative discretization. Ratio grids must use nested
 sets: a token repaired at
 10% is also repaired at 20%. Thus `r=0` means reuse all token KVs, while `r=1`
 means recompute all `C` tokens at every active repair layer.
@@ -155,6 +174,10 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 |---|---|---|
 | Legacy canonical store | `source_store.py` | v3-v5 exact full-prefill, Kmax and reproduction lifecycle |
 | v6 global Source pool | `global_source_pool.py` | 1-16 variants, global hard tiers, model soft quotas, value/FR eviction and model lifecycle |
+| v7 identity/chunker | `v7_contracts.py`, `canonical_segment.py` | exact model/token content identity, provenance identity and deterministic semantic-soft block segmentation |
+| v7 Source pool | `v7_source_pool.py` | one Artifact per Variant, backing/transient Replicas, generations, leases, probation and model purge |
+| v7 eligibility/access | `v7_eligibility.py` | separate correctness, calibration, Artifact, preview and runtime decisions with same-Source replan |
+| v7 joint planner | `v7_planner.py` | shared sunk cost once, per-Segment staggered partial reuse and request-level final admission |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |

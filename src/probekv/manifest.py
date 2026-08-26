@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .data import assert_group_isolation, deterministic_group_split
 
@@ -60,15 +60,29 @@ class ManifestCase:
     answers: Tuple[str, ...] = ()
     construction: str = "normalized_input"
     target_document_id: str = ""
+    protocol_version: int = 0
+    canonicalizer_signature: str = ""
+    segment_provenance_id: str = ""
+    reuse_content_key: str = ""
+    canonical_parent_content_hash: str = ""
+    # v7 preserves the complete parent RAG token sequence when one retrieved
+    # document is canonicalized into several independently reusable Segments.
+    canonical_parent_left_token_ids: Tuple[int, ...] = ()
+    canonical_parent_right_token_ids: Tuple[int, ...] = ()
 
-    def validate(self, online_kmax: int = 4) -> None:
+    def validate(self, online_kmax: Optional[int] = None) -> None:
         if self.split not in {"train", "calibration", "test", "pilot"}:
             raise ValueError("unsupported split: %s" % self.split)
         if not self.case_id or not self.dataset or not self.document_id:
             raise ValueError("case, dataset and document identifiers are required")
         if self.content_hash != token_content_hash(self.segment_token_ids):
             raise ValueError("content_hash does not match segment_token_ids")
-        if not 1 <= len(self.sources) <= online_kmax:
+        effective_kmax = (
+            int(online_kmax)
+            if online_kmax is not None
+            else (16 if self.protocol_version == 7 else 4)
+        )
+        if not 1 <= len(self.sources) <= effective_kmax:
             raise ValueError("source count exceeds online Kmax")
         source_ids = [source.source_id for source in self.sources]
         context_ids = [source.context_id for source in self.sources]
@@ -83,10 +97,33 @@ class ManifestCase:
             raise ValueError(
                 "current context must not be reused as a historical source context"
             )
+        if self.protocol_version == 7 and not all(
+            (
+                self.canonicalizer_signature,
+                self.segment_provenance_id,
+                self.reuse_content_key,
+                self.canonical_parent_content_hash,
+            )
+        ):
+            raise ValueError("v7 manifest requires canonical Segment provenance")
+        if self.protocol_version == 7 and self.canonical_parent_content_hash != (
+            token_content_hash(
+                self.canonical_parent_left_token_ids
+                + self.segment_token_ids
+                + self.canonical_parent_right_token_ids
+            )
+        ):
+            raise ValueError("v7 canonical parent token sequence is incomplete")
 
     def to_row(self) -> Dict[str, Any]:
         row = asdict(self)
         row["segment_token_ids"] = list(self.segment_token_ids)
+        row["canonical_parent_left_token_ids"] = list(
+            self.canonical_parent_left_token_ids
+        )
+        row["canonical_parent_right_token_ids"] = list(
+            self.canonical_parent_right_token_ids
+        )
         row["sources"] = [asdict(source) for source in self.sources]
         return row
 
@@ -99,7 +136,9 @@ def manifest_digest(cases: Sequence[ManifestCase]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def validate_manifest(cases: Sequence[ManifestCase], online_kmax: int = 4) -> None:
+def validate_manifest(
+    cases: Sequence[ManifestCase], online_kmax: Optional[int] = None
+) -> None:
     if not cases:
         raise ValueError("manifest must contain at least one case")
     identifiers = [case.case_id for case in cases]
@@ -200,6 +239,21 @@ def manifest_case_from_row(raw: Mapping[str, Any]) -> ManifestCase:
         answers=tuple(str(answer) for answer in raw.get("answers", ())),
         construction=str(raw.get("construction", "normalized_input")),
         target_document_id=str(raw.get("target_document_id", "")),
+        protocol_version=int(raw.get("protocol_version", 0)),
+        canonicalizer_signature=str(raw.get("canonicalizer_signature", "")),
+        segment_provenance_id=str(raw.get("segment_provenance_id", "")),
+        reuse_content_key=str(raw.get("reuse_content_key", "")),
+        canonical_parent_content_hash=str(
+            raw.get("canonical_parent_content_hash", "")
+        ),
+        canonical_parent_left_token_ids=tuple(
+            int(value)
+            for value in raw.get("canonical_parent_left_token_ids", ())
+        ),
+        canonical_parent_right_token_ids=tuple(
+            int(value)
+            for value in raw.get("canonical_parent_right_token_ids", ())
+        ),
     )
     result.validate()
     return result

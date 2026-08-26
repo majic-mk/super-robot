@@ -12,11 +12,15 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from .cacheblend_v6_online_engine import (
     CacheBlendV6OnlineEngine,
+    CacheBlendV7OnlineEngine,
     TorchLayerwiseSourceLoader,
 )
+from .contracts import KVLocation
 from .model_adapters import ResumableModelSpec
 from .v6_a800_jobs import V6A800Job, V6A800JobKind
 from .v6_qualification_worker import QualificationJobResult
+from .v7_contracts import CanonicalKVArtifact, PhysicalReplica, ReplicaLocator
+from .v7_planner import repair_token_count
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,7 @@ class GenerationTrace:
     prefix_shadow_digest_after: str = ""
     prefix_rows_excluded_from_repair: int = 0
     prefix_active_positions_valid: bool = True
+    artifact_digests_unchanged: bool = True
 
 
 def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> float:
@@ -82,6 +87,8 @@ class RealCacheBlendA800Executor:
         gpu_memory_utilization: float = 0.60,
         sentinel_tokens: int = 32,
         expected_cacheblend_tree: str = "",
+        engine_class: Any = CacheBlendV6OnlineEngine,
+        protocol_version: int = 6,
     ) -> None:
         import torch
         from vllm import LLM, SamplingParams
@@ -94,6 +101,13 @@ class RealCacheBlendA800Executor:
         self.SequenceData = SequenceData
         self.SequenceGroupMetadata = SequenceGroupMetadata
         self.model_spec = model_spec
+        if protocol_version not in {6, 7}:
+            raise ValueError("qualification executor supports protocol v6 or v7")
+        if protocol_version == 7 and engine_class is not CacheBlendV7OnlineEngine:
+            raise ValueError("protocol v7 requires CacheBlendV7OnlineEngine")
+        self.protocol_version = protocol_version
+        self.engine_class = engine_class
+        self.repair_rounding_policy = "ceil" if protocol_version == 7 else "floor"
         self.adapter_name = model_spec.adapter_name
         self.llm = LLM(
             model=model_path,
@@ -160,9 +174,8 @@ class RealCacheBlendA800Executor:
             "cacheblend_tree": tree,
         }
 
-    @staticmethod
-    def capabilities() -> Mapping[str, bool]:
-        return CacheBlendV6OnlineEngine.capabilities()
+    def capabilities(self) -> Mapping[str, bool]:
+        return self.engine_class.capabilities()
 
     def _exact_prefix_ids(self, token_count: int) -> List[int]:
         if token_count <= 0:
@@ -453,15 +466,17 @@ class RealCacheBlendA800Executor:
             (time.perf_counter() - host_start) * 1000.0,
         )
 
-    @staticmethod
     def _repair_positions(
-        positions: Sequence[int], ratio: float
+        self, positions: Sequence[int], ratio: float
     ) -> Tuple[int, ...]:
         if ratio <= 0:
             return ()
         if ratio >= 1:
             return tuple(positions)
-        return tuple(positions[: int(len(positions) * ratio)])
+        count = repair_token_count(len(positions), ratio)
+        if self.repair_rounding_policy == "floor":
+            count = int(len(positions) * ratio)
+        return tuple(positions[:count])
 
     def _reuse_generate(
         self,
@@ -494,7 +509,7 @@ class RealCacheBlendA800Executor:
             fixture, (), is_prompt=True, reuse=True, request_id="reuse-prefill"
         )
         attention, sampling = tensors[2], tensors[3]
-        engine = CacheBlendV6OnlineEngine(
+        engine = self.engine_class(
             inner_model=self.inner_model,
             model_spec=self.model_spec,
             source_loader=self.source_loader,
@@ -523,12 +538,56 @@ class RealCacheBlendA800Executor:
                 variants = fixture.canonical_variants[index]
                 if not 0 <= winner_variant < len(variants):
                     raise ValueError("locked winner variant is unavailable")
-                tickets.append(engine.start_winner_prefetch(
-                    segment_id="c%d" % index,
-                    source_id="s%d-v%d" % (index, winner_variant),
-                    canonical_layers=variants[winner_variant],
-                    segment_positions=positions,
-                ))
+                source_id = "s%d-v%d" % (index, winner_variant)
+                canonical_layers = variants[winner_variant]
+                if self.protocol_version == 7:
+                    logical = TorchLayerwiseSourceLoader._digest(
+                        self.torch, canonical_layers
+                    )
+                    first_key = canonical_layers[0][0]
+                    artifact = CanonicalKVArtifact(
+                        artifact_id="artifact-%s" % source_id,
+                        source_variant_id=source_id,
+                        generation=1,
+                        parent_source_state_digest=logical,
+                        artifact_logical_digest=logical,
+                        artifact_bytes_digest=logical,
+                        num_layers=len(canonical_layers),
+                        num_kv_heads=int(first_key.shape[1]),
+                        head_dim=int(first_key.shape[2]),
+                    )
+                    replica = PhysicalReplica(
+                        replica_id="replica-%s-cpu" % source_id,
+                        artifact_id=artifact.artifact_id,
+                        generation=1,
+                        tier=KVLocation.PINNED_CPU,
+                        logical_digest=logical,
+                        bytes_digest=logical,
+                        size_bytes=sum(
+                            tensor.numel() * tensor.element_size()
+                            for key, value in canonical_layers
+                            for tensor in (key, value)
+                        ),
+                        locator=ReplicaLocator(
+                            value="qualification-pinned-cpu",
+                            layout_signature="contiguous-bf16",
+                        ),
+                    )
+                    tickets.append(engine.start_artifact_replica_prefetch(
+                        segment_id="c%d" % index,
+                        source_variant_id=source_id,
+                        artifact=artifact,
+                        replica=replica,
+                        canonical_layers=canonical_layers,
+                        segment_positions=positions,
+                    ))
+                else:
+                    tickets.append(engine.start_winner_prefetch(
+                        segment_id="c%d" % index,
+                        source_id=source_id,
+                        canonical_layers=canonical_layers,
+                        segment_positions=positions,
+                    ))
             for ticket in tickets:
                 for event in ticket.layer_events.values():
                     event.synchronize()
@@ -617,6 +676,11 @@ class RealCacheBlendA800Executor:
             prefix_shadow_digest_after=prefix_digest_after,
             prefix_rows_excluded_from_repair=prefix_rows_excluded,
             prefix_active_positions_valid=prefix_active_positions_valid,
+            artifact_digests_unchanged=(
+                all(engine.audit.artifact_digest_unchanged_by_segment.values())
+                if self.protocol_version == 7
+                else True
+            ),
         )
 
     def _run_sentinel(self, token_count: int) -> Dict[str, Any]:
@@ -639,6 +703,7 @@ class RealCacheBlendA800Executor:
             "max_teacher_forced_logit_relative_l2": relative,
             "canonical_source_digests_unchanged": reuse.source_digests_unchanged,
             "absolute_union_mask_verified": reuse.absolute_union_mask_verified,
+            "artifact_digests_unchanged": reuse.artifact_digests_unchanged,
             "dense_token_ids": list(dense.token_ids),
             "reuse_token_ids": list(reuse.token_ids),
             "dense_gpu_ms": dense.gpu_ms,
@@ -955,6 +1020,11 @@ class RealCacheBlendA800Executor:
                 integrity.source_digests_unchanged
                 if integrity is not None else
                 bool(self.sentinel["canonical_source_digests_unchanged"])
+            ),
+            artifact_digests_unchanged=(
+                integrity.artifact_digests_unchanged
+                if integrity is not None else
+                bool(self.sentinel.get("artifact_digests_unchanged", True))
             ),
             absolute_union_mask_verified=(
                 integrity.absolute_union_mask_verified

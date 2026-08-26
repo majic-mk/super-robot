@@ -770,7 +770,7 @@ For Mistral and then Qwen:
 2. Run native Prefix Cache plus non-prefix `r=1` sentinel.
 3. Run canary and all 140 runtime jobs.
 4. Run one four-Source, nine-ratio H1 sentinel.
-5. Generate schema-v7 per-model and joint gates.
+5. Generate protocol-v7, schema-v3 per-model and joint gates.
 
 Only after both models pass may the system emit
 `ready_for_full_h1_pilot=true`; it must not start the full pilot automatically.
@@ -787,7 +787,8 @@ At minimum, v7 adds tests for:
   failing a mismatched formal calibration namespace;
 - different historical prefix/position provenance producing different Source
   Variants in one content bucket;
-- one Source Variant owning multiple lossless/lossy Artifacts;
+- rejecting a second full-KV Artifact while allowing Summary features outside
+  the Artifact count;
 - one Artifact owning multiple tier Replicas;
 - locator mutation without identity mutation;
 - cross-tier copy, generation monotonicity, and ABA protection;

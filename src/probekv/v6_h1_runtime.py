@@ -26,6 +26,22 @@ DEFAULT_INSTRUCTION = (
 )
 
 
+def compose_manifest_prompt_regions(
+    case: ManifestCase,
+    base_prefix: Sequence[int],
+    segment: Sequence[int],
+    base_suffix: Sequence[int],
+) -> Tuple[Tuple[int, ...], Tuple[int, ...], Tuple[int, ...]]:
+    """Restore the complete parent document around a v7 canonical Segment."""
+    prefix = tuple(int(value) for value in base_prefix)
+    middle = tuple(int(value) for value in segment)
+    suffix = tuple(int(value) for value in base_suffix)
+    if case.protocol_version == 7:
+        prefix += tuple(case.canonical_parent_left_token_ids)
+        suffix = tuple(case.canonical_parent_right_token_ids) + suffix
+    return prefix, middle, suffix
+
+
 class V6H1CorrectnessError(RuntimeError):
     """Hard gate: a v6 r=1 path failed to reproduce dense execution."""
 
@@ -34,6 +50,7 @@ def stable_cacheblend_repair_positions(
     segment_positions: Sequence[int],
     drift_scores: Sequence[float],
     ratio: float,
+    rounding_policy: str = "floor",
 ) -> Tuple[int, ...]:
     """Apply CacheBlend's stable largest-V-drift policy inside one C only."""
 
@@ -45,7 +62,9 @@ def stable_cacheblend_repair_positions(
         raise ValueError("Segment positions must be sorted and unique")
     if any(not math.isfinite(value) for value in scores):
         raise ValueError("V-drift scores must be finite")
-    count = repaired_segment_token_count(len(positions), float(ratio))
+    count = repaired_segment_token_count(
+        len(positions), float(ratio), rounding_policy
+    )
     ranking = sorted(range(len(positions)), key=lambda index: (-scores[index], index))
     return tuple(sorted(positions[index] for index in ranking[:count]))
 
@@ -80,6 +99,7 @@ class V6H1CaseRuntime:
         *,
         max_new_tokens: int = 64,
         instruction: str = DEFAULT_INSTRUCTION,
+        repair_rounding_policy: str = "floor",
     ) -> None:
         case.validate()
         if case.split != "pilot":
@@ -91,6 +111,9 @@ class V6H1CaseRuntime:
         self.provenance = dict(provenance)
         self.max_new_tokens = int(max_new_tokens)
         self.instruction = instruction
+        if repair_rounding_policy not in {"floor", "ceil"}:
+            raise ValueError("repair rounding policy must be floor or ceil")
+        self.repair_rounding_policy = repair_rounding_policy
         self.fixture = self._build_fixture()
         self.source_index = {
             source_id: index for index, source_id in enumerate(self.fixture.source_ids)
@@ -154,6 +177,9 @@ class V6H1CaseRuntime:
             % (case.current_suffix_context, case.question),
             add_special_tokens=False,
         ))
+        prefix, segment, suffix = compose_manifest_prompt_regions(
+            case, prefix, segment, suffix
+        )
         if not suffix:
             raise ValueError("mandatory suffix S must contain tokens")
         prompt = prefix + segment + suffix
@@ -169,6 +195,8 @@ class V6H1CaseRuntime:
         variants = []
         for source in case.sources:
             historical_prefix = self._prefix_ids(source.historical_context)
+            if case.protocol_version == 7:
+                historical_prefix += tuple(case.canonical_parent_left_token_ids)
             combined = historical_prefix + segment
             if len(combined) + 1 > self.executor.runner.model_config.max_model_len:
                 raise ValueError("historical Source exceeds the configured model context")
@@ -221,7 +249,10 @@ class V6H1CaseRuntime:
             .cpu().tolist()
         )
         return stable_cacheblend_repair_positions(
-            self.fixture.runtime.segment_positions[0], scores, ratio
+            self.fixture.runtime.segment_positions[0],
+            scores,
+            ratio,
+            self.repair_rounding_policy,
         )
 
     def _generate(
@@ -271,7 +302,14 @@ class V6H1CaseRuntime:
             raise V6H1CorrectnessError(
                 "r=1 resumable path differs from dense reference"
             )
-        if not r1_greedy.source_digests_unchanged or not r1_greedy.absolute_union_mask_verified:
+        if (
+            not r1_greedy.source_digests_unchanged
+            or not r1_greedy.absolute_union_mask_verified
+            or (
+                self.executor.protocol_version == 7
+                and not r1_greedy.artifact_digests_unchanged
+            )
+        ):
             raise V6H1CorrectnessError("r=1 Source or causal-mask integrity failed")
 
         results = []
@@ -286,7 +324,14 @@ class V6H1CaseRuntime:
                     source_index, job.reuse_layer, job.repair_ratio, teacher=True
                 )
                 relative = aggregate_relative_l2(teacher.logits, self.full.logits)
-            if not greedy.source_digests_unchanged or not greedy.absolute_union_mask_verified:
+            if (
+                not greedy.source_digests_unchanged
+                or not greedy.absolute_union_mask_verified
+                or (
+                    self.executor.protocol_version == 7
+                    and not greedy.artifact_digests_unchanged
+                )
+            ):
                 raise RuntimeError("v6 Source or causal-mask integrity failed")
             selected = self._repair_positions(
                 source_index, job.reuse_layer, job.repair_ratio
@@ -358,3 +403,17 @@ class V6H1CaseRuntime:
             row.validate()
             results.append(row)
         return tuple(results)
+
+
+class V7H1CaseRuntime(V6H1CaseRuntime):
+    """Single-Artifact v7 H1 sentinel labels with conservative ceil repair."""
+
+    runtime_mode = "v7_single_artifact_h1_case_runner"
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["repair_rounding_policy"] = "ceil"
+        super().__init__(*args, **kwargs)
+        if self.executor.protocol_version != 7:
+            raise ValueError("v7 H1 runtime requires a protocol-v7 executor")
+        if self.case.protocol_version != 7 or not self.case.reuse_content_key:
+            raise ValueError("v7 H1 requires canonical Segment provenance")

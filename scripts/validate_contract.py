@@ -25,8 +25,8 @@ def main() -> int:
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     errors = []
-    if contract.get("schema_version") != 6:
-        errors.append("current experiment contract must use schema version 6")
+    if contract.get("schema_version") != 7:
+        errors.append("current experiment contract must use schema version 7")
     invariants = contract["invariants"]
     if invariants["canonical_source_origin"] != "full_prefill":
         errors.append("canonical source origin must be full_prefill")
@@ -64,6 +64,31 @@ def main() -> int:
             errors.append("invalid v6 contract field %s" % key)
     if v6.get("k_ablation") != [1, 2, 4, 8, 16]:
         errors.append("v6 K ablation must cover 1,2,4,8,16")
+    v7 = contract.get("protocol_versions", {}).get("v7_main", {})
+    required_v7 = {
+        "runtime_backend": "cacheblend_v7_closed_loop",
+        "canonicalizer_version": "semantic_block_v1",
+        "alignment_quantum": 16,
+        "alignment_policy": "soft",
+        "padding": False,
+        "artifact_policy": "single_canonical_lossless",
+        "max_artifacts_per_source_variant": 1,
+        "canonical_kv_dtype": "bfloat16",
+        "canonical_k_semantics": "pre_rope",
+        "canonical_v_semantics": "raw",
+        "lossy_full_kv_artifacts_enabled": False,
+        "replica_policy": "one_backing_plus_transient_hot",
+        "max_replicas_per_artifact_per_tier": 1,
+        "repair_rounding_policy": "ceil",
+        "boundary_policy": "per_segment_staggered",
+        "same_source_replica_replan_only": True,
+        "qualification_gate_schema": 3,
+    }
+    for key, expected in required_v7.items():
+        if v7.get(key) != expected:
+            errors.append("invalid v7 contract field %s" % key)
+    if v7.get("replica_tiers") != ["gpu", "pinned_cpu", "ssd"]:
+        errors.append("v7 Replica tiers must be gpu/pinned_cpu/ssd")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:
@@ -71,6 +96,17 @@ def main() -> int:
     else:
         if local_v6.protocol_version != 6:
             errors.append("local v6 config did not load as protocol 6")
+    for name in (
+        "configs/local_system_v7_causal_wait.json",
+        "configs/local_system_v7_immediate_staggered.json",
+    ):
+        try:
+            local_v7 = load_config(name)
+        except (OSError, ValueError) as error:
+            errors.append("local v7 config is invalid: %s" % error)
+        else:
+            if local_v7.protocol_version != 7:
+                errors.append("local v7 config did not load as protocol 7")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")

@@ -90,3 +90,63 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
         "gpu_runtime_qualified": False,
         "failures": failures,
     }
+
+
+def audit_v7_runtime_sources(repo: Path) -> Dict[str, Any]:
+    manifest = repo / "patches" / "cacheblend" / "manifest.json"
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            manifest, "probekv_v7_single_artifact_runtime"
+        )
+    except (OSError, ValueError) as error:
+        return {"runtime_source_ready": False, "failures": [str(error)]}
+    rounding_patch = paths[-1].read_text(encoding="utf-8")
+    for marker in ("repair_rounding_policy", '== "ceil"', "topk_num += 1"):
+        if marker not in rounding_patch:
+            failures.append("v7 patch lacks %s" % marker)
+    checks = (
+        (
+            repo / "src" / "probekv" / "cacheblend_v6_online_engine.py",
+            (
+                "class CacheBlendV7OnlineEngine",
+                "single_lossless_bf16_artifact",
+                "start_artifact_replica_prefetch",
+                '"repair_rounding_policy"',
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v7_source_pool.py",
+            ("class V7SourcePool", "exactly one full-KV Artifact", "bind_replica"),
+        ),
+        (
+            repo / "src" / "probekv" / "v7_runtime_qualification.py",
+            ("evaluate_v7_runtime_qualification", "validate_v7_h1_gate"),
+        ),
+        (
+            repo / "scripts" / "server" / "run_v7_a800_qualification.py",
+            ("protocol_version=7", "CacheBlendV7OnlineEngine", "sentinel-only"),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing v7 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "schema_version": 2,
+        "protocol_version": 7,
+        "patch_mode": "probekv_v7_single_artifact_runtime",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "single_artifact_policy": True,
+        "multiple_replica_policy": True,
+        "repair_rounding_policy": "ceil",
+        "mistral_adapter": "mistral_cacheblend_llama_v041",
+        "qwen_adapter": "qwen2_5_vllm041",
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }
