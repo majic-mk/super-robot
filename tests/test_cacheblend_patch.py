@@ -82,6 +82,15 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertIn('repair_rounding_policy") == "ceil"', additions)
         self.assertIn("topk_num += 1", additions)
         self.assertEqual(additions.count("topk_num += 1"), 2)
+        prepare = (ROOT / "scripts/server/prepare_cacheblend.sh").read_text(
+            encoding="utf-8"
+        )
+        verify = (ROOT / "scripts/server/verify_cacheblend_patch.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("probekv_v7_single_artifact_runtime)", prepare)
+        self.assertIn('"0006-probekv-v7-conservative-repair-rounding.patch"', prepare)
+        self.assertIn('"probekv_v7_single_artifact_runtime"', verify)
 
     def test_runtime_patch_freezes_segment_only_denominator(self):
         patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(
