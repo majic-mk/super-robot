@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv|probekv_closed_loop|probekv_v6_multiregion|probekv_v6_staggered_runtime]" >&2
+  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv|probekv_closed_loop|probekv_v6_multiregion|probekv_v6_staggered_runtime|probekv_v6_prefix_hardened_runtime]" >&2
   exit 2
 fi
 
@@ -43,6 +43,15 @@ case "$mode" in
       "0002-probekv-segment-repair-mask.patch"
       "0003-probekv-multiregion-union-mask.patch"
       "0004-probekv-staggered-resumable-dual-model.patch"
+    )
+    ;;
+  probekv_v6_prefix_hardened_runtime)
+    patches=(
+      "0001-cb0-fix-suffix-length.patch"
+      "0002-probekv-segment-repair-mask.patch"
+      "0003-probekv-multiregion-union-mask.patch"
+      "0004-probekv-staggered-resumable-dual-model.patch"
+      "0005-probekv-native-prefix-shadow.patch"
     )
     ;;
   *)

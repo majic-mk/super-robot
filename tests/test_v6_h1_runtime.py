@@ -94,6 +94,14 @@ class V6H1ServerContractTests(unittest.TestCase):
         self.assertIn('parser.add_argument("--handoff", required=True)', text)
         self.assertIn('handoff.get("code_commit") != code_commit', text)
         self.assertIn('handoff.get("patch_audit_sha256")', text)
+        self.assertIn(
+            'parser.add_argument("--qualification-gate", required=True)', text
+        )
+        self.assertIn("validate_h1_qualification_gate", text)
+        self.assertLess(
+            text.index("validate_h1_qualification_gate("),
+            text.index("RealCacheBlendA800Executor("),
+        )
 
     def test_model_data_handoff_retokenizes_and_blocks_locked_test(self):
         root = Path(__file__).resolve().parents[1]

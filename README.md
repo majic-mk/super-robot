@@ -26,10 +26,15 @@ The legacy complete-generate H1 case runner is retained only for CB1-CB3 and
 old-protocol reproduction; it cannot produce protocol-v6 H1 labels. The v6 H1
 worker uses the same layer-resumable executor as the capability-gated online
 adapter and hard-stops when any Source has `r=1 != dense`. Patch mode
-`probekv_v6_staggered_runtime` now
-adds concrete layer-resumable hooks for the Mistral `llama.py` path and the
+`probekv_v6_staggered_runtime` remains the frozen legacy v6 runtime. The
+explicit `probekv_v6_prefix_hardened_runtime` mode appends native Prefix Cache
+shadow support without changing that legacy protocol, and adds concrete
+layer-resumable hooks for the Mistral `llama.py` path and the
 Qwen2 `qwen2.py` path. Both adapters passed their frozen 140-job A800 matrices
-at commit `6618068`; any later code commit must be requalified before H1.
+at commit `6618068`; any later code commit and the new prefix-hardened patch
+must be requalified before H1. H1 now requires a schema-v2 qualification gate
+bound to the exact code, model, patch/tree, 140-job audit, GPU UUID and native
+Prefix Cache block-metadata sentinel.
 
 Mistral-7B-Instruct-v0.3 is the CacheBlend qualification and secondary model;
 Qwen2.5-7B-Instruct is the formal primary model. Llama 3.1 is deferred until
@@ -115,6 +120,8 @@ git status --short
 For protocol v6, passing the generic environment check is not sufficient.
 `scripts/server/verify_v6_runtime_qualification.py` must also report both
 `gpu_runtime_qualified: true` and `h1_h2_execution_allowed: true`. The concrete
+schema-v2 gate additionally requires `native_prefix_cache_qualified: true` and
+hashes of the job manifest, runtime audit and Prefix Cache audit. The concrete
 dual-model source hooks are implemented and statically audited. Model-specific
 H1 manifests must be rebuilt with `prepare_v6_h1_model_data.py`; Mistral token
 IDs and content hashes must never be reused by Qwen.

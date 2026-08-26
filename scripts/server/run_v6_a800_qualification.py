@@ -10,6 +10,7 @@ from pathlib import Path
 
 from probekv.io import append_jsonl_fsync, atomic_write_json, sha256_file
 from probekv.model_adapters import MISTRAL_SPEC, QWEN_SPEC
+from probekv.native_prefix_cache import evaluate_native_prefix_cache_audit
 from probekv.v6_a800_executor import RealCacheBlendA800Executor
 from probekv.v6_a800_jobs import V6A800Job
 from probekv.v6_qualification_worker import (
@@ -59,6 +60,7 @@ def main() -> int:
     results_path = output / "results.jsonl"
     runtime_audit_path = output / "runtime_audit.json"
     sentinel_path = output / "sentinel.json"
+    prefix_audit_path = output / "native_prefix_cache_audit.json"
 
     jobs = _jsonl(jobs_path, V6A800Job.from_row)
     manifest = _json(manifest_path)
@@ -90,9 +92,45 @@ def main() -> int:
         model_spec=spec,
         expected_cacheblend_tree=str(patch_audit["cacheblend_tree"]),
     )
+    gpu_uuid = _command(
+        repo, "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"
+    ).splitlines()[0]
+    prefix_error = None
+    try:
+        prefix_observed = executor.run_native_prefix_cache_sentinel()
+    except Exception as error:
+        prefix_error = "%s: %s" % (type(error).__name__, error)
+        prefix_observed = {
+            "paper_evidence": False,
+            "locked_test_accessed": False,
+            "model_num_layers": spec.num_layers,
+            "runner_error": prefix_error,
+        }
+    prefix_observed.update({
+        "code_commit": code_commit,
+        "model_id": spec.model_id,
+        "model_revision": spec.revision,
+        "adapter_name": spec.adapter_name,
+        "cacheblend_patch_sha256": patch_audit["cacheblend_patch_sha256"],
+        "cacheblend_tree": patch_audit["cacheblend_tree"],
+        "gpu_uuid": gpu_uuid,
+    })
+    prefix_audit = evaluate_native_prefix_cache_audit(
+        prefix_observed, expected_layers=spec.num_layers
+    )
+    if prefix_error:
+        prefix_audit["passed"] = False
+        prefix_audit["failures"].append(prefix_error)
+    atomic_write_json(prefix_audit_path, prefix_audit)
     atomic_write_json(sentinel_path, executor.sentinel)
+    if not prefix_audit["passed"]:
+        print(json.dumps(prefix_audit, ensure_ascii=False, indent=2))
+        return 1
     if args.sentinel_only:
-        print(json.dumps(executor.sentinel, ensure_ascii=False, indent=2))
+        print(json.dumps({
+            "native_prefix_cache": prefix_audit,
+            "r1": executor.sentinel,
+        }, ensure_ascii=False, indent=2))
         return 0
 
     existing = (
@@ -149,6 +187,7 @@ def main() -> int:
         "schema_version": 1,
         "stage": "v6_a800_runtime_qualification",
         "paper_evidence": False,
+        "locked_test_accessed": False,
         "runtime_backend": "cacheblend_multisegment_closed_loop",
         "concrete_engine_hook": True,
         "capabilities": dict(executor.capabilities()),
@@ -160,10 +199,8 @@ def main() -> int:
         "cacheblend_patch_sha256": patch_audit["cacheblend_patch_sha256"],
         "cacheblend_tree": patch_audit["cacheblend_tree"],
         "runtime_provenance": dict(executor.runtime_provenance),
-        "gpu_uuid": _command(
-            repo,
-            "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"
-        ).splitlines()[0],
+        "gpu_uuid": gpu_uuid,
+        "native_prefix_cache_audit_sha256": sha256_file(prefix_audit_path),
         "correctness": executor.sentinel,
         "jobs": {
             "planned": len(jobs),

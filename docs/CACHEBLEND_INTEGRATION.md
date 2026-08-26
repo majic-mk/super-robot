@@ -22,9 +22,10 @@ metric. Its `full_remaining_*` fields are explicitly marked
 `full_prefill_total_proxy`; exact remaining-layer timing is still required
 before H4 admission or any performance claim.
 
-The independent v6 mode is `probekv_v6_staggered_runtime`; the historical
-`probekv_v6_multiregion` chain remains available for reproduction. For native
-Prefix Cache hits, the staggered mode requires a read-only pre-RoPE prefix
+The historical independent v6 mode is `probekv_v6_staggered_runtime`; the
+historical `probekv_v6_multiregion` chain also remains available for
+reproduction. Native Prefix Cache qualification uses the separate
+`probekv_v6_prefix_hardened_runtime` mode and requires a read-only pre-RoPE prefix
 shadow for every Transformer layer. This bridges the native paged prefix into
 CacheBlend's contiguous old-KV view without admitting prefix tokens into the
 repair mask. Missing shadows and KV geometry, dtype or device mismatches are
@@ -172,3 +173,13 @@ checkpoints `{1,2,4,5,7}`, 28 query heads, 4 KV heads, QKV bias,
 `rope_theta=1000000`, no sliding window and no YaRN. Model signatures include
 the tokenizer hash and runtime patch digest, preventing cross-model Source
 reuse. Static readiness authorizes only an A800 qualification rental, not H1/H2.
+
+`probekv_v6_prefix_hardened_runtime` appends
+`0005-probekv-native-prefix-shadow.patch`. When cached prefix rows are omitted
+from active queries, every early suffix query still attends to the exact
+per-layer prefix shadow through an absolute causal mask. The prefix rows are
+copied into request-local working old-KV tensors, never ranked or repaired,
+and their shadow digest must remain unchanged. This mode is not considered
+qualified until the A800 runner observes non-empty
+`SequenceGroupMetadata.computed_block_nums`; TTFT is never accepted as hit
+evidence.

@@ -146,7 +146,7 @@ class CacheBlendV6OnlineEngine:
     per-layer readiness observations. It never chooses a default Source.
     """
 
-    patch_mode = "probekv_v6_staggered_runtime"
+    patch_mode = "probekv_v6_prefix_hardened_runtime"
     implementation_status = (
         "concrete_engine_hook_complete_requires_a800_qualification"
     )
@@ -182,6 +182,7 @@ class CacheBlendV6OnlineEngine:
             "immediate_staggered_closed_loop_execution": True,
             "policy_conditioned_probe_state": True,
             "cuda_event_timing": True,
+            "native_prefix_cache_block_metadata": True,
         }
 
     def begin_prefill(
@@ -206,6 +207,33 @@ class CacheBlendV6OnlineEngine:
         elif prefix_layers:
             raise ValueError("exact-prefix shadows require an exact Prefix Cache hit")
         self._exact_prefix_layers = prefix_layers
+        if prefix_layers:
+            request_span = session.absolute_positions[-1] + 1
+            prefix = session.exact_prefix_tokens
+            for key, value in prefix_layers:
+                composite_key = self.source_loader.torch.zeros(
+                    (request_span,) + tuple(key.shape[1:]),
+                    dtype=key.dtype,
+                    device=key.device,
+                )
+                composite_value = self.source_loader.torch.zeros(
+                    (request_span,) + tuple(value.shape[1:]),
+                    dtype=value.dtype,
+                    device=value.device,
+                )
+                composite_key[:prefix] = key
+                composite_value[:prefix] = value
+                self._composite_old_kvs.append(
+                    [composite_key, composite_value]
+                )
+            self.adapter.inner_model.old_kvs = self._composite_old_kvs
+            self.adapter.inner_model.cache_fuse_metadata[
+                "exact_prefix_tokens"
+            ] = prefix
+        else:
+            self.adapter.inner_model.cache_fuse_metadata[
+                "exact_prefix_tokens"
+            ] = 0
         session.begin_prefill()
         self.session = session
         return session

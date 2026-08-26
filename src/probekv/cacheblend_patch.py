@@ -73,12 +73,14 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_closed_loop",
         "probekv_v6_multiregion",
         "probekv_v6_staggered_runtime",
+        "probekv_v6_prefix_hardened_runtime",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
             "patch manifest must define cb0, probekv, "
             "probekv_closed_loop, probekv_v6_multiregion and "
-            "probekv_v6_staggered_runtime modes"
+            "probekv_v6_staggered_runtime and "
+            "probekv_v6_prefix_hardened_runtime modes"
         )
     runtime_modes = manifest.get("runtime_modes")
     if (
@@ -134,6 +136,18 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "concrete_engine_hook_complete_requires_a800_qualification"
     ):
         raise ValueError("staggered runtime source status is not qualification-ready")
+    hardened = runtime_modes.get("prefix_hardened_runtime_v6")
+    if not isinstance(hardened, dict):
+        raise ValueError("patch manifest must define prefix_hardened_runtime_v6")
+    if hardened.get("patch_mode") != "probekv_v6_prefix_hardened_runtime":
+        raise ValueError("prefix hardening must use its explicit patch mode")
+    for key in (
+        "native_prefix_cache",
+        "exact_prefix_pre_rope_shadow",
+        "prefix_rows_excluded_from_active_queries",
+    ):
+        if hardened.get(key) is not True:
+            raise ValueError("prefix hardening must require %s" % key)
     return manifest
 
 

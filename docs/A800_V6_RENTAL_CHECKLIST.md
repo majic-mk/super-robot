@@ -7,8 +7,9 @@ Four states must remain separate:
 3. Renting an A800 for runtime qualification is allowed.
 4. H1/H2 is allowed only after real CUDA qualification.
 
-The repository now implements the concrete source hooks under patch mode
-`probekv_v6_staggered_runtime`. This is not a claim that they already work on
+The repository preserves the earlier source hooks under patch mode
+`probekv_v6_staggered_runtime` and uses the explicit hardened mode
+`probekv_v6_prefix_hardened_runtime` for this qualification. This is not a claim that they already work on
 an A800. Before GPU execution, the final gate must report:
 
 ```text
@@ -129,7 +130,10 @@ First rent: Mistral only, at most four hours. Run hardware/stack gate, then A
 and C `1 Segment, K=1, r=1` sentinels, then all 140 Mistral jobs. Stop on any
 token, first-32-logit, RoPE, mask, Source digest or CUDA-event failure.
 
-The frozen real runner is resumable and refuses a dirty checkout, a different
+The frozen real runner first writes `native_prefix_cache_audit.json`, then the
+ordinary `sentinel.json`, and refuses to start the 140 jobs unless both pass.
+It reads vLLM scheduler `computed_block_nums`; a TTFT-only hit is rejected.
+The runner is resumable and refuses a dirty checkout, a different
 ProbeKV SHA, a different model revision, a different patch digest, a modified
 job JSONL, fake timing or fewer/more than 140 planned jobs:
 
@@ -138,7 +142,7 @@ python scripts/server/run_v6_a800_qualification.py \
   --jobs /absolute/artifacts/v6_no_gpu_preflight/jobs_mistral/jobs_mistral.jsonl \
   --job-manifest /absolute/artifacts/v6_no_gpu_preflight/jobs_mistral/manifest_mistral.json \
   --model-audit /absolute/artifacts/model_audits/model_audit_mistral.json \
-  --patch-audit /absolute/artifacts/cacheblend_v6_staggered/runtime_extension_audit.json \
+  --patch-audit /absolute/artifacts/cacheblend_v6_prefix_hardened/runtime_extension_audit.json \
   --model-key mistral \
   --output /absolute/artifacts/v6_a800_qualification/mistral \
   --sentinel-only
@@ -150,10 +154,10 @@ immutable successful result prefix. A failed job is durably recorded and must
 be diagnosed in a new output directory rather than overwritten.
 
 Second rent: Qwen only after the Mistral runtime passed and the Qwen handoff is
-complete. Run dense smoke, A/C r=1 sentinels and all 140 Qwen jobs. Also run a
-non-zero native Prefix Cache sentinel and verify that every layer's pre-RoPE
-prefix shadow is present, read-only and absolute-position aligned. Only a full
-pass may unlock Qwen H1/H2.
+complete. Run dense smoke, native Prefix Cache plus A/C r=1 sentinels and all
+140 Qwen jobs. Mistral and Qwen both require the same non-zero block-metadata
+sentinel; every layer's pre-RoPE prefix shadow must be present, read-only and
+absolute-position aligned. Only a full pass may unlock that model's H1 sentinel.
 
 The runtime audit must prove:
 
@@ -164,7 +168,21 @@ canonical Source digests unchanged
 all 140 jobs completed, failed = 0
 ```
 
-Validate the audit with `scripts/server/verify_v6_runtime_qualification.py`.
+Validate the audit with:
+
+```bash
+python scripts/server/verify_v6_runtime_qualification.py \
+  --server-lock configs/a800_server_lock.json \
+  --job-manifest /absolute/manifest_MODEL.json \
+  --runtime-audit /absolute/runtime_audit.json \
+  --prefix-audit /absolute/native_prefix_cache_audit.json \
+  --output /absolute/qualification_gate.json
+```
+
+The H1 sentinel additionally requires `--qualification-gate` and validates it
+before importing vLLM or constructing the model. Run only `--case-limit 1
+--pass primary --max-hours 1`; success is exactly one case, four Source groups
+and 36 rows. Full 150-case H1 is a separate later decision.
 Fake timing, a different SHA, partial jobs, a different model/adapter or a
 different CacheBlend tree is rejected. Qualification remains
 `paper_evidence:false`; formal matched-stack measurements start only afterward.

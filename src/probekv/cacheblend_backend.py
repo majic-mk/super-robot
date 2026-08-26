@@ -531,6 +531,7 @@ class MultiSegmentCacheBlendBackend:
         if record["patch_mode"] not in {
             "probekv_v6_multiregion",
             "probekv_v6_staggered_runtime",
+            "probekv_v6_prefix_hardened_runtime",
         }:
             raise ValueError("v6 requires an explicit multi-region patch mode")
         return record

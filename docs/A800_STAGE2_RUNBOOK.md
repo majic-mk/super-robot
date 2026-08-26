@@ -213,6 +213,7 @@ python scripts/server/run_v6_h1_pilot.py \
   --model-audit "$STAGE1/artifacts/model_audits/model_audit_qwen.json" \
   --patch-audit "$STAGE1/artifacts/v6_setup/cacheblend_patch.json" \
   --environment "$STAGE1/artifacts/v6_setup/environment.json" \
+  --qualification-gate "$STAGE1/artifacts/v6_a800_qualification/qwen/qualification_gate.json" \
   --output "$STAGE1/artifacts/v6_h1_runtime/qwen-sentinel" \
   --model-key qwen --pass primary --case-limit 1 --max-hours 1
 ```

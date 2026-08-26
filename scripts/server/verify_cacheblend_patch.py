@@ -46,6 +46,7 @@ def main() -> int:
             "probekv_closed_loop",
             "probekv_v6_multiregion",
             "probekv_v6_staggered_runtime",
+            "probekv_v6_prefix_hardened_runtime",
         ),
     )
     parser.add_argument("--manifest")

@@ -10,10 +10,13 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
     manifest = repo / "patches" / "cacheblend" / "manifest.json"
     failures = []
     try:
-        paths = patch_files_for_mode(manifest, "probekv_v6_staggered_runtime")
+        paths = patch_files_for_mode(
+            manifest, "probekv_v6_prefix_hardened_runtime"
+        )
     except (OSError, ValueError) as error:
         return {"runtime_source_ready": False, "failures": [str(error)]}
-    patch = paths[-1].read_text(encoding="utf-8")
+    patch = paths[-2].read_text(encoding="utf-8")
+    prefix_patch = paths[-1].read_text(encoding="utf-8")
     required_patch_markers = (
         "class Qwen2Model",
         "probekv_begin_prefill",
@@ -28,6 +31,9 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
     for marker in required_patch_markers:
         if marker not in patch:
             failures.append("runtime patch lacks %s" % marker)
+    for marker in ("exact_prefix_tokens", "_make_partial_bias_gqa"):
+        if marker not in prefix_patch:
+            failures.append("prefix runtime patch lacks %s" % marker)
     engine_path = repo / "src" / "probekv" / "cacheblend_v6_online_engine.py"
     session_path = repo / "src" / "probekv" / "resumable_prefill.py"
     worker_path = repo / "src" / "probekv" / "v6_qualification_worker.py"
@@ -57,6 +63,8 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
             "aggregate_relative_l2",
             "expected_cacheblend_tree",
             "runtime_provenance",
+            "run_native_prefix_cache_sentinel",
+            "vllm_scheduler_computed_block_nums",
         )),
         (runner_path, (
             "requires the frozen 140-job matrix",
@@ -74,7 +82,7 @@ def audit_runtime_sources(repo: Path) -> Dict[str, Any]:
                 failures.append("%s lacks %s" % (path.name, marker))
     return {
         "schema_version": 1,
-        "patch_mode": "probekv_v6_staggered_runtime",
+        "patch_mode": "probekv_v6_prefix_hardened_runtime",
         "patch_files": [path.name for path in paths],
         "runtime_source_ready": not failures,
         "mistral_adapter": "mistral_cacheblend_llama_v041",

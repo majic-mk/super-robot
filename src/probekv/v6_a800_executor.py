@@ -29,6 +29,8 @@ class RuntimeFixture:
     ]
     # segment -> Transformer layer -> current request (pre-RoPE K, V)
     current_layers: Tuple[Tuple[Tuple[Any, Any], ...], ...]
+    exact_prefix_tokens: int = 0
+    exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,10 @@ class GenerationTrace:
     host_ms: float
     source_digests_unchanged: bool = True
     absolute_union_mask_verified: bool = True
+    prefix_shadow_digest_before: str = ""
+    prefix_shadow_digest_after: str = ""
+    prefix_rows_excluded_from_repair: int = 0
+    prefix_active_positions_valid: bool = True
 
 
 def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> float:
@@ -96,6 +102,7 @@ class RealCacheBlendA800Executor:
             max_model_len=max_model_len,
             gpu_memory_utilization=gpu_memory_utilization,
             enforce_eager=True,
+            enable_prefix_caching=True,
             trust_remote_code=False,
         )
         self.tokenizer = self.llm.get_tokenizer()
@@ -116,7 +123,7 @@ class RealCacheBlendA800Executor:
         if len(self.kv_caches) != model_spec.num_layers:
             raise RuntimeError("vLLM KV cache layer count differs from adapter")
         self.source_loader = TorchLayerwiseSourceLoader(torch)
-        self.fixtures: Dict[Tuple[int, int], RuntimeFixture] = {}
+        self.fixtures: Dict[Tuple[int, int, int], RuntimeFixture] = {}
         self.sentinel = self._run_sentinel(int(sentinel_tokens))
 
     def _runtime_provenance(self) -> Dict[str, Any]:
@@ -157,10 +164,33 @@ class RealCacheBlendA800Executor:
     def capabilities() -> Mapping[str, bool]:
         return CacheBlendV6OnlineEngine.capabilities()
 
+    def _exact_prefix_ids(self, token_count: int) -> List[int]:
+        if token_count <= 0:
+            return []
+        seed = list(self.tokenizer.encode(
+            "ProbeKV exact native prefix qualification context. ",
+            add_special_tokens=True,
+        ))
+        continuation = list(self.tokenizer.encode(
+            "Stable block-aligned prefix evidence. ",
+            add_special_tokens=False,
+        ))
+        if not seed or not continuation:
+            raise RuntimeError("tokenizer could not build a Prefix Cache fixture")
+        result = list(seed)
+        while len(result) < token_count:
+            result.extend(continuation)
+        return result[:token_count]
+
     def _fixture(
-        self, segment_count: int, stored_variants: int = 1
+        self,
+        segment_count: int,
+        stored_variants: int = 1,
+        exact_prefix_tokens: int = 0,
     ) -> RuntimeFixture:
-        cache_key = (int(segment_count), int(stored_variants))
+        cache_key = (
+            int(segment_count), int(stored_variants), int(exact_prefix_tokens)
+        )
         cached = self.fixtures.get(cache_key)
         if cached is not None:
             return cached
@@ -169,10 +199,18 @@ class RealCacheBlendA800Executor:
         if not 1 <= stored_variants <= 16:
             raise ValueError("qualification fixtures support 1-16 variants")
         encode = self.tokenizer.encode
-        current = list(encode(
-            "Current request context for ProbeKV qualification.",
-            add_special_tokens=True,
-        ))
+        prefix_ids = self._exact_prefix_ids(int(exact_prefix_tokens))
+        if prefix_ids:
+            current = list(prefix_ids)
+            current.extend(encode(
+                " Dense region after the exact cached prefix.",
+                add_special_tokens=False,
+            ))
+        else:
+            current = list(encode(
+                "Current request context for ProbeKV qualification.",
+                add_special_tokens=True,
+            ))
         current_positions: List[Tuple[int, ...]] = []
         segments: List[List[int]] = []
         bridges: List[List[int]] = []
@@ -211,6 +249,7 @@ class RealCacheBlendA800Executor:
         current_layers: List[List[Tuple[Any, Any]]] = [
             [] for _ in range(segment_count)
         ]
+        exact_prefix_layers: List[Tuple[Any, Any]] = []
         try:
             for variant in range(stored_variants):
                 historical = list(encode(
@@ -253,6 +292,11 @@ class RealCacheBlendA800Executor:
             )
             for layer in self.inner_model.layers:
                 key, value = layer.self_attn.hack_kv
+                if prefix_ids:
+                    exact_prefix_layers.append((
+                        key[:len(prefix_ids)].detach().clone(),
+                        value[:len(prefix_ids)].detach().clone(),
+                    ))
                 for index, positions in enumerate(current_positions):
                     start, end = positions[0], positions[-1] + 1
                     current_layers[index].append((
@@ -266,6 +310,8 @@ class RealCacheBlendA800Executor:
             segment_positions=tuple(current_positions),
             canonical_variants=tuple(tuple(rows) for rows in per_segment),
             current_layers=tuple(tuple(rows) for rows in current_layers),
+            exact_prefix_tokens=len(prefix_ids),
+            exact_prefix_layers=tuple(exact_prefix_layers),
         )
         self.fixtures[cache_key] = fixture
         return fixture
@@ -429,7 +475,21 @@ class RealCacheBlendA800Executor:
         repair_positions_by_segment: Mapping[int, Sequence[int]] | None = None,
         model_signature: str = "a800-qualification",
         stop_token_ids: Sequence[int] = (),
+        exact_prefix_tokens: int = 0,
+        exact_prefix_layers: Sequence[Tuple[Any, Any]] = (),
     ) -> GenerationTrace:
+        prefix_tokens = int(exact_prefix_tokens)
+        if prefix_tokens < 0 or prefix_tokens > len(fixture.prompt_ids):
+            raise ValueError("invalid exact Prefix Cache token count")
+        prefix_layers = tuple(exact_prefix_layers)
+        if prefix_tokens and len(prefix_layers) != self.model_spec.num_layers:
+            raise ValueError("exact Prefix Cache shadow is incomplete")
+        if not prefix_tokens and prefix_layers:
+            raise ValueError("prefix shadow requires a native Prefix Cache hit")
+        prefix_digest_before = (
+            TorchLayerwiseSourceLoader._digest(self.torch, prefix_layers)
+            if prefix_layers else ""
+        )
         tensors = self._prepare(
             fixture, (), is_prompt=True, reuse=True, request_id="reuse-prefill"
         )
@@ -447,9 +507,12 @@ class RealCacheBlendA800Executor:
         with self.torch.inference_mode():
             engine.begin_prefill(
                 model_signature=model_signature,
-                token_ids=fixture.prompt_ids,
-                absolute_positions=tuple(range(len(fixture.prompt_ids))),
-                exact_prefix_tokens=0,
+                token_ids=fixture.prompt_ids[prefix_tokens:],
+                absolute_positions=tuple(
+                    range(prefix_tokens, len(fixture.prompt_ids))
+                ),
+                exact_prefix_tokens=prefix_tokens,
+                exact_prefix_layers=prefix_layers,
                 attention_metadata=attention,
                 working_kv=self.kv_caches,
             )
@@ -522,6 +585,24 @@ class RealCacheBlendA800Executor:
         verified_masks = sum(
             bool(row["union_mask_digest"]) for row in engine.session.layer_audit
         )
+        prefix_digest_after = (
+            TorchLayerwiseSourceLoader._digest(self.torch, prefix_layers)
+            if prefix_layers else ""
+        )
+        repair_rows = {
+            position
+            for commit in engine.session.commits.values()
+            for position in commit.repair_positions
+        }
+        prefix_rows_excluded = sum(
+            position not in repair_rows for position in range(prefix_tokens)
+        )
+        prefix_active_positions_valid = all(
+            position >= prefix_tokens
+            for row in engine.session.layer_audit
+            for key in ("active_before", "active_after")
+            for position in row[key]
+        )
         return GenerationTrace(
             token_ids,
             logits,
@@ -532,6 +613,10 @@ class RealCacheBlendA800Executor:
                 for ticket in tickets
             ),
             absolute_union_mask_verified=(verified_masks == expected_masks),
+            prefix_shadow_digest_before=prefix_digest_before,
+            prefix_shadow_digest_after=prefix_digest_after,
+            prefix_rows_excluded_from_repair=prefix_rows_excluded,
+            prefix_active_positions_valid=prefix_active_positions_valid,
         )
 
     def _run_sentinel(self, token_count: int) -> Dict[str, Any]:
@@ -548,6 +633,8 @@ class RealCacheBlendA800Executor:
         )
         relative = aggregate_relative_l2(reuse.logits, dense.logits)
         result = {
+            "paper_evidence": False,
+            "locked_test_accessed": False,
             "r1_dense_token_ids_equal": reuse.token_ids == dense.token_ids,
             "max_teacher_forced_logit_relative_l2": relative,
             "canonical_source_digests_unchanged": reuse.source_digests_unchanged,
@@ -562,6 +649,140 @@ class RealCacheBlendA800Executor:
         if not reuse.source_digests_unchanged or not reuse.absolute_union_mask_verified:
             raise RuntimeError("r=1 A800 sentinel failed Source/mask integrity")
         return result
+
+    def run_native_prefix_cache_sentinel(
+        self,
+        *,
+        prefix_tokens: int = 192,
+        token_count: int = 32,
+    ) -> Dict[str, Any]:
+        """Exercise vLLM block reuse and the prefix-aware r=1 data plane."""
+
+        if token_count != 32:
+            raise ValueError("native prefix sentinel is frozen at 32 tokens")
+        block_manager = self.llm.llm_engine.scheduler.block_manager
+        block_size = int(block_manager.block_size)
+        if not bool(getattr(block_manager, "enable_caching", False)):
+            raise RuntimeError("vLLM native Prefix Cache is not enabled")
+        if prefix_tokens < 192 or prefix_tokens % block_size:
+            raise ValueError("native prefix must be >=192 and block aligned")
+
+        # Building this fixture performs the first full request and leaves its
+        # complete prefix blocks in vLLM's cached block allocator.
+        fixture = self._fixture(1, 1, exact_prefix_tokens=prefix_tokens)
+        prefix = list(fixture.prompt_ids[:prefix_tokens])
+        different_tail = list(self.tokenizer.encode(
+            " A deliberately different continuation validates native block "
+            "reuse without relying on TTFT.",
+            add_special_tokens=False,
+        ))
+        if not different_tail:
+            raise RuntimeError("tokenizer produced an empty second continuation")
+
+        captured_block_ids: List[int] = []
+        scheduler = self.llm.llm_engine.scheduler
+        original_schedule = scheduler.schedule
+
+        def schedule_with_evidence():
+            metadata, outputs = original_schedule()
+            for row in metadata:
+                if row.is_prompt:
+                    captured_block_ids.extend(
+                        int(value) for value in row.computed_block_nums
+                    )
+            return metadata, outputs
+
+        scheduler.schedule = schedule_with_evidence
+        try:
+            self.llm.generate(
+                prompt_token_ids=[prefix + different_tail],
+                sampling_params=self.SamplingParams(temperature=0, max_tokens=1),
+                use_tqdm=False,
+            )
+        finally:
+            scheduler.schedule = original_schedule
+        cached_blocks = len(tuple(dict.fromkeys(captured_block_ids)))
+        cached_tokens = cached_blocks * block_size
+        if cached_tokens > prefix_tokens:
+            raise RuntimeError("vLLM reused blocks beyond the exact prefix")
+
+        shadows = fixture.exact_prefix_layers
+        expected_row_values = int(self.kv_caches[0].shape[-1]) // block_size
+        geometry = bool(shadows) and all(
+            key.shape[0] == cached_tokens
+            and value.shape[0] == cached_tokens
+            and tuple(key.shape[1:]) == tuple(shadows[0][0].shape[1:])
+            and tuple(value.shape[1:]) == tuple(shadows[0][1].shape[1:])
+            and key.dtype == shadows[0][0].dtype
+            and value.dtype == shadows[0][1].dtype
+            and key.device == shadows[0][0].device
+            and value.device == shadows[0][1].device
+            and key[0].numel() == expected_row_values
+            and value[0].numel() == expected_row_values
+            for key, value in shadows
+        )
+        dense = self._dense_generate(fixture, token_count)
+        reuse = self._reuse_generate(
+            fixture,
+            ratio=1.0,
+            token_count=token_count,
+            probe_layer=1,
+            teacher_tokens=dense.token_ids,
+            exact_prefix_tokens=cached_tokens,
+            exact_prefix_layers=tuple(
+                (key[:cached_tokens], value[:cached_tokens])
+                for key, value in shadows
+            ),
+        )
+        relative_l2 = aggregate_relative_l2(reuse.logits, dense.logits)
+        return {
+            "paper_evidence": False,
+            "locked_test_accessed": False,
+            "hit_evidence_source": "vllm_scheduler_computed_block_nums",
+            "timing_inference_used": False,
+            "requested_prefix_tokens": prefix_tokens,
+            "native_prefix_cache_hit": cached_blocks >= 1,
+            "cached_prefix_blocks": cached_blocks,
+            "cached_prefix_tokens": cached_tokens,
+            "cached_prefix_block_ids": captured_block_ids,
+            "block_size": block_size,
+            "model_num_layers": self.model_spec.num_layers,
+            "prefix_shadow_layers": len(shadows),
+            "prefix_shadow_rows": cached_tokens,
+            "prefix_shadow_dtype": (
+                str(shadows[0][0].dtype) if shadows else ""
+            ),
+            "prefix_shadow_device": (
+                shadows[0][0].device.type if shadows else ""
+            ),
+            "prefix_shadow_geometry_valid": geometry,
+            "prefix_shadow_digest_before": reuse.prefix_shadow_digest_before,
+            "prefix_shadow_digest_after": reuse.prefix_shadow_digest_after,
+            "active_positions_start_after_prefix": (
+                reuse.prefix_active_positions_valid
+            ),
+            "prefix_rows_excluded_from_repair": (
+                reuse.prefix_rows_excluded_from_repair
+            ),
+            "prefix_rows_in_repair_mask": sum(
+                position < cached_tokens
+                for positions in fixture.segment_positions
+                for position in positions
+            ),
+            "prefix_rows_in_source_comparison": sum(
+                position < cached_tokens
+                for positions in fixture.segment_positions
+                for position in positions
+            ),
+            "combined_prefix_r1_reuse_exercised": True,
+            "dense_token_ids_equal": reuse.token_ids == dense.token_ids,
+            "logit_relative_l2": relative_l2,
+            "dense_token_ids": list(dense.token_ids),
+            "reuse_token_ids": list(reuse.token_ids),
+            "dense_gpu_ms": dense.gpu_ms,
+            "reuse_gpu_ms": reuse.gpu_ms,
+            "cuda_event_timing": dense.gpu_ms > 0 and reuse.gpu_ms > 0,
+        }
 
     def _summary_tensors(
         self,

@@ -28,6 +28,9 @@ class CacheBlendPatchTests(unittest.TestCase):
         staggered = patch_files_for_mode(
             MANIFEST, "probekv_v6_staggered_runtime"
         )
+        prefix_hardened = patch_files_for_mode(
+            MANIFEST, "probekv_v6_prefix_hardened_runtime"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
         self.assertEqual(closed_loop, probekv)
@@ -35,6 +38,8 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertEqual(multiregion[:2], probekv)
         self.assertEqual(len(staggered), 4)
         self.assertEqual(staggered[:3], multiregion)
+        self.assertEqual(len(prefix_hardened), 5)
+        self.assertEqual(prefix_hardened[:4], staggered)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
@@ -75,9 +80,23 @@ class CacheBlendPatchTests(unittest.TestCase):
 
     def test_all_tracked_patches_have_valid_hunk_counts(self):
         for path in patch_files_for_mode(
-            MANIFEST, "probekv_v6_staggered_runtime"
+            MANIFEST, "probekv_v6_prefix_hardened_runtime"
         ):
             validate_unified_diff(path)
+
+    def test_prefix_hardening_is_explicit_and_does_not_change_legacy_mode(self):
+        legacy = patch_files_for_mode(MANIFEST, "probekv_v6_staggered_runtime")
+        hardened = patch_files_for_mode(
+            MANIFEST, "probekv_v6_prefix_hardened_runtime"
+        )
+        additions = "\n".join(
+            line[1:]
+            for line in hardened[-1].read_text(encoding="utf-8").splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertEqual(hardened[:4], legacy)
+        self.assertIn("exact_prefix_tokens", additions)
+        self.assertIn("_make_partial_bias_gqa", additions)
 
     def test_partial_repair_uses_absolute_query_causal_rows(self):
         patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(

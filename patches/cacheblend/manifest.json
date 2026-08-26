@@ -23,6 +23,13 @@
       "0002-probekv-segment-repair-mask.patch",
       "0003-probekv-multiregion-union-mask.patch",
       "0004-probekv-staggered-resumable-dual-model.patch"
+    ],
+    "probekv_v6_prefix_hardened_runtime": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch"
     ]
   },
   "runtime_modes": {
@@ -75,6 +82,16 @@
       "status": "concrete_engine_hook_complete_requires_a800_qualification",
       "paper_evidence": false,
       "purpose": "A/C staggered dual-model runtime qualification"
+    },
+    "prefix_hardened_runtime_v6": {
+      "patch_mode": "probekv_v6_prefix_hardened_runtime",
+      "inherits": "probekv_v6_staggered_runtime",
+      "native_prefix_cache": true,
+      "exact_prefix_pre_rope_shadow": true,
+      "prefix_rows_excluded_from_active_queries": true,
+      "status": "requires_dual_model_a800_qualification",
+      "paper_evidence": false,
+      "purpose": "native Prefix Cache plus ProbeKV r=1 qualification"
     }
   },
   "innovation_claim": false,

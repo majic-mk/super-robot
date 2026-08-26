@@ -183,7 +183,9 @@ The final pre-rental workflow is defined in `A800_V6_RENTAL_CHECKLIST.md`.
 Two 140-job manifests now bind the jobs to the exact ProbeKV commit, experiment
 contract, server lock, Mistral/Qwen revision and tokenizer hash, adapter, and
 ordered CacheBlend patch/tree digest. The concrete layer-resumable source hook
-exists under `probekv_v6_staggered_runtime`; the no-GPU gate may therefore
+exists under legacy `probekv_v6_staggered_runtime`; native Prefix Cache
+qualification appends the explicit `probekv_v6_prefix_hardened_runtime` mode.
+The no-GPU gate may therefore
 authorize an A800 qualification rental. H1/H2 remains hard-blocked until the
 real engine produces a passing A800 audit for the corresponding model.
 

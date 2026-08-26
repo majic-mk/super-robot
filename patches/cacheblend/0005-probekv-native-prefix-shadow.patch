@@ -1,0 +1,105 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+index 3dcbdbd..07f4eb3 100644
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -225,7 +225,10 @@ class XFormersImpl(AttentionImpl):
+             value = value_old
+             cache_fuse_metadata["local_imp_indices"] = local_indices
+             cache_fuse_metadata["imp_indices"] = target_positions
+-            if torch.equal(active_positions, target_positions):
++            if (
++                torch.equal(active_positions, target_positions)
++                and not cache_fuse_metadata.get("exact_prefix_tokens", 0)
++            ):
+                 # r=1 keeps every query row. Use the identical dense causal
+                 # bias object so full repair is numerically dense-equivalent.
+                 cache_fuse_metadata["attn_bias"] = (
+@@ -388,6 +391,18 @@ class XFormersImpl(AttentionImpl):
+         #    cache_fuse_metadata["value_shape"] = value.shape
+         #    cache_fuse_metadata["kv_cache_string_dtype"] = "auto"
+         cache_fuse_metadata["kv_cache_dtype"] = value.dtype
++        if (
++            status == 2
++            and resumable_mode
++            and cache_fuse_metadata.get("attn_bias") is None
++        ):
++            cache_fuse_metadata["attn_bias"] = _make_partial_bias_gqa(
++                cache_fuse_metadata,
++                query.device,
++                self.num_kv_heads,
++                self.num_queries_per_kv,
++            )
++            attn_metadata.prefill_metadata.attn_bias = None
+         
+         # Jiayi: whether partial update or full update at check layer
+         if status in [1] and not resumable_mode:
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+index bb623f3..97eb267 100644
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -355,7 +355,9 @@ class LlamaModel(nn.Module):
+             "model_signature": str(model_signature),
+             "attn_bias": None,
+             "fake_q": None,
+-            "reuse_active": False,
++            "reuse_active": bool(
++                self.cache_fuse_metadata.get("exact_prefix_tokens", 0)
++            ),
+         })
+         return hidden_states, None
+ 
+@@ -378,7 +380,10 @@ class LlamaModel(nn.Module):
+             device=hidden_states.device)
+         shrinking = not torch.equal(active, target)
+         transition = bool(reuse_commit)
+-        status = 1 if transition else (2 if metadata["reuse_active"] else 0)
++        prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
++        status = 1 if transition else (
++            2 if metadata["reuse_active"] or prefix_active else 0
++        )
+         start = torch.cuda.Event(enable_timing=True)
+         end = torch.cuda.Event(enable_timing=True)
+         start.record()
+@@ -408,6 +413,7 @@ class LlamaModel(nn.Module):
+         self.cache_fuse_metadata["probekv_resumable"] = False
+         self.cache_fuse_metadata["check"] = False
+         self.cache_fuse_metadata["reuse_active"] = False
++        self.cache_fuse_metadata["exact_prefix_tokens"] = 0
+         return hidden_states
+ 
+         
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+index 34f2e3b..8b4b875 100644
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -305,7 +305,9 @@ class Qwen2Model(nn.Module):
+             "target_active_positions": absolute,
+             "imp_indices": absolute, "local_imp_indices": None,
+             "model_signature": str(model_signature), "attn_bias": None,
+-            "fake_q": None, "reuse_active": False,
++            "fake_q": None, "reuse_active": bool(
++                self.cache_fuse_metadata.get("exact_prefix_tokens", 0)
++            ),
+         })
+         return hidden_states, None
+ 
+@@ -328,7 +330,10 @@ class Qwen2Model(nn.Module):
+             device=hidden_states.device)
+         shrinking = not torch.equal(active, target)
+         transition = bool(reuse_commit)
+-        status = 1 if transition else (2 if metadata["reuse_active"] else 0)
++        prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
++        status = 1 if transition else (
++            2 if metadata["reuse_active"] or prefix_active else 0
++        )
+         start = torch.cuda.Event(enable_timing=True)
+         end = torch.cuda.Event(enable_timing=True)
+         start.record()
+@@ -356,6 +361,7 @@ class Qwen2Model(nn.Module):
+         self.cache_fuse_metadata["probekv_resumable"] = False
+         self.cache_fuse_metadata["check"] = False
+         self.cache_fuse_metadata["reuse_active"] = False
++        self.cache_fuse_metadata["exact_prefix_tokens"] = 0
+         return hidden_states
+ 
+ 

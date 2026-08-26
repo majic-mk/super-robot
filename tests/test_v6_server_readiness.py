@@ -45,7 +45,11 @@ def lock_record():
             "cacheblend_commit": "cb",
             "cacheblend_patch_mode": "probekv_v6_multiregion",
         },
-        "model": {"model_id": "model", "revision": "revision"},
+        "model": {
+            "model_id": "model",
+            "revision": "revision",
+            "adapter_name": "adapter",
+        },
         "runtime": {
             "backend": "cacheblend_multisegment_closed_loop",
             "implementation_status": "engine_pending",
@@ -74,7 +78,11 @@ def job_manifest():
         "config_sha256": "config",
         "contract_sha256": "contract",
         "server_lock_sha256": "lock",
-        "model": {"model_id": "model", "revision": "revision"},
+        "model": {
+            "model_id": "model",
+            "revision": "revision",
+            "adapter_name": "adapter",
+        },
         "runtime": {"backend": "cacheblend_multisegment_closed_loop"},
         "cacheblend": {"patch_sha256": "patch", "tree": "tree"},
     }
@@ -241,10 +249,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "causal_commit_wait_execution": True,
                 "immediate_staggered_closed_loop_execution": True,
                 "policy_conditioned_probe_state": True,
+                "cuda_event_timing": True,
             },
             "code_commit": "code",
             "job_digest": "job-digest",
+            "model_id": "model",
             "model_revision": "revision",
+            "adapter_name": "adapter",
             "cacheblend_patch_sha256": "patch",
             "runtime_provenance": {
                 "torch": "2.2.1+cu121",
@@ -262,11 +273,52 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "absolute_union_mask_verified": True,
             },
             "jobs": {"planned": 140, "completed": 140, "failed": 0},
+            "gpu_uuid": "GPU-test",
+        }
+
+    def valid_prefix_audit(self):
+        return {
+            "paper_evidence": False,
+            "locked_test_accessed": False,
+            "code_commit": "code",
+            "model_id": "model",
+            "model_revision": "revision",
+            "adapter_name": "adapter",
+            "cacheblend_patch_sha256": "patch",
+            "cacheblend_tree": "tree",
+            "gpu_uuid": "GPU-test",
+            "model_num_layers": 32,
+            "hit_evidence_source": "vllm_scheduler_computed_block_nums",
+            "timing_inference_used": False,
+            "requested_prefix_tokens": 192,
+            "native_prefix_cache_hit": True,
+            "cached_prefix_blocks": 12,
+            "cached_prefix_tokens": 192,
+            "block_size": 16,
+            "prefix_shadow_layers": 32,
+            "prefix_shadow_rows": 192,
+            "prefix_shadow_dtype": "torch.bfloat16",
+            "prefix_shadow_device": "cuda",
+            "prefix_shadow_geometry_valid": True,
+            "prefix_shadow_digest_before": "digest",
+            "prefix_shadow_digest_after": "digest",
+            "active_positions_start_after_prefix": True,
+            "prefix_rows_excluded_from_repair": 192,
+            "prefix_rows_in_repair_mask": 0,
+            "prefix_rows_in_source_comparison": 0,
+            "combined_prefix_r1_reuse_exercised": True,
+            "dense_token_ids_equal": True,
+            "logit_relative_l2": 1e-5,
+            "cuda_event_timing": True,
         }
 
     def test_full_a800_audit_unlocks_h1_h2(self):
         result = evaluate_runtime_qualification(
-            lock_record(), job_manifest(), self.valid_audit()
+            lock_record(), job_manifest(), self.valid_audit(),
+            self.valid_prefix_audit(),
+            job_manifest_sha256="manifest-hash",
+            runtime_audit_sha256="runtime-hash",
+            prefix_audit_sha256="prefix-hash",
         )
         self.assertTrue(result["gpu_runtime_qualified"])
         self.assertTrue(result["h1_h2_execution_allowed"])
@@ -276,7 +328,10 @@ class RuntimeQualificationTests(unittest.TestCase):
         audit["concrete_engine_hook"] = False
         audit["jobs"]["completed"] = 0
         result = evaluate_runtime_qualification(
-            lock_record(), job_manifest(), audit
+            lock_record(), job_manifest(), audit, self.valid_prefix_audit(),
+            job_manifest_sha256="manifest-hash",
+            runtime_audit_sha256="runtime-hash",
+            prefix_audit_sha256="prefix-hash",
         )
         self.assertFalse(result["gpu_runtime_qualified"])
         self.assertTrue(any("concrete" in item for item in result["failures"]))
@@ -356,7 +411,7 @@ class ServerScriptSafetyTests(unittest.TestCase):
         self.assertEqual(lock["stack"]["xformers"], str(primary["xformers"]))
         self.assertEqual(
             lock["stack"]["cacheblend_patch_mode"],
-            "probekv_v6_staggered_runtime",
+            "probekv_v6_prefix_hardened_runtime",
         )
         self.assertEqual(set(lock["models"]), {"mistral", "qwen"})
         self.assertEqual(lock["models"]["qwen"]["role"], "formal_primary")

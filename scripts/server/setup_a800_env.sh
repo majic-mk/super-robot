@@ -89,7 +89,7 @@ python="$env_dir/bin/python"
 
 if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
   --cacheblend "$cacheblend" \
-  --mode probekv_v6_staggered_runtime \
+  --mode probekv_v6_prefix_hardened_runtime \
   --manifest "$repo/patches/cacheblend/manifest.json" \
   --output "$artifacts/cacheblend_patch.json" >/dev/null 2>&1; then
   if [[ -d "$cacheblend/.git" && -n "$(git -C "$cacheblend" status --porcelain)" ]]; then
@@ -97,10 +97,10 @@ if ! "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
     exit 1
   fi
   bash "$repo/scripts/server/prepare_cacheblend.sh" \
-    "$cacheblend" probekv_v6_staggered_runtime
+    "$cacheblend" probekv_v6_prefix_hardened_runtime
   "$python" "$repo/scripts/server/verify_cacheblend_patch.py" \
     --cacheblend "$cacheblend" \
-    --mode probekv_v6_staggered_runtime \
+    --mode probekv_v6_prefix_hardened_runtime \
     --manifest "$repo/patches/cacheblend/manifest.json" \
     --output "$artifacts/cacheblend_patch.json"
 fi

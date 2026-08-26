@@ -54,7 +54,17 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("RealCacheBlendA800Executor", text)
         self.assertIn("len(jobs) != 140", text)
         self.assertIn("git\", \"status\", \"--porcelain", text)
+        self.assertIn("native_prefix_cache_audit.json", text)
+        self.assertIn("run_native_prefix_cache_sentinel", text)
         self.assertNotIn("FakeQualification", text)
+
+    def test_prefix_hit_uses_scheduler_metadata_not_timing(self):
+        text = Path("src/probekv/v6_a800_executor.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("row.computed_block_nums", text)
+        self.assertIn('"timing_inference_used": False', text)
+        self.assertIn("enable_prefix_caching=True", text)
 
     def test_dense_path_restores_one_cacheblend_slot_per_layer(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(

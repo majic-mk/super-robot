@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from probekv.experiment_jobs import E1Job, E1Result, ResultStatus
+from probekv.h1_qualification import validate_h1_qualification_gate
 from probekv.io import append_jsonl_fsync, atomic_write_json, sha256_file
 from probekv.manifest import manifest_case_from_row, validate_manifest
 from probekv.model_adapters import MISTRAL_SPEC, QWEN_SPEC
@@ -79,6 +80,7 @@ def main() -> int:
     parser.add_argument("--model-audit", required=True)
     parser.add_argument("--patch-audit", required=True)
     parser.add_argument("--environment", required=True)
+    parser.add_argument("--qualification-gate", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-key", choices=("mistral", "qwen"), required=True)
     parser.add_argument("--pass", dest="run_pass", choices=("primary", "anchors", "all"), default="primary")
@@ -95,6 +97,8 @@ def main() -> int:
     handoff = json.loads(Path(args.handoff).read_text(encoding="utf-8"))
     model_audit = json.loads(Path(args.model_audit).read_text(encoding="utf-8"))
     patch = json.loads(Path(args.patch_audit).read_text(encoding="utf-8"))
+    qualification_path = Path(args.qualification_gate).resolve()
+    qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
     environment = Path(args.environment).resolve()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -142,6 +146,23 @@ def main() -> int:
         raise ValueError("handoff does not match the selected adapter")
     if any(case.model_signature != "%s@%s" % (spec.model_id, spec.revision) for case in cases):
         raise ValueError("manifest was not tokenized for the selected model")
+
+    # This is deliberately before provenance imports torch/vLLM and before the
+    # executor constructs the model.  An invalid, stale or cross-model gate
+    # must therefore consume no model-loading time or GPU memory.
+    current_gpu_uuid = _command(
+        "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"
+    ).splitlines()[0]
+    validate_h1_qualification_gate(
+        qualification,
+        code_commit=code_commit,
+        model_id=spec.model_id,
+        model_revision=spec.revision,
+        adapter_name=spec.adapter_name,
+        cacheblend_patch_sha256=patch["cacheblend_patch_sha256"],
+        cacheblend_tree=patch["cacheblend_tree"],
+        gpu_uuid=current_gpu_uuid,
+    )
 
     existing = _rows(results_path, E1Result.from_row) if results_path.exists() else []
     completed_ids = {row.job_id for row in existing if row.status is ResultStatus.COMPLETED}
@@ -195,15 +216,22 @@ def main() -> int:
         "schema_version": 1,
         "stage": "v6_h1_server_pilot",
         "paper_evidence": False,
+        "locked_test_accessed": False,
         "code_commit": provenance["code_commit"],
         "model_id": spec.model_id,
         "model_revision": spec.revision,
         "primary_reuse_layer": primary_layer,
         "manifest_sha256": sha256_file(manifest_path),
         "jobs_sha256": sha256_file(jobs_path),
+        "qualification_gate_sha256": sha256_file(qualification_path),
+        "qualification_gate_schema": qualification["schema_version"],
+        "native_prefix_cache_qualified": qualification[
+            "native_prefix_cache_qualified"
+        ],
         "completed_cases_this_run": completed_cases,
         "completed_groups_this_run": completed_groups,
         "appended_rows_this_run": appended,
+        "elapsed_seconds_this_run": time.monotonic() - started,
         "deadline_reached": time.monotonic() >= deadline,
         "r1_dense_equivalence_passed": hard_failure is None,
         "h1_scan_allowed": hard_failure is None,
