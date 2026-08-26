@@ -99,6 +99,8 @@ def main() -> int:
     for name in (
         "configs/local_system_v7_causal_wait.json",
         "configs/local_system_v7_immediate_staggered.json",
+        "configs/a800_h1_pilot_v7_mistral.json",
+        "configs/a800_h1_pilot_v7_qwen.json",
     ):
         try:
             local_v7 = load_config(name)

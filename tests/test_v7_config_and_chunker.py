@@ -23,10 +23,18 @@ class V7ConfigTests(unittest.TestCase):
             str(ROOT / "configs/local_system_v7_immediate_staggered.json")
         )
         legacy = load_config(str(ROOT / "configs/local_system_v6.json"))
+        mistral_h1 = load_config(
+            str(ROOT / "configs/a800_h1_pilot_v7_mistral.json")
+        )
+        qwen_h1 = load_config(str(ROOT / "configs/a800_h1_pilot_v7_qwen.json"))
         self.assertEqual(causal.protocol_version, 7)
         self.assertEqual(immediate.protocol_version, 7)
         self.assertEqual(legacy.protocol_version, 6)
         self.assertEqual(causal.max_artifacts_per_source_variant, 1)
+        self.assertEqual(mistral_h1.total_layers, 32)
+        self.assertEqual(qwen_h1.total_layers, 28)
+        self.assertEqual(mistral_h1.runtime_backend, "cacheblend_v7_closed_loop")
+        self.assertEqual(qwen_h1.runtime_backend, "cacheblend_v7_closed_loop")
 
     def test_v7_rejects_multi_artifact_and_legacy_kmax(self):
         raw = json.loads(

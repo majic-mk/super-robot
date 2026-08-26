@@ -53,6 +53,9 @@ Build each model's v7 data handoff with
 `scripts/server/prepare_v6_h1_model_data.py --protocol-version 7`. Despite the
 legacy filename, this mode emits a schema-v3 v7 handoff and model-specific
 canonical content keys. Mistral token manifests must never be reused by Qwen.
+Use `configs/a800_h1_pilot_v7_mistral.json` and
+`configs/a800_h1_pilot_v7_qwen.json`; v6 H1 configs are intentionally rejected
+as v7 evidence.
 
 Run `verify_v7_dual_model_no_gpu_readiness.py` last. A passing no-GPU gate sets
 rental readiness true while leaving GPU qualification and H1/H2 false.
