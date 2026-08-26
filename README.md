@@ -71,6 +71,10 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `configs/experiment_contract.yaml`: frozen research contract and all gates.
 - `docs/UNIFIED_COST_ACCOUNTING.md`: v5 shared-cost and Source-lock protocol.
 - `docs/V6_MULTI_SEGMENT.md`: v6 global-pool, arbitrary-count multi-segment and A/C staggered contract.
+- `docs/PROBEKV_V7_NEXT_PHASE_PLAN.md`: next-phase v7 canonical-Segment,
+  layered identity, versioned access-plan and request-level joint-planning
+  implementation contract. It is a plan, not a completed or GPU-qualified
+  runtime.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.
