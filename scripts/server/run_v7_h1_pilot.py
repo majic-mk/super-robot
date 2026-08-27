@@ -25,7 +25,11 @@ from probekv.v6_h1_runtime import (
 )
 from probekv.v7_runtime_qualification import validate_v7_h1_gate
 from probekv.v8_runtime_qualification import validate_v8_h1_gate
-from probekv.v8_profile import validate_frozen_selector_profile
+from probekv.v8_profile import (
+    validate_frozen_selector_profile,
+    validate_profile_freeze_contract,
+    validate_runtime_cost_profile,
+)
 
 
 def _rows(path: Path, loader):
@@ -102,6 +106,8 @@ def main(protocol_version: int = 7) -> int:
     parser.add_argument("--environment", required=True)
     parser.add_argument("--qualification-gate", required=True)
     parser.add_argument("--selector-profile", default="")
+    parser.add_argument("--runtime-cost-profile", default="")
+    parser.add_argument("--profile-freeze-contract", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-key", choices=("mistral", "qwen"), required=True)
     parser.add_argument(
@@ -195,9 +201,15 @@ def main(protocol_version: int = 7) -> int:
             cacheblend_tree=patch["cacheblend_tree"],
         )
     else:
-        if not args.selector_profile:
-            raise ValueError("v8 H1 requires the frozen Selector Profile")
+        if not all((args.selector_profile, args.runtime_cost_profile, args.profile_freeze_contract)):
+            raise ValueError("v8 H1 requires Profile, RuntimeCostProfile and freeze contract")
         profile = json.loads(Path(args.selector_profile).resolve().read_text(encoding="utf-8"))
+        runtime_profile = json.loads(
+            Path(args.runtime_cost_profile).resolve().read_text(encoding="utf-8")
+        )
+        profile_contract = json.loads(
+            Path(args.profile_freeze_contract).resolve().read_text(encoding="utf-8")
+        )
         validate_frozen_selector_profile(
             profile,
             model_key=args.model_key,
@@ -206,6 +218,12 @@ def main(protocol_version: int = 7) -> int:
             tokenizer_hash=model_audit["tokenizer_hash"],
             cacheblend_patch_sha256=patch["cacheblend_patch_sha256"],
         )
+        validate_runtime_cost_profile(
+            runtime_profile, model_key=args.model_key,
+            policy=profile["selection_execution_policy"], code_commit=code_commit,
+            cacheblend_patch_sha256=patch["cacheblend_patch_sha256"],
+        )
+        validate_profile_freeze_contract(profile_contract)
         validate_v8_h1_gate(
             qualification,
             code_commit=code_commit,
@@ -215,7 +233,16 @@ def main(protocol_version: int = 7) -> int:
             tokenizer_hash=model_audit["tokenizer_hash"],
             cacheblend_patch_sha256=patch["cacheblend_patch_sha256"],
             cacheblend_tree=patch["cacheblend_tree"],
-            profile_sha256=profile["profile_sha256"],
+            selector_profile_sha256=profile["profile_sha256"],
+            profile_freeze_contract_sha256=profile_contract[
+                "profile_freeze_contract_sha256"
+            ],
+            profile_freeze_runtime_cost_profile_sha256=profile[
+                "profile_freeze_runtime_cost_profile_sha256"
+            ],
+            qualification_runtime_cost_profile_sha256=runtime_profile[
+                "runtime_cost_profile_sha256"
+            ],
             job_digest=qualification["job_digest"],
         )
 
@@ -278,7 +305,7 @@ def main(protocol_version: int = 7) -> int:
         or (completed_cases == 1 and completed_groups == 4 and appended == 36)
     )
     gate = {
-        "schema_version": 3 if protocol_version == 7 else 4,
+        "schema_version": 3 if protocol_version == 7 else 5,
         "protocol_version": protocol_version,
         "stage": "%s_h1_server_pilot" % protocol_label,
         "paper_evidence": False,
@@ -287,6 +314,8 @@ def main(protocol_version: int = 7) -> int:
         "model_id": spec.model_id,
         "model_revision": spec.revision,
         "primary_reuse_layer": primary_layer,
+        "h1_primary_completed_depth": primary_layer - 1,
+        "first_reused_layer_1based": primary_layer,
         "repair_rounding_policy": "ceil",
         "artifact_policy": "single_canonical_lossless",
         "manifest_sha256": sha256_file(manifest_path),

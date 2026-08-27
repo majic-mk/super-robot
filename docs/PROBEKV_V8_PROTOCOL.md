@@ -22,11 +22,14 @@ native exact Prefix Cache
   -> correctness and K-state availability filtering
   -> CFO/metadata ordering
   -> budgeted current-state Residual-K comparison
+  -> SELECTOR_DECISION_READY
+  -> Gate 1 Source-local economic check
   -> Source freeze + LogicalSourceLease
-  -> Predicted Joint Planner + atomic PhysicalReplica leases
+  -> incremental Predicted Joint Planner (Gate 2)
+  -> atomic PhysicalReplica leases
   -> winner-only, layer-wise full-KV preparation
   -> real scheduler feedback
-  -> Refined Joint Planner
+  -> Refined Joint Planner (Gate 3)
   -> fixed 15% CacheBlend repair and reuse, or dense
 ```
 
@@ -101,6 +104,17 @@ J_s\le(1+\tau_{rel})J_{min}+10^{-6},
 then the lowest predicted total upper cost in the band wins. `10^-6` is only
 numeric slack.
 
+The schema-v5 state transition is explicit:
+
+```text
+PROBING -> SELECTOR_DECISION_READY -> Gate 1 -> SOURCE_FROZEN
+```
+
+Before `Lmax`, a Gate-1 rejection returns the Segment to probing. At `Lmax`,
+the selector considers the residual band in increasing predicted-cost order;
+if no member passes Gate 1, the Segment abstains and stays dense. A frozen
+Source can never be replaced by the runner-up.
+
 ## Selection budget and movement
 
 \[
@@ -112,6 +126,13 @@ If non-positive, execution is dense. Otherwise a measured vectorized batch
 curve chooses the largest feasible `compared_k`; CFO only orders entry. CUDA
 Events measure components and request wall time drives admission, with no double
 charging of overlap.
+
+All Segments share one request-level `BudgetLedger`. A comparison batch must
+reserve its predicted upper bound before launch, then settle actual critical
+path time and release unused reservation. Starting an inadmissible batch is an
+`admission_violation` (implementation error). A legally admitted batch that
+runs longer than predicted is a `realized_overrun` (profile error, not a failed
+job); further comparisons stop after the request budget is exhausted.
 
 `SourceSelectionState` is exact BF16 pre-RoPE K at one completed depth. Its
 identity excludes tier and locator. CPU/SSD hold backing data and GPU uses a
@@ -145,9 +166,12 @@ T_{reuse}=T_{probe}+T_{metadata}+T_{selection}+T_{visible-load}
 +T_{repair}+T_{remaining}.
 \]
 
-Predicted planning uses upper estimates and may start winner-only preparation.
-Refined planning consumes real layer-ready, A-resume, blocking, interference,
-transfer and boundary measurements. Reuse requires
+Gate 1 is Source-local. Gate 2 is an incremental request-level predicted plan;
+only a Gate-2 `PROVISIONAL_REUSE` Segment may lease a physical Replica and
+start winner-only preparation. Later frozen Segments are added without
+removing already prepared Segments. Refined Gate 3 consumes real layer-ready,
+A-resume, blocking, interference, transfer and boundary measurements.
+Reuse requires
 
 \[
 T_{reuse,refined}\le0.8T_{dense-reference}.
@@ -161,6 +185,10 @@ UNDECIDED -> PREDICTED_DENSE (terminal for reuse)
 Refinement can downgrade but cannot promote or reselect. Rejected selected
 Sources remain in the audit.
 
+Every request-level Gate-2/Gate-3 evaluation prices unresolved or uncommitted
+Segments as dense fallback; it cannot assume future savings. Once a Segment
+enters `REUSE_COMMIT`, an economic rollback is forbidden.
+
 ## Multi-Segment A/C policies
 
 Policy A (`causal_commit_wait`) waits before an earlier reuse commit would alter
@@ -170,9 +198,32 @@ per-Segment boundary and selects later Segments from the real policy-conditioned
 state. Both use staggered boundaries, absolute-position union repair masks and
 request-level resource planning. They receive separate frozen Profiles.
 
+Policy A may select, lease and prefetch an early winner before downstream
+selection closes; only commit waits. Policy C may commit an early Segment, and
+a later Gate-3 rejection leaves that earlier commit intact while the later
+Segment becomes dense.
+
+## Profile and qualification evidence
+
+Schema-v5 separates `SelectorPolicyProfile` from `RuntimeCostProfile`. The
+pre-result `ProfileFreezeContract` fixes data partitions, metric definitions,
+thresholds and regret normalization. The Selector Profile binds the runtime
+profile used during profile freeze (`R_profile`). Final qualification binds a
+runtime profile measured on the actual qualification GPU (`R_qual`); the two
+may differ, but both hashes remain in the Gate.
+
+Hard profile metrics use fixed denominators: StateAvailability and
+SelectionCoverage divide by requests with at least one correctness-eligible
+Source; EarlyResolutionRate@completed-depth-5 divides by legal locks.
+MultiSourceEarlyExitRate@5 excludes single-candidate requests and is reported,
+not gated. Residual regret reports both absolute regret and stable normalized
+regret with denominator floor `2^-7`; that floor is a frozen numerical scale,
+not the resolution of `J`.
+
 ## Evidence boundary
 
 No-GPU output is non-paper evidence. The A800 order is correctness sentinels,
 microbenchmarks, pooled development Profile freeze, Profile-bound canary,
-140/140 qualification, Gate, one H1 sentinel, then stop. Profile parameters
+four independent Model x A/C 140/140 qualifications, Gate, one H1 sentinel,
+then stop. Profile parameters
 cannot change after qualification or H1 inspection.

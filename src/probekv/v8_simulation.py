@@ -84,15 +84,16 @@ def run_v8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 )
                 for source_index in range(compared)
             )
-            decision = selector.evaluate_checkpoint(
+            decision_trace = selector.evaluate_checkpoint_trace(
                 completed_depth=config.probe_checkpoints[0],
                 counts=counts,
                 candidates=candidates,
                 shared_sunk_ms=shared_sunk_ms,
                 dense_reference_ms=dense_reference_ms,
             )
+            decision = decision_trace[-1]
             if decision.state is ResidualSelectionState.PENDING:
-                decision = selector.evaluate_checkpoint(
+                decision_trace = selector.evaluate_checkpoint_trace(
                     completed_depth=config.max_selection_layer,
                     counts=counts,
                     candidates=candidates,
@@ -100,6 +101,7 @@ def run_v8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     dense_reference_ms=dense_reference_ms,
                     previous_winner_source_id=candidates[0].source_variant_id,
                 )
+                decision = decision_trace[-1]
             compared_total += compared
             if decision.state is not ResidualSelectionState.LOCKED:
                 abstained += 1
@@ -237,4 +239,3 @@ def run_v8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
         ],
         "rows": rows,
     }
-

@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "protocol_version": 8,
   "purpose": "non-paper A800 v8 profile freeze and runtime qualification",
   "paper_evidence": false,
@@ -61,6 +61,10 @@
       "selection_state_separate_backing",
       "selection_state_scratch_bounded",
       "training_free_residual_k_selection",
+      "request_level_selection_budget_ledger",
+      "incremental_predicted_gate",
+      "precommit_timeout_dense_fallback",
+      "irreversible_reuse_commit",
       "winner_only_prefetch",
       "predicted_and_refined_joint_planners",
       "atomic_logical_source_lease",

@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,11 @@ from probekv.native_prefix_cache import evaluate_native_prefix_cache_audit
 from probekv.v6_a800_executor import RealCacheBlendA800Executor
 from probekv.v6_a800_jobs import V6A800Job
 from probekv.v6_qualification_worker import QualificationJobResult, validate_qualification_results
-from probekv.v8_profile import validate_frozen_selector_profile
+from probekv.v8_profile import (
+    validate_frozen_selector_profile,
+    validate_profile_freeze_contract,
+    validate_runtime_cost_profile,
+)
 
 
 def load(path: Path) -> dict:
@@ -42,6 +47,8 @@ def main() -> int:
     parser.add_argument("--jobs", required=True)
     parser.add_argument("--job-manifest", required=True)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--runtime-cost-profile", required=True)
+    parser.add_argument("--profile-freeze-contract", required=True)
     parser.add_argument("--lock", default="configs/a800_server_lock_v8.json")
     parser.add_argument("--model-audit", required=True)
     parser.add_argument("--patch-audit", required=True)
@@ -55,17 +62,19 @@ def main() -> int:
     jobs_path = Path(args.jobs).resolve()
     manifest = load(Path(args.job_manifest).resolve())
     profile = load(Path(args.profile).resolve())
+    runtime_cost_profile = load(Path(args.runtime_cost_profile).resolve())
+    profile_freeze_contract = load(Path(args.profile_freeze_contract).resolve())
     lock = load(Path(args.lock).resolve())
     model_audit = load(Path(args.model_audit).resolve())
     patch_audit = load(Path(args.patch_audit).resolve())
     jobs = load_jsonl(jobs_path, V6A800Job.from_row)
-    if manifest.get("protocol_version") != 8 or manifest.get("schema_version") != 4:
-        raise ValueError("v8 qualification requires a schema-v4 manifest")
+    if manifest.get("protocol_version") != 8 or manifest.get("schema_version") != 5:
+        raise ValueError("v8 qualification requires a schema-v5 manifest")
     validate_frozen_selector_profile(profile, model_key=args.model_key)
-    if manifest.get("profile_sha256") != profile.get("profile_sha256"):
+    if manifest.get("selector_profile_sha256") != profile.get("profile_sha256"):
         raise ValueError("qualification manifest used another Profile")
-    if lock.get("protocol_version") != 8 or lock.get("schema_version") != 4:
-        raise ValueError("v8 qualification requires the schema-v4 server lock")
+    if lock.get("protocol_version") != 8 or lock.get("schema_version") != 5:
+        raise ValueError("v8 qualification requires the schema-v5 server lock")
     if len(jobs) != 140 or manifest.get("jobs") != 140:
         raise ValueError("v8 qualification requires the frozen 140-job matrix")
     if sha256_file(jobs_path) != manifest.get("jobs_sha256"):
@@ -83,6 +92,14 @@ def main() -> int:
         code_commit=code_commit,
         model_revision=locked_model["revision"],
         tokenizer_hash=model_audit.get("tokenizer_hash"),
+        cacheblend_patch_sha256=patch_audit.get("cacheblend_patch_sha256"),
+    )
+    validate_profile_freeze_contract(profile_freeze_contract)
+    validate_runtime_cost_profile(
+        runtime_cost_profile,
+        model_key=args.model_key,
+        policy=manifest.get("selection_execution_policy"),
+        code_commit=code_commit,
         cacheblend_patch_sha256=patch_audit.get("cacheblend_patch_sha256"),
     )
     if (
@@ -129,6 +146,8 @@ def main() -> int:
     prefix_path = output / "native_prefix_cache_audit.json"
     sentinel_path = output / "sentinel.json"
     gpu_uuid = command(repo, "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader").splitlines()[0]
+    if gpu_uuid != runtime_cost_profile["gpu_uuid"]:
+        raise RuntimeError("qualification RuntimeCostProfile belongs to another GPU")
     observed_prefix = executor.run_native_prefix_cache_sentinel()
     observed_prefix.update(
         {
@@ -163,6 +182,8 @@ def main() -> int:
     if args.job_limit:
         pending = pending[:args.job_limit]
     stopped = False
+    existing_at_start = len(existing)
+    qualification_started = time.monotonic()
     for job in pending:
         try:
             result = executor.execute(job)
@@ -179,6 +200,24 @@ def main() -> int:
             stopped = True
         append_jsonl_fsync(results_path, [result.to_row()])
         existing.append(result)
+        elapsed = time.monotonic() - qualification_started
+        completed_this_run = len(existing) - existing_at_start
+        rate = elapsed / max(completed_this_run, 1)
+        atomic_write_json(
+            output / "resume_checkpoint.json",
+            {
+                "schema_version": 5,
+                "protocol_version": 8,
+                "job_digest": manifest["job_digest"],
+                "completed": len(existing),
+                "planned": 140,
+                "failed": sum(not item.passed for item in existing),
+                "immutable_successful_prefix": not any(not item.passed for item in existing),
+                "elapsed_seconds_this_run": elapsed,
+                "estimated_remaining_seconds": max(0, 140 - len(existing)) * rate,
+                "paper_evidence": False,
+            },
+        )
         if stopped:
             break
     complete = len(existing) == 140 and not stopped
@@ -192,7 +231,7 @@ def main() -> int:
         "completed_depth_hook_verified": sentinel.get("completed_depth_hook_verified") is True,
     }
     audit = {
-        "schema_version": 4,
+        "schema_version": 5,
         "protocol_version": 8,
         "stage": "v8_a800_profile_bound_runtime_qualification",
         "paper_evidence": False,
@@ -204,7 +243,17 @@ def main() -> int:
         "tokenizer_hash": manifest["model"]["tokenizer_hash"],
         "cacheblend_patch_sha256": patch_audit["cacheblend_patch_sha256"],
         "cacheblend_tree": patch_audit["cacheblend_tree"],
-        "profile_sha256": profile["profile_sha256"],
+        "selector_profile_sha256": profile["profile_sha256"],
+        "profile_freeze_contract_sha256": manifest["profile_freeze_contract_sha256"],
+        "profile_freeze_runtime_cost_profile_sha256": manifest[
+            "profile_freeze_runtime_cost_profile_sha256"
+        ],
+        "qualification_runtime_cost_profile_sha256": manifest[
+            "qualification_runtime_cost_profile_sha256"
+        ],
+        "hardware_compatibility_signature": manifest[
+            "hardware_compatibility_signature"
+        ],
         "job_digest": manifest["job_digest"],
         "gpu_uuid": gpu_uuid,
         "cuda_event_timing": bool(existing) and all(item.cuda_event_timing for item in existing),

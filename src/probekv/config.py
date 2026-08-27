@@ -580,7 +580,7 @@ class ExperimentConfig:
             raise ValueError("v8 forbids learned selectors and quality predictors")
         if self.fixed_repair_ratio != 0.15:
             raise ValueError("v8 freezes the main online repair ratio at 0.15")
-        diagnostic_grid = (0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0)
+        diagnostic_grid = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0)
         if self.v8_execution_phase == "online_main":
             if tuple(self.repair_ratios) != (0.15,):
                 raise ValueError("v8 online main path uses only repair ratio 0.15")

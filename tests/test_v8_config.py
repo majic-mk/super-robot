@@ -24,6 +24,22 @@ class V8ConfigTests(unittest.TestCase):
         qwen_h1 = load_config(str(ROOT / "configs/a800_h1_pilot_v8_qwen.json"))
         self.assertEqual(mistral_h1.v8_execution_phase, "h1_offline_diagnostic")
         self.assertEqual(len(qwen_h1.repair_ratios), 9)
+        self.assertIn(0.15, mistral_h1.repair_ratios)
+        self.assertNotIn(0.16, mistral_h1.repair_ratios)
+        mistral_raw = json.loads(
+            (ROOT / "configs/a800_h1_pilot_v8_mistral.json").read_text(encoding="utf-8")
+        )
+        qwen_raw = json.loads(
+            (ROOT / "configs/a800_h1_pilot_v8_qwen.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            (mistral_raw["h1_primary_completed_depth"], mistral_raw["first_reused_layer_1based"]),
+            (4, 5),
+        )
+        self.assertEqual(
+            (qwen_raw["h1_primary_completed_depth"], qwen_raw["first_reused_layer_1based"]),
+            (3, 4),
+        )
 
     def test_v8_rejects_learned_selector_and_conformal_policy(self):
         raw = json.loads(

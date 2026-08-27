@@ -10,6 +10,7 @@ from probekv.v8_contracts import (
 )
 from probekv.v8_selector import (
     ComparisonBudget,
+    RequestSelectionBudgetLedger,
     TrainingFreeResidualKSelector,
     cacheblend_repair_token_count,
     normalized_token_k_drifts,
@@ -31,6 +32,23 @@ def candidate(source, score, future=10.0, rank=0):
 
 
 class V8ResidualMathTests(unittest.TestCase):
+    def test_request_budget_ledger_separates_admission_bug_from_realized_overrun(self):
+        ledger = RequestSelectionBudgetLedger(5.0)
+        ledger.reserve("c1", 3.0)
+        settled = ledger.settle("c1", 4.0)
+        self.assertTrue(settled.realized_overrun)
+        self.assertEqual(ledger.budget_admission_violation_count, 0)
+        with self.assertRaises(RuntimeError):
+            ledger.reserve("c2", 2.0)
+        self.assertEqual(ledger.budget_admission_violation_count, 1)
+
+    def test_cancelled_reservation_returns_shared_request_budget(self):
+        ledger = RequestSelectionBudgetLedger(5.0)
+        ledger.reserve("c1", 4.0)
+        self.assertAlmostEqual(ledger.available_ms, 1.0)
+        ledger.cancel("c1")
+        self.assertAlmostEqual(ledger.available_ms, 5.0)
+
     def test_score_and_repair_counts_are_distinct_and_conservative(self):
         self.assertEqual(score_repair_token_count(2, 1.0), 1)
         self.assertEqual(cacheblend_repair_token_count(2, 1.0), 2)
@@ -134,6 +152,19 @@ class V8ResidualSelectorTests(unittest.TestCase):
         )
         self.assertEqual(strong.lock_reason, ResidualLockReason.STRONG_MARGIN_EARLY_EXIT)
         self.assertEqual(stable.lock_reason, ResidualLockReason.STABLE_MARGIN_EARLY_EXIT)
+
+    def test_schema5_trace_exposes_decision_before_gate1_freeze(self):
+        trace = self.selector.evaluate_checkpoint_trace(
+            completed_depth=1,
+            counts=CandidateCounts(2, 2, 2, 2, 2),
+            candidates=[candidate("a", 0.04), candidate("b", 0.2)],
+            shared_sunk_ms=1,
+            dense_reference_ms=100,
+        )
+        self.assertEqual(trace[0].state, ResidualSelectionState.SELECTOR_DECISION_READY)
+        self.assertEqual(trace[1].state, ResidualSelectionState.SOURCE_FROZEN)
+        self.assertFalse(trace[0].source_frozen)
+        self.assertTrue(trace[1].gate1_passed)
 
     def test_max_depth_uses_residual_band_then_cost(self):
         result = self.selector.evaluate_checkpoint(

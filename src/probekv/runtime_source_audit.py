@@ -177,6 +177,8 @@ def audit_v8_runtime_sources(repo: Path) -> Dict[str, Any]:
             repo / "src" / "probekv" / "v8_selector.py",
             (
                 "class TrainingFreeResidualKSelector",
+                "evaluate_checkpoint_trace",
+                "class RequestSelectionBudgetLedger",
                 "score_repair_token_count",
                 "cacheblend_repair_token_count",
                 "INSUFFICIENT_RANKING_COVERAGE",
@@ -198,6 +200,14 @@ def audit_v8_runtime_sources(repo: Path) -> Dict[str, Any]:
         (
             repo / "src" / "probekv" / "v8_planner.py",
             ("class PredictedJointPlanner", "class RefinedJointPlanner"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_orchestration.py",
+            ("class V8IncrementalCommitController", "REUSE_COMMIT"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_profile.py",
+            ("build_profile_freeze_contract", "build_runtime_cost_profile"),
         ),
         (
             repo / "src" / "probekv" / "v6_a800_executor.py",
@@ -231,7 +241,7 @@ def audit_v8_runtime_sources(repo: Path) -> Dict[str, Any]:
             if marker not in text:
                 failures.append("%s lacks %s" % (path.name, marker))
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "protocol_version": 8,
         "patch_mode": "probekv_v8_training_free_residual_k",
         "patch_files": [path.name for path in paths],

@@ -22,12 +22,14 @@ def main() -> int:
     parser.add_argument("--model-audit", required=True)
     parser.add_argument("--model-key", choices=("mistral", "qwen"), required=True)
     parser.add_argument("--policy", choices=("causal_commit_wait", "immediate_staggered_closed_loop"), default="causal_commit_wait")
+    parser.add_argument("--profile-freeze-contract", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     lock = load(Path(args.lock).resolve())
     patch_audit = load(Path(args.patch_audit).resolve())
     model_audit = load(Path(args.model_audit).resolve())
+    profile_contract = load(Path(args.profile_freeze_contract).resolve())
     model = lock["models"][args.model_key]
     code_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=str(repo), text=True
@@ -48,6 +50,12 @@ def main() -> int:
         checkpoint_depths=model["completed_depths"],
         cacheblend_patch_sha256=patch_sha,
         cacheblend_tree=patch_audit["cacheblend_tree"],
+        profile_freeze_contract_sha256=profile_contract[
+            "profile_freeze_contract_sha256"
+        ],
+        development_partition_sha256=profile_contract[
+            "development_partition_sha256"
+        ],
     )
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)

@@ -25,25 +25,32 @@ report `selector_profile_frozen=false`, `gpu_runtime_qualified=false` and
 
 Prepare model-specific H1 data with
 `prepare_v6_h1_model_data.py --protocol-version 8`. The legacy filename is
-retained, but v8 output is schema-v4. Mistral token IDs, content keys and
+retained, but v8 output is schema-v5. Mistral token IDs, content keys and
 Sources must never be reused by Qwen.
 
 ## A800 order for each Model x A/C Profile
 
 1. Verify A800 80GB, CC 8.0, stack, block size 16, exact SHA and clean tree.
 2. Run Prefix Cache, completed-depth K-hook and `r=1` sentinels.
-3. Run SelectionState microbenchmarks for depths, `K={1,2,4,8,16}` and tiers.
-4. Run pooled three-dataset development/profile-freeze tasks.
-5. Freeze `SelectorPolicyProfile` with `freeze_v8_selector_profile.py`.
-6. Generate Profile-bound jobs with `build_v8_profile_bound_jobs.py`.
+3. Run SelectionState microbenchmarks for depths, `K={1,2,4,8,16}` and CPU/SSD
+   source tiers into bounded GPU scratch.
+4. Freeze `RuntimeCostProfile` (`R_profile`) and run the pooled 90-case
+   development/profile-freeze partition.
+5. Freeze `SelectorPolicyProfile` with `freeze_v8_selector_profile.py`; it must
+   bind the precommitted Profile-freeze contract and `R_profile`.
+6. On the actual qualification GPU, reuse `R_profile` only if still valid;
+   otherwise measure and freeze `R_qual`. Generate one 140-job manifest for
+   this exact Model x A/C profile with `build_v8_profile_bound_jobs.py`.
 7. Run a five-job canary in a fresh output directory.
 8. Run final 140/140 qualification in another immutable directory.
-9. Build schema-v4 Gate with `verify_v8_runtime_qualification.py`.
+9. Build schema-v5 Gate with `verify_v8_runtime_qualification.py`.
 10. Run one case using `run_v8_h1_pilot.py --case-limit 1 --pass primary`.
 11. Stop; do not automatically start full H1.
 
-Qualification must follow Profile freeze. An older Profile, code SHA,
-tokenizer, patch tree, job manifest or GPU invalidates the Gate.
+Repeat this independently for Mistral-A, Mistral-C, Qwen-A and Qwen-C: 560 jobs
+in total. Qualification must follow Profile freeze. An older schema-v4 Gate,
+Profile, code SHA, tokenizer, patch tree, job manifest or qualification runtime
+profile cannot unlock schema-v5 H1.
 
 ## Failure rules
 

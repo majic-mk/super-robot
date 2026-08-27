@@ -19,12 +19,21 @@ def main() -> int:
     parser.add_argument("--tokenizer-hash", required=True)
     parser.add_argument("--cacheblend-patch-sha256", required=True)
     parser.add_argument("--microbenchmark-sha256", required=True)
+    parser.add_argument("--runtime-cost-profile", required=True)
+    parser.add_argument("--profile-freeze-contract", required=True)
+    parser.add_argument("--development-partition-sha256", required=True)
     args = parser.parse_args()
     rows = [
         json.loads(line)
         for line in Path(args.rows).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    runtime_cost_profile = json.loads(
+        Path(args.runtime_cost_profile).read_text(encoding="utf-8")
+    )
+    profile_freeze_contract = json.loads(
+        Path(args.profile_freeze_contract).read_text(encoding="utf-8")
+    )
     profile = freeze_selector_profile(
         model_key=args.model_key,
         policy=args.policy,
@@ -34,6 +43,9 @@ def main() -> int:
         tokenizer_hash=args.tokenizer_hash,
         cacheblend_patch_sha256=args.cacheblend_patch_sha256,
         microbenchmark_sha256=args.microbenchmark_sha256,
+        runtime_cost_profile=runtime_cost_profile,
+        profile_freeze_contract=profile_freeze_contract,
+        development_partition_sha256=args.development_partition_sha256,
     )
     atomic_write_json(Path(args.output).resolve(), profile)
     print(json.dumps(profile, ensure_ascii=False, indent=2))

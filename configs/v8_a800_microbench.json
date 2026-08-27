@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "protocol_version": 8,
   "evidence_class": "server_pilot",
   "paper_evidence": false,
@@ -10,7 +10,8 @@
   "stored_variants": [1, 4, 16],
   "compare_k": [1, 2, 4, 8, 16],
   "selection_state_tiers": ["pinned_cpu", "ssd"],
-  "gpu_selection_storage": "ephemeral_scratch",
+  "comparison_destination": "gpu_ephemeral_scratch",
+  "selection_scratch_capacity_mib": 256,
   "mistral_completed_depths": [0, 1, 2, 4, 5, 8],
   "qwen_completed_depths": [0, 1, 2, 4, 5, 7],
   "fixed_repair_ratio": 0.15,

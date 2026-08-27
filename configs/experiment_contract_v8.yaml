@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 protocol_version: 8
 name: probekv-v8-training-free-residual-k
 evidence:
@@ -21,6 +21,9 @@ method:
   cfo_top1_fallback_is_baseline_only: true
   comparison_budget_fraction: 0.05
   source_freeze_is_final: true
+  selector_state_order: [probing, selector_decision_ready, gate1, source_frozen]
+  pre_lmax_gate1_rejection: continue_probe
+  lmax_policy: residual_band_then_min_economic_cost
   winner_only_full_kv_prefetch: true
 models:
   mistral:
@@ -51,20 +54,44 @@ planning:
   policies: [causal_commit_wait, immediate_staggered_closed_loop]
   predicted_joint_planner: true
   refined_joint_planner: true
+  gate2_precedes_physical_replica_lease: true
+  unresolved_segments_priced_as_dense: true
+  reuse_commit_economic_rollback: false
+  policy_a_prefetch_before_causal_commit_closure: true
+  policy_c_incremental_commit: true
   predicted_dense_can_return_to_reuse: false
   gamma: 0.8
+selection_budget:
+  scope: one_request_shared_across_all_segments
+  operations: [reserve, settle, release]
+  admission_violation_count_max: 0
+  realized_overrun_is_job_failure: false
+  realized_overrun_rate_max: 0.05
+  actual_critical_path_p95_fraction_max: 0.05
 profile_and_qualification:
-  profile_schema_version: 4
-  gate_schema_version: 4
+  profile_schema_version: 5
+  gate_schema_version: 5
   profile_must_precede_qualification: true
   datasets: [musique, 2wikimultihopqa, hotpotqa]
-  qualification_jobs_per_model: 140
+  qualification_jobs_per_model_policy: 140
+  qualification_jobs_total: 560
   fake_timing_allowed: false
   h1_requires_profile_bound_gate: true
+  profile_freeze_contract_precommitted: true
+  selector_and_runtime_profiles_are_separate: true
+  schema4_read_only_cannot_unlock_schema5: true
+  hard_metrics:
+    state_availability_min: 0.99
+    selection_coverage_min: 0.80
+    early_resolution_rate_at_completed_depth5_min: 0.80
+    wrong_early_lock_rate_max: 0.05
+    mean_stable_normalized_oracle_regret_max: 0.10
+  report_only_metrics: [multi_source_early_exit_rate_at_completed_depth5]
 h1_diagnostic:
   cases: 150
   sources_per_case: 4
-  ratios: [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0]
+  ratios: [0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0]
+  legacy_schema4_ratio_point: 0.16
   primary_rows: 5400
   anchor_cases: 30
   anchor_rows: 4320

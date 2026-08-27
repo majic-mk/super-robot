@@ -7,7 +7,13 @@ from probekv.v8_contracts import (
     SelectorPolicyProfile,
 )
 from probekv.v8_leases import V8LeaseManager, V8ReplicaResource
-from probekv.v8_orchestration import V8RequestOrchestrator
+from probekv.v8_orchestration import (
+    RuntimeSegmentPhase,
+    V8JobOutcome,
+    V8IncrementalCommitController,
+    V8RequestOrchestrator,
+    classify_v8_job_outcome,
+)
 from probekv.v8_planner import (
     PredictedJointPlanner,
     PredictedSegmentOption,
@@ -115,6 +121,57 @@ class V8ClosedLoopTests(unittest.TestCase):
                 actual_shared_sunk_ms=1,
             )
         self.orchestrator.release_request(state, reason="test")
+
+
+class V8IncrementalGateTests(unittest.TestCase):
+    def test_dense_and_abstain_are_completed_not_failed_jobs(self):
+        self.assertEqual(
+            classify_v8_job_outcome(execution_mode="dense"),
+            V8JobOutcome.COMPLETED_DENSE,
+        )
+        self.assertEqual(
+            classify_v8_job_outcome(execution_mode="dense", abstained=True),
+            V8JobOutcome.COMPLETED_ABSTAIN,
+        )
+        self.assertEqual(
+            classify_v8_job_outcome(execution_mode="dense", runtime_error=True),
+            V8JobOutcome.FAILED,
+        )
+
+    def _ready_first(self, policy):
+        controller = V8IncrementalCommitController(("c1", "c2", "c3"), policy)
+        controller.decision_ready("c1", "s1", 1)
+        controller.gate1_result("c1", True)
+        controller.gate2_result("c1", True)
+        controller.start_prefetch("c1")
+        controller.mark_ready("c1", 2)
+        return controller
+
+    def test_policy_a_prefetches_early_but_waits_for_causal_closure(self):
+        controller = self._ready_first("causal_commit_wait")
+        self.assertFalse(controller.causal_commit_ready("c1"))
+        controller.resolve_abstain("c2")
+        controller.resolve_abstain("c3")
+        self.assertTrue(controller.causal_commit_ready("c1"))
+        controller.gate3_result(("c1",), True)
+        self.assertEqual(controller.records["c1"].phase, RuntimeSegmentPhase.REUSE_COMMIT)
+
+    def test_policy_c_commit_is_irreversible_when_later_segment_fails(self):
+        controller = self._ready_first("immediate_staggered_closed_loop")
+        controller.gate3_result(("c1",), True)
+        controller.decision_ready("c2", "s2", 2)
+        controller.gate1_result("c2", True)
+        controller.gate2_result("c2", False)
+        self.assertEqual(controller.records["c1"].phase, RuntimeSegmentPhase.REUSE_COMMIT)
+        self.assertEqual(controller.records["c2"].phase, RuntimeSegmentPhase.PREDICTED_DENSE)
+        with self.assertRaises(RuntimeError):
+            controller.source_timeout("c1")
+
+    def test_precommit_timeout_is_dense_not_job_failure(self):
+        controller = self._ready_first("immediate_staggered_closed_loop")
+        controller.source_timeout("c1")
+        self.assertTrue(controller.records["c1"].timeout_before_commit)
+        self.assertEqual(controller.records["c1"].phase, RuntimeSegmentPhase.REFINED_DENSE)
 
 
 if __name__ == "__main__":

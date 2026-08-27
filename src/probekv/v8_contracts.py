@@ -9,6 +9,11 @@ from typing import Any, Mapping, Optional, Tuple
 from .contracts import KVLocation
 
 
+V8_PROTOCOL_VERSION = 8
+V8_LEGACY_SCHEMA_VERSION = 4
+V8_SCHEMA_VERSION = 5
+
+
 def stable_v8_digest(domain: str, payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         {"domain": domain, **dict(payload)},
@@ -41,6 +46,8 @@ class ResidualLockReason(str, Enum):
 
 class ResidualSelectionState(str, Enum):
     PENDING = "pending"
+    SELECTOR_DECISION_READY = "selector_decision_ready"
+    SOURCE_FROZEN = "locked"
     LOCKED = "locked"
     ABSTAINED = "abstained"
 
@@ -137,6 +144,8 @@ class SelectorPolicyProfile:
     fixed_repair_ratio: float = 0.15
     profile_sha256: str = ""
     frozen: bool = False
+    profile_freeze_contract_sha256: str = ""
+    profile_freeze_runtime_cost_profile_sha256: str = ""
 
     def __post_init__(self) -> None:
         if not self.profile_id or not self.model_math_signature:
@@ -159,6 +168,59 @@ class SelectorPolicyProfile:
             raise ValueError("v8 freezes the online repair ratio at 0.15")
         if self.frozen and not self.profile_sha256:
             raise ValueError("a frozen profile must carry its SHA256")
+        if self.frozen and bool(self.profile_freeze_contract_sha256) != bool(
+            self.profile_freeze_runtime_cost_profile_sha256
+        ):
+            raise ValueError("schema-v5 frozen Profile bindings must be complete")
+
+
+@dataclass(frozen=True)
+class RuntimeCostProfile:
+    runtime_cost_profile_id: str
+    model_math_signature: str
+    selection_execution_policy: str
+    gpu_uuid: str
+    hardware_compatibility_signature: str
+    comparison_batch_upper_ms: Mapping[int, float]
+    profile_sha256: str
+    code_commit: str
+    cacheblend_patch_sha256: str
+    schema_version: int = V8_SCHEMA_VERSION
+    protocol_version: int = V8_PROTOCOL_VERSION
+    cuda_event_timing: bool = True
+    fake_timing: bool = False
+
+    def __post_init__(self) -> None:
+        if self.schema_version != V8_SCHEMA_VERSION or self.protocol_version != 8:
+            raise ValueError("RuntimeCostProfile must use v8 schema-v5")
+        if not all(
+            (
+                self.runtime_cost_profile_id,
+                self.model_math_signature,
+                self.selection_execution_policy,
+                self.gpu_uuid,
+                self.hardware_compatibility_signature,
+                self.profile_sha256,
+                self.code_commit,
+                self.cacheblend_patch_sha256,
+            )
+        ):
+            raise ValueError("RuntimeCostProfile identity is incomplete")
+        if self.selection_execution_policy not in {
+            "causal_commit_wait",
+            "immediate_staggered_closed_loop",
+        }:
+            raise ValueError("unsupported RuntimeCostProfile policy")
+        if tuple(sorted(self.comparison_batch_upper_ms)) != tuple(
+            self.comparison_batch_upper_ms
+        ):
+            raise ValueError("comparison batch curve must be ordered")
+        if any(key not in {1, 2, 4, 8, 16} for key in self.comparison_batch_upper_ms):
+            raise ValueError("comparison batch curve used an unsupported K")
+        if any(float(value) < 0 for value in self.comparison_batch_upper_ms.values()):
+            raise ValueError("RuntimeCostProfile timings must be non-negative")
+        if not self.cuda_event_timing or self.fake_timing:
+            raise ValueError("RuntimeCostProfile requires real CUDA timing")
 
 
 @dataclass(frozen=True)
@@ -230,15 +292,34 @@ class ResidualSelectionDecision:
             raise ValueError("completed depth must be non-negative")
         if self.margin_defined != (self.margin_value is not None):
             raise ValueError("undefined margin must be represented by null")
-        if self.state is ResidualSelectionState.LOCKED:
+        if self.state in {
+            ResidualSelectionState.SELECTOR_DECISION_READY,
+            ResidualSelectionState.SOURCE_FROZEN,
+        }:
             if not self.selected_source_variant_id:
-                raise ValueError("locked selection requires a Source Variant")
+                raise ValueError("selector decision requires a Source Variant")
             if self.lock_reason is ResidualLockReason.NONE:
-                raise ValueError("locked selection requires a lock reason")
+                raise ValueError("selector decision requires a reason")
             if self.abstain_reason is not AbstainReason.NONE:
-                raise ValueError("locked selection cannot have an abstain reason")
+                raise ValueError("selector decision cannot have an abstain reason")
         elif self.selected_source_variant_id is not None:
             raise ValueError("only locked selection may expose a selected Source")
         if self.state is ResidualSelectionState.ABSTAINED and self.abstain_reason is AbstainReason.NONE:
             raise ValueError("abstention requires an explicit reason")
 
+    @property
+    def source_frozen(self) -> bool:
+        return self.state is ResidualSelectionState.SOURCE_FROZEN
+
+    @property
+    def gate1_passed(self) -> bool:
+        return self.source_frozen
+
+    @property
+    def provisional_source_variant_id(self) -> Optional[str]:
+        if self.state in {
+            ResidualSelectionState.SELECTOR_DECISION_READY,
+            ResidualSelectionState.SOURCE_FROZEN,
+        }:
+            return self.selected_source_variant_id
+        return self.best_source_variant_id

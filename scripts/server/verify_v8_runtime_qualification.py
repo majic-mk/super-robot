@@ -17,12 +17,15 @@ def main() -> int:
     parser.add_argument("--lock", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--runtime-cost-profile", required=True)
+    parser.add_argument("--profile-freeze-contract", required=True)
     parser.add_argument("--runtime-audit", required=True)
     parser.add_argument("--prefix-audit", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     gate = evaluate_v8_runtime_qualification(
         load(args.lock), load(args.manifest), load(args.profile),
+        load(args.runtime_cost_profile), load(args.profile_freeze_contract),
         load(args.runtime_audit), load(args.prefix_audit),
     )
     atomic_write_json(Path(args.output).resolve(), gate)

@@ -7,8 +7,12 @@ from typing import Mapping, Optional, Sequence, Tuple
 
 class SegmentPlanState(str, Enum):
     UNDECIDED = "undecided"
+    SOURCE_FROZEN = "source_frozen"
     PROVISIONAL_REUSE = "provisional_reuse"
+    PREFETCHING = "prefetching"
+    REUSE_READY = "reuse_ready"
     PREDICTED_DENSE = "predicted_dense"
+    REUSE_COMMIT = "reuse_commit"
     FINAL_REUSE = "final_reuse"
     REFINED_DENSE = "refined_dense"
 
@@ -270,6 +274,8 @@ class RefinedRequestPlan:
     transferred_bytes: int
     wasted_bytes: int
     gamma_bound_met: bool
+    committed_reuse_segment_ids: Tuple[str, ...] = ()
+    reuse_commit_irreversible: bool = True
 
     @property
     def final_reuse_segment_ids(self) -> Tuple[str, ...]:
@@ -295,10 +301,20 @@ class RefinedJointPlanner:
         *,
         actual_shared_sunk_ms: float,
         joint_actual_interference_ms: float = 0.0,
+        committed_future_ms_by_segment: Mapping[str, float] | None = None,
+        unresolved_dense_remaining_ms_by_segment: Mapping[str, float] | None = None,
     ) -> RefinedRequestPlan:
         if min(actual_shared_sunk_ms, joint_actual_interference_ms) < 0:
             raise ValueError("refined actual costs must be non-negative")
         provisional = set(predicted.provisional_segment_ids)
+        committed_future = dict(committed_future_ms_by_segment or {})
+        unresolved_dense = dict(unresolved_dense_remaining_ms_by_segment or {})
+        if set(committed_future) & (provisional | set(unresolved_dense)):
+            raise ValueError("committed, provisional and unresolved Segment sets must be disjoint")
+        if set(unresolved_dense) & provisional:
+            raise ValueError("unresolved Segments cannot already be provisional")
+        if min((*committed_future.values(), *unresolved_dense.values()), default=0.0) < 0:
+            raise ValueError("incremental Gate 3 costs must be non-negative")
         if set(measurements) != provisional:
             raise ValueError("refined measurements must exactly cover provisional reuse")
         for decision in predicted.decisions:
@@ -331,6 +347,8 @@ class RefinedJointPlanner:
                 )
             for segment_id in predicted_dense:
                 value += predicted.dense_remaining_ms_by_segment[segment_id]
+            value += sum(committed_future.values())
+            value += sum(unresolved_dense.values())
             return value
 
         while active and total(active) > self.gamma * predicted.dense_reference_ms + 1e-12:
@@ -380,4 +398,6 @@ class RefinedJointPlanner:
             transferred,
             wasted,
             refined_total <= self.gamma * predicted.dense_reference_ms + 1e-12,
+            tuple(sorted((*committed_future, *accepted))),
+            True,
         )

@@ -94,8 +94,8 @@ def main() -> int:
             errors.append("invalid v7 contract field %s" % key)
     if v7.get("replica_tiers") != ["gpu", "pinned_cpu", "ssd"]:
         errors.append("v7 Replica tiers must be gpu/pinned_cpu/ssd")
-    if v8_contract.get("schema_version") != 4 or v8_contract.get("protocol_version") != 8:
-        errors.append("v8 contract must use protocol 8 schema 4")
+    if v8_contract.get("schema_version") != 5 or v8_contract.get("protocol_version") != 8:
+        errors.append("v8 contract must use protocol 8 schema 5")
     v8_method = v8_contract.get("method", {})
     for key, expected in {
         "selector_type": "training_free",
@@ -115,6 +115,15 @@ def main() -> int:
         errors.append("v8 must not cap detected non-prefix Segments")
     if v8_contract.get("h1_diagnostic", {}).get("total_rows") != 9720:
         errors.append("v8 H1 diagnostic must retain all 9,720 rows")
+    if v8_contract.get("h1_diagnostic", {}).get("ratios") != [
+        0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0
+    ]:
+        errors.append("v8 schema-v5 H1 grid must include the online 0.15 point")
+    profile_contract = v8_contract.get("profile_and_qualification", {})
+    if profile_contract.get("qualification_jobs_per_model_policy") != 140:
+        errors.append("v8 requires 140 qualification jobs per Model x Policy")
+    if profile_contract.get("qualification_jobs_total") != 560:
+        errors.append("v8 requires four independent 140-job qualifications")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:

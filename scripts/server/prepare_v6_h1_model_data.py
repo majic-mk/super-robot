@@ -53,6 +53,7 @@ def main() -> int:
         if not required.is_file():
             raise ValueError("missing frozen H1 input: %s" % required)
     model = json.loads(model_audit_path.read_text(encoding="utf-8"))
+    experiment_config = json.loads(config_path.read_text(encoding="utf-8"))
     if model.get("complete") is not True:
         raise ValueError("model snapshot audit is incomplete")
     snapshot = Path(model["snapshot_path"]).resolve()
@@ -130,7 +131,7 @@ def main() -> int:
     ], cwd=str(repo))
 
     handoff = {
-        "schema_version": (4 if args.protocol_version == 8 else (3 if args.protocol_version == 7 else 1)),
+        "schema_version": (5 if args.protocol_version == 8 else (3 if args.protocol_version == 7 else 1)),
         "protocol_version": args.protocol_version,
         "stage": "%s_h1_model_data_handoff" % (
             ("v8" if args.protocol_version == 8 else ("v7" if args.protocol_version == 7 else "v6"))
@@ -161,6 +162,11 @@ def main() -> int:
     elif args.protocol_version == 8:
         handoff["ready_for_v6_h1_gpu_sentinel"] = False
         handoff["ready_for_v8_h1_gpu_sentinel"] = True
+        primary_layer = int(experiment_config["first_reused_layer_1based"])
+        if int(experiment_config["h1_primary_completed_depth"]) != primary_layer - 1:
+            raise ValueError("v8 H1 completed-depth/reused-layer contract is inconsistent")
+        handoff["h1_primary_completed_depth"] = primary_layer - 1
+        handoff["first_reused_layer_1based"] = primary_layer
     atomic_write_json(output / "handoff.json", handoff)
     print(json.dumps(handoff, ensure_ascii=False, indent=2))
     return 0
