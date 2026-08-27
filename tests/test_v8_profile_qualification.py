@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -380,6 +383,54 @@ class V8QualificationTests(unittest.TestCase):
 
 
 class V8NoGpuReadinessTests(unittest.TestCase):
+    def test_development_partition_uses_only_preisolated_calibration_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = {}
+            for dataset in ("musique", "2wikimultihopqa", "hotpotqa"):
+                path = root / (dataset + ".jsonl")
+                rows = []
+                for index in range(40):
+                    role = "calibration" if index < 30 else "train"
+                    rows.append(
+                        {
+                            "case_id": "%s-%s-%02d" % (dataset, role, index),
+                            "group_id": "%s-group-%02d" % (dataset, index),
+                            "split": role,
+                        }
+                    )
+                rows.append(
+                    {
+                        "case_id": "%s-locked" % dataset,
+                        "group_id": "%s-locked-group" % dataset,
+                        "split": "test",
+                    }
+                )
+                path.write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8",
+                )
+                inputs[dataset] = path
+            output = root / "development.jsonl"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/server/build_v8_development_partition.py"),
+                    "--musique", str(inputs["musique"]),
+                    "--2wikimultihopqa", str(inputs["2wikimultihopqa"]),
+                    "--hotpotqa", str(inputs["hotpotqa"]),
+                    "--output", str(output),
+                ],
+                cwd=str(ROOT),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            selected = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(selected), 90)
+            self.assertEqual({row["source_split"] for row in selected}, {"calibration"})
+            self.assertFalse(any("train" in row["case_id"] for row in selected))
+
     def test_complete_preprofile_handoff_allows_profile_rental_not_h1(self):
         frozen_lock = lock()
         patch = {

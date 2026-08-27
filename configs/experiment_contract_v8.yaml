@@ -5,6 +5,8 @@ evidence:
   no_gpu_paper_evidence: false
   locked_test_accessed_before_h5: false
   profile_freeze_split: pooled_development_only
+  development_source_roles: [calibration, development, development_profile_freeze]
+  train_and_h1_pilot_are_forbidden_for_profile_freeze: true
   probability_calibration_used: false
 method:
   claim: training_free_current_state_residual_k_historical_source_selection

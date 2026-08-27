@@ -12,6 +12,9 @@ from probekv.io import write_jsonl
 
 DATASETS = ("musique", "2wikimultihopqa", "hotpotqa")
 SEED = 20260726
+DEVELOPMENT_SOURCE_ROLES = frozenset(
+    {"calibration", "development", "development_profile_freeze"}
+)
 
 
 def _read(path: Path) -> list[dict]:
@@ -39,13 +42,22 @@ def main() -> int:
         allowed = []
         for row in rows:
             role = str(row.get("split", row.get("split_role", ""))).lower()
-            if "locked" in role or role in {"test", "h1_pilot"}:
+            # The source manifests already carry a group-isolated calibration
+            # partition.  Do not silently sample from train: H1 pilot cases are
+            # also drawn from train and would otherwise be eligible for both
+            # system-profile selection and the subsequent H1 diagnostic.
+            if role not in DEVELOPMENT_SOURCE_ROLES:
                 continue
             case_id = str(row.get("case_id", ""))
-            group = str(row.get("document_id", row.get("content_hash", case_id)))
+            group = str(
+                row.get(
+                    "group_id",
+                    row.get("document_id", row.get("content_hash", case_id)),
+                )
+            )
             if not case_id or not group or group in seen_groups:
                 continue
-            allowed.append((_rank(dataset, case_id), case_id, group, role or "train"))
+            allowed.append((_rank(dataset, case_id), case_id, group, role))
         chosen = sorted(allowed)[:30]
         if len(chosen) != 30:
             raise ValueError("%s lacks 30 isolated development cases" % dataset)

@@ -28,6 +28,10 @@ Prepare model-specific H1 data with
 retained, but v8 output is schema-v5. Mistral token IDs, content keys and
 Sources must never be reused by Qwen.
 
+The frozen 90-case development partition must be sampled only from the
+pre-isolated `calibration`/development role. The builder rejects train,
+H1-pilot and test rows so Profile freeze cannot overlap later H1 evidence.
+
 ## A800 order for each Model x A/C Profile
 
 1. Verify A800 80GB, CC 8.0, stack, block size 16, exact SHA and clean tree.
