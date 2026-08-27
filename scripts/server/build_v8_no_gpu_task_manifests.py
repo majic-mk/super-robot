@@ -1,0 +1,155 @@
+"""Freeze all pre-Profile v8 task lists without inventing GPU evidence."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+from pathlib import Path
+
+from probekv.io import atomic_write_json, write_jsonl
+from probekv.v8_a800_jobs import build_v8_preprofile_manifest
+from probekv.v8_profile import V8_PROFILE_DATASETS, selector_profile_candidates
+
+
+POLICIES = ("causal_commit_wait", "immediate_staggered_closed_loop")
+
+
+def load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lock", default="configs/a800_server_lock_v8.json")
+    parser.add_argument("--mistral-model-audit", required=True)
+    parser.add_argument("--qwen-model-audit", required=True)
+    parser.add_argument("--patch-audit", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parents[2]
+    code_commit = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=str(repo), text=True
+    ).strip()
+    if subprocess.check_output(
+        ("git", "status", "--porcelain"), cwd=str(repo), text=True
+    ).strip():
+        raise ValueError("v8 no-GPU manifests require a clean frozen checkout")
+    lock = load(Path(args.lock).resolve())
+    audits = {
+        "mistral": load(Path(args.mistral_model_audit).resolve()),
+        "qwen": load(Path(args.qwen_model_audit).resolve()),
+    }
+    patch = load(Path(args.patch_audit).resolve())
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+
+    sentinels = []
+    microbench = []
+    profile_tasks = []
+    for model_key in ("mistral", "qwen"):
+        model = lock["models"][model_key]
+        audit = audits[model_key]
+        if audit.get("complete") is not True:
+            raise ValueError("%s model audit is incomplete" % model_key)
+        for policy in POLICIES:
+            manifest = build_v8_preprofile_manifest(
+                code_commit=code_commit,
+                model_id=model["model_id"],
+                model_revision=model["revision"],
+                tokenizer_hash=audit["tokenizer_hash"],
+                adapter_name=model["adapter_name"],
+                selection_execution_policy=policy,
+                checkpoint_depths=model["completed_depths"],
+                cacheblend_patch_sha256=patch["cacheblend_patch_sha256"],
+                cacheblend_tree=patch["cacheblend_tree"],
+            )
+            atomic_write_json(
+                output / ("preprofile_%s_%s.json" % (model_key, policy)),
+                manifest,
+            )
+            for kind in ("native_prefix_cache", "completed_depth_k_hook", "r1_dense_equivalence"):
+                sentinels.append({
+                    "task_id": "%s-%s-%s" % (model_key, policy, kind),
+                    "model_key": model_key,
+                    "selection_execution_policy": policy,
+                    "kind": kind,
+                    "code_commit": code_commit,
+                    "paper_evidence": False,
+                    "locked_test_accessed": False,
+                })
+            for depth in (0, *model["completed_depths"]):
+                for tier in ("gpu", "pinned_cpu", "ssd"):
+                    for compared_k in (1, 2, 4, 8, 16):
+                        microbench.append({
+                            "task_id": "%s-%s-d%d-%s-k%d" % (
+                                model_key, policy, depth, tier, compared_k
+                            ),
+                            "model_key": model_key,
+                            "selection_execution_policy": policy,
+                            "completed_depth": depth,
+                            "tier": tier,
+                            "compared_k": compared_k,
+                            "selection_state": "exact_bfloat16_pre_rope_k",
+                            "full_kv_transfer_for_selection": False,
+                            "cuda_event_timing_required": True,
+                            "paper_evidence": False,
+                        })
+            for candidate_index, candidate in enumerate(
+                selector_profile_candidates(model_key, policy)
+            ):
+                for dataset in V8_PROFILE_DATASETS:
+                    profile_tasks.append({
+                        "task_id": "%s-%s-p%05d-%s" % (
+                            model_key, policy, candidate_index, dataset
+                        ),
+                        "model_key": model_key,
+                        "selection_execution_policy": policy,
+                        "dataset": dataset,
+                        "candidate_profile": candidate,
+                        "split_role": "development_profile_freeze_only",
+                        "probability_calibration": False,
+                        "paper_evidence": False,
+                        "locked_test_accessed": False,
+                    })
+    write_jsonl(output / "sentinel_tasks.jsonl", sentinels)
+    write_jsonl(output / "selection_microbench_tasks.jsonl", microbench)
+    write_jsonl(output / "profile_freeze_tasks.jsonl", profile_tasks)
+    atomic_write_json(
+        output / "h1_offline_diagnostic_plan.json",
+        {
+            "schema_version": 4,
+            "protocol_version": 8,
+            "code_commit": code_commit,
+            "paper_evidence": False,
+            "locked_test_accessed": False,
+            "cases": 150,
+            "sources_per_case": 4,
+            "ratios": [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0],
+            "primary_rows": 5400,
+            "anchor_cases": 30,
+            "anchor_rows": 4320,
+            "total_rows": 9720,
+            "data_builder": "scripts/server/prepare_v6_h1_model_data.py --protocol-version 8",
+            "runner": "scripts/server/run_v8_h1_pilot.py",
+            "full_h1_started": False,
+        },
+    )
+    summary = {
+        "schema_version": 4,
+        "protocol_version": 8,
+        "code_commit": code_commit,
+        "sentinel_tasks": len(sentinels),
+        "microbenchmark_tasks": len(microbench),
+        "profile_freeze_tasks": len(profile_tasks),
+        "profile_bound_qualification_generated": False,
+        "paper_evidence": False,
+        "locked_test_accessed": False,
+    }
+    atomic_write_json(output / "task_manifest_summary.json", summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

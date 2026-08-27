@@ -150,3 +150,97 @@ def audit_v7_runtime_sources(repo: Path) -> Dict[str, Any]:
         "gpu_runtime_qualified": False,
         "failures": failures,
     }
+
+
+def audit_v8_runtime_sources(repo: Path) -> Dict[str, Any]:
+    """Static pre-rental audit for the v8 training-free runtime path."""
+    manifest = repo / "patches" / "cacheblend" / "manifest.json"
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            manifest, "probekv_v8_training_free_residual_k"
+        )
+    except (OSError, ValueError) as error:
+        return {"runtime_source_ready": False, "failures": [str(error)]}
+    checks = (
+        (
+            repo / "src" / "probekv" / "cacheblend_v6_online_engine.py",
+            (
+                "class CacheBlendV8OnlineEngine",
+                "training_free_residual_k_selection",
+                "selection_state_k_only",
+                "request_attributed_nonwinner_full_kv_bytes_transferred",
+                "v8 full-KV prefetch is legal only for the frozen winner",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_selector.py",
+            (
+                "class TrainingFreeResidualKSelector",
+                "score_repair_token_count",
+                "cacheblend_repair_token_count",
+                "INSUFFICIENT_RANKING_COVERAGE",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_selection_state_store.py",
+            ("class SelectionStateStore", "full-KV fallback is forbidden"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_leases.py",
+            (
+                "class V8LeaseManager",
+                "freeze_and_acquire_logical",
+                "compare_and_lease_batch",
+                "same-Source Replica replan is limited to two attempts",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_planner.py",
+            ("class PredictedJointPlanner", "class RefinedJointPlanner"),
+        ),
+        (
+            repo / "src" / "probekv" / "v6_a800_executor.py",
+            (
+                "protocol_version == 8",
+                "completed_depth_hook_verified",
+                "selection_state_separate_backing_verified",
+                "fixture.selection_variants",
+                "residual_ratio=(0.15 if self.protocol_version == 8 else None)",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "run_v8_a800_qualification.py",
+            (
+                "validate_frozen_selector_profile",
+                "CacheBlendV8OnlineEngine",
+                "requires the frozen 140-job matrix",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "run_v8_h1_pilot.py",
+            ("main(protocol_version=8)",),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing v8 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "schema_version": 4,
+        "protocol_version": 8,
+        "patch_mode": "probekv_v8_training_free_residual_k",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "training_free_selector": True,
+        "selection_state_k_only": True,
+        "single_artifact_policy": True,
+        "winner_only_prefetch": True,
+        "predicted_and_refined_planners": True,
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }

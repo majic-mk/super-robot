@@ -21,9 +21,14 @@ def main() -> int:
     parser.add_argument(
         "--output", default="artifacts/contract_validation.json"
     )
+    parser.add_argument(
+        "--v8-contract", default="configs/experiment_contract_v8.yaml"
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    v8_contract_path = Path(args.v8_contract)
+    v8_contract = yaml.safe_load(v8_contract_path.read_text(encoding="utf-8"))
     errors = []
     if contract.get("schema_version") != 7:
         errors.append("current experiment contract must use schema version 7")
@@ -89,6 +94,27 @@ def main() -> int:
             errors.append("invalid v7 contract field %s" % key)
     if v7.get("replica_tiers") != ["gpu", "pinned_cpu", "ssd"]:
         errors.append("v7 Replica tiers must be gpu/pinned_cpu/ssd")
+    if v8_contract.get("schema_version") != 4 or v8_contract.get("protocol_version") != 8:
+        errors.append("v8 contract must use protocol 8 schema 4")
+    v8_method = v8_contract.get("method", {})
+    for key, expected in {
+        "selector_type": "training_free",
+        "learned_selector_enabled": False,
+        "quality_predictor_enabled": False,
+        "fixed_repair_ratio": 0.15,
+        "max_stored_variants_per_content": 16,
+        "min_compared_variants_for_multisource": 2,
+        "insufficient_ranking_policy": "abstain_dense",
+        "comparison_budget_fraction": 0.05,
+        "source_freeze_is_final": True,
+        "winner_only_full_kv_prefetch": True,
+    }.items():
+        if v8_method.get(key) != expected:
+            errors.append("invalid v8 method field %s" % key)
+    if v8_contract.get("planning", {}).get("segment_count_cap", "missing") is not None:
+        errors.append("v8 must not cap detected non-prefix Segments")
+    if v8_contract.get("h1_diagnostic", {}).get("total_rows") != 9720:
+        errors.append("v8 H1 diagnostic must retain all 9,720 rows")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:
@@ -109,6 +135,19 @@ def main() -> int:
         else:
             if local_v7.protocol_version != 7:
                 errors.append("local v7 config did not load as protocol 7")
+    for name in (
+        "configs/local_system_v8_causal_wait.json",
+        "configs/local_system_v8_immediate_staggered.json",
+        "configs/a800_h1_pilot_v8_mistral.json",
+        "configs/a800_h1_pilot_v8_qwen.json",
+    ):
+        try:
+            local_v8 = load_config(name)
+        except (OSError, ValueError) as error:
+            errors.append("v8 config is invalid: %s: %s" % (name, error))
+        else:
+            if local_v8.protocol_version != 8:
+                errors.append("v8 config did not load as protocol 8: %s" % name)
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")
@@ -144,6 +183,7 @@ def main() -> int:
     }
     result = {
         "contract": str(contract_path.resolve()),
+        "v8_contract": str(v8_contract_path.resolve()),
         "valid": not errors,
         "errors": errors,
         "matrix_counts": matrix_counts,

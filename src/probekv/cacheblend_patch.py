@@ -75,6 +75,7 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_v6_staggered_runtime",
         "probekv_v6_prefix_hardened_runtime",
         "probekv_v7_single_artifact_runtime",
+        "probekv_v8_training_free_residual_k",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
@@ -163,6 +164,23 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
             raise ValueError("v7 runtime must require %s" % key)
     if v7.get("repair_rounding_policy") != "ceil":
         raise ValueError("v7 runtime must use conservative ceil repair rounding")
+    v8 = runtime_modes.get("training_free_residual_k_runtime_v8")
+    if not isinstance(v8, dict):
+        raise ValueError("patch manifest must define training_free_residual_k_runtime_v8")
+    if v8.get("patch_mode") != "probekv_v8_training_free_residual_k":
+        raise ValueError("v8 runtime must use its explicit patch mode")
+    for key in (
+        "training_free_residual_k_selection",
+        "selection_state_k_only",
+        "winner_only_prefetch",
+        "predicted_and_refined_joint_planners",
+    ):
+        if v8.get(key) is not True:
+            raise ValueError("v8 runtime must require %s" % key)
+    if v8.get("full_kv_transfer_for_selection") is not False:
+        raise ValueError("v8 selection must not transfer full KV")
+    if v8.get("repair_ratio") != 0.15:
+        raise ValueError("v8 runtime must freeze repair ratio 0.15")
     return manifest
 
 

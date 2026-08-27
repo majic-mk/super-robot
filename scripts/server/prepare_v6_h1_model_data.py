@@ -26,7 +26,7 @@ def main() -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--contract", default="configs/experiment_contract.yaml")
     parser.add_argument("--server-lock", default="configs/a800_server_lock.json")
-    parser.add_argument("--protocol-version", type=int, choices=(6, 7), default=6)
+    parser.add_argument("--protocol-version", type=int, choices=(6, 7, 8), default=6)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=20260726)
     parser.add_argument("--per-dataset", type=int, default=50)
@@ -130,10 +130,10 @@ def main() -> int:
     ], cwd=str(repo))
 
     handoff = {
-        "schema_version": 3 if args.protocol_version == 7 else 1,
+        "schema_version": (4 if args.protocol_version == 8 else (3 if args.protocol_version == 7 else 1)),
         "protocol_version": args.protocol_version,
         "stage": "%s_h1_model_data_handoff" % (
-            "v7" if args.protocol_version == 7 else "v6"
+            ("v8" if args.protocol_version == 8 else ("v7" if args.protocol_version == 7 else "v6"))
         ),
         "paper_evidence": False,
         "locked_test_accessed": False,
@@ -158,6 +158,9 @@ def main() -> int:
     if args.protocol_version == 7:
         handoff["ready_for_v6_h1_gpu_sentinel"] = False
         handoff["ready_for_v7_h1_gpu_sentinel"] = True
+    elif args.protocol_version == 8:
+        handoff["ready_for_v6_h1_gpu_sentinel"] = False
+        handoff["ready_for_v8_h1_gpu_sentinel"] = True
     atomic_write_json(output / "handoff.json", handoff)
     print(json.dumps(handoff, ensure_ascii=False, indent=2))
     return 0

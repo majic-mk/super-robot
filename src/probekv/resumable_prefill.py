@@ -63,6 +63,16 @@ class ResumablePrefillAdapter(Protocol):
     ) -> Any:
         ...
 
+    def observe_pre_rope_k(
+        self,
+        *,
+        completed_depth: int,
+        hidden_states: Any,
+        residual: Any,
+        active_positions: Tuple[int, ...],
+    ) -> Any:
+        ...
+
 
 @dataclass(frozen=True)
 class SegmentReuseCommit:
@@ -162,6 +172,36 @@ class ProbeKVResumablePrefillSession:
             "source_id": source_id,
             "handle": handle,
         }
+
+    def observe_pre_rope_k(self, completed_depth: Optional[int] = None) -> Any:
+        """Observe K entering the next causal self-attention block.
+
+        ``completed_depth=0`` is available only for the frozen negative control;
+        online locking starts at depth one.
+        """
+        if not self._started or self._finished:
+            raise RuntimeError("K observation requires an active prefill session")
+        depth = self.current_layer if completed_depth is None else int(completed_depth)
+        if depth != self.current_layer:
+            raise ValueError("K may only be observed at the actual completed depth")
+        if not 0 <= depth < self.adapter.total_layers:
+            raise ValueError("K observation must enter an existing next layer")
+        observed = self.adapter.observe_pre_rope_k(
+            completed_depth=depth,
+            hidden_states=self.hidden_states,
+            residual=self.residual,
+            active_positions=self.active_positions,
+        )
+        self.layer_audit.append(
+            {
+                "event": "selection_k_observation",
+                "completed_depth": depth,
+                "k_observation_layer_1based": depth + 1,
+                "k_observation_layer_index_0based": depth,
+                "active_positions": self.active_positions,
+            }
+        )
+        return observed
 
     def commit_segment_reuse(
         self,

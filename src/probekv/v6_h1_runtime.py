@@ -36,7 +36,7 @@ def compose_manifest_prompt_regions(
     prefix = tuple(int(value) for value in base_prefix)
     middle = tuple(int(value) for value in segment)
     suffix = tuple(int(value) for value in base_suffix)
-    if case.protocol_version == 7:
+    if case.protocol_version in {7, 8}:
         prefix += tuple(case.canonical_parent_left_token_ids)
         suffix = tuple(case.canonical_parent_right_token_ids) + suffix
     return prefix, middle, suffix
@@ -44,7 +44,7 @@ def compose_manifest_prompt_regions(
 
 def manifest_segment_token_ids(case: ManifestCase, tokenizer: Any) -> Tuple[int, ...]:
     """Use exact frozen IDs in v7; preserve the legacy v6 text audit."""
-    if case.protocol_version == 7:
+    if case.protocol_version in {7, 8}:
         return tuple(int(value) for value in case.segment_token_ids)
     segment = tuple(
         int(value)
@@ -204,7 +204,7 @@ class V6H1CaseRuntime:
         variants = []
         for source in case.sources:
             historical_prefix = self._prefix_ids(source.historical_context)
-            if case.protocol_version == 7:
+            if case.protocol_version in {7, 8}:
                 historical_prefix += tuple(case.canonical_parent_left_token_ids)
             combined = historical_prefix + segment
             if len(combined) + 1 > self.executor.runner.model_config.max_model_len:
@@ -226,7 +226,12 @@ class V6H1CaseRuntime:
                 prompt_ids=prompt,
                 segment_positions=(positions,),
                 canonical_variants=(tuple(variants),),
+                selection_variants=(tuple(
+                    tuple(key.clone() for key, _ in layers)
+                    for layers in variants
+                ),),
                 current_layers=(current_layers,),
+                selection_state_separate_backing_verified=True,
             ),
             prefix_tokens=len(prefix),
             segment_tokens=len(segment),
@@ -315,7 +320,7 @@ class V6H1CaseRuntime:
             not r1_greedy.source_digests_unchanged
             or not r1_greedy.absolute_union_mask_verified
             or (
-                self.executor.protocol_version == 7
+                self.executor.protocol_version in {7, 8}
                 and not r1_greedy.artifact_digests_unchanged
             )
         ):
@@ -337,7 +342,7 @@ class V6H1CaseRuntime:
                 not greedy.source_digests_unchanged
                 or not greedy.absolute_union_mask_verified
                 or (
-                    self.executor.protocol_version == 7
+                    self.executor.protocol_version in {7, 8}
                     and not greedy.artifact_digests_unchanged
                 )
             ):
@@ -426,3 +431,17 @@ class V7H1CaseRuntime(V6H1CaseRuntime):
             raise ValueError("v7 H1 runtime requires a protocol-v7 executor")
         if self.case.protocol_version != 7 or not self.case.reuse_content_key:
             raise ValueError("v7 H1 requires canonical Segment provenance")
+
+
+class V8H1CaseRuntime(V6H1CaseRuntime):
+    """v8 offline repair-grid diagnostics after Profile-bound qualification."""
+
+    runtime_mode = "v8_training_free_offline_h1_case_runner"
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["repair_rounding_policy"] = "ceil"
+        super().__init__(*args, **kwargs)
+        if self.executor.protocol_version != 8:
+            raise ValueError("v8 H1 runtime requires a protocol-v8 executor")
+        if self.case.protocol_version != 8 or not self.case.reuse_content_key:
+            raise ValueError("v8 H1 requires canonical Segment provenance")

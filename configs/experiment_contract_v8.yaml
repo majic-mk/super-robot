@@ -1,0 +1,72 @@
+schema_version: 4
+protocol_version: 8
+name: probekv-v8-training-free-residual-k
+evidence:
+  no_gpu_paper_evidence: false
+  locked_test_accessed_before_h5: false
+  profile_freeze_split: pooled_development_only
+  probability_calibration_used: false
+method:
+  claim: training_free_current_state_residual_k_historical_source_selection
+  prefix_first: true
+  selector_type: training_free
+  learned_selector_enabled: false
+  quality_predictor_enabled: false
+  fixed_repair_ratio: 0.15
+  score_repair_rounding: ceil_but_leave_one_residual_token
+  cacheblend_repair_rounding: ceil
+  max_stored_variants_per_content: 16
+  min_compared_variants_for_multisource: 2
+  insufficient_ranking_policy: abstain_dense
+  cfo_top1_fallback_is_baseline_only: true
+  comparison_budget_fraction: 0.05
+  source_freeze_is_final: true
+  winner_only_full_kv_prefetch: true
+models:
+  mistral:
+    completed_depths: [1, 2, 4, 5, 8]
+    negative_control_depth: 0
+  qwen:
+    completed_depths: [1, 2, 4, 5, 7]
+    negative_control_depth: 0
+storage:
+  artifact_policy: single_canonical_lossless
+  canonical_kv_dtype: bfloat16
+  selection_state: exact_bfloat16_pre_rope_k
+  replica_policy: one_backing_plus_transient_hot
+  tiers: [gpu, pinned_cpu, ssd]
+  permanent_three_copies: false
+  delete_low_value_source_completely: true
+  selection_scratch_capacity_mib: 256
+leases:
+  logical_source_lease_preserves_last_backing: true
+  physical_replica_batch_lease_is_atomic: true
+  same_source_replan_attempts: 2
+  source_reselection_after_freeze: false
+  ttl_direct_release: false
+planning:
+  segment_count_cap: null
+  boundary_policy: per_segment_staggered
+  partial_reuse: true
+  policies: [causal_commit_wait, immediate_staggered_closed_loop]
+  predicted_joint_planner: true
+  refined_joint_planner: true
+  predicted_dense_can_return_to_reuse: false
+  gamma: 0.8
+profile_and_qualification:
+  profile_schema_version: 4
+  gate_schema_version: 4
+  profile_must_precede_qualification: true
+  datasets: [musique, 2wikimultihopqa, hotpotqa]
+  qualification_jobs_per_model: 140
+  fake_timing_allowed: false
+  h1_requires_profile_bound_gate: true
+h1_diagnostic:
+  cases: 150
+  sources_per_case: 4
+  ratios: [0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0]
+  primary_rows: 5400
+  anchor_cases: 30
+  anchor_rows: 4320
+  total_rows: 9720
+  paper_evidence: false

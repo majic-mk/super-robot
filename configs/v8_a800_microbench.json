@@ -1,0 +1,23 @@
+{
+  "schema_version": 4,
+  "protocol_version": 8,
+  "evidence_class": "server_pilot",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "correctness_sentinels": ["native_prefix_cache", "completed_depth_k_hook", "r1_dense_equivalence"],
+  "segment_count_samples_are_not_runtime_caps": true,
+  "correctness_segments": [1, 2, 5, 10, 37],
+  "stored_variants": [1, 4, 16],
+  "compare_k": [1, 2, 4, 8, 16],
+  "selection_state_tiers": ["pinned_cpu", "ssd"],
+  "gpu_selection_storage": "ephemeral_scratch",
+  "mistral_completed_depths": [0, 1, 2, 4, 5, 8],
+  "qwen_completed_depths": [0, 1, 2, 4, 5, 7],
+  "fixed_repair_ratio": 0.15,
+  "repair_ablation_ratios": [0.10, 0.15, 0.20],
+  "correctness_endpoint_ratios": [0.0, 1.0],
+  "warmups": 20,
+  "repeats": 100,
+  "profile_freeze_precedes_qualification": true,
+  "fake_timing_allowed": false
+}

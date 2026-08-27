@@ -191,6 +191,42 @@ class PinnedCacheBlendResumableAdapter:
     def finish_prefill(self, **kwargs: Any) -> Any:
         return self.inner_model.probekv_finish_prefill(**kwargs)
 
+    def observe_pre_rope_k(
+        self,
+        *,
+        completed_depth: int,
+        hidden_states: Any,
+        residual: Any,
+        active_positions: Tuple[int, ...],
+    ) -> Any:
+        """Project exact K entering block ``completed_depth + 1``.
+
+        The pinned runtime is single-GPU, so the local Q/K/V projection sizes
+        equal the model geometry. No RoPE is applied here.
+        """
+        del active_positions
+        if not 0 <= completed_depth < self.total_layers:
+            raise ValueError("completed depth has no following Transformer block")
+        layer = self.inner_model.layers[completed_depth]
+        normalized = layer.input_layernorm(hidden_states, residual)
+        if isinstance(normalized, tuple):
+            normalized = normalized[0]
+        projected = layer.self_attn.qkv_proj(normalized)
+        if isinstance(projected, tuple):
+            projected = projected[0]
+        attention = layer.self_attn
+        head_dim = int(getattr(attention, "head_dim"))
+        q_size = int(
+            getattr(attention, "q_size", self.spec.num_attention_heads * head_dim)
+        )
+        kv_size = int(
+            getattr(attention, "kv_size", self.spec.num_kv_heads * head_dim)
+        )
+        if projected.shape[-1] < q_size + kv_size:
+            raise RuntimeError("QKV projection is smaller than the pinned model geometry")
+        key = projected[..., q_size : q_size + kv_size]
+        return key.reshape(key.shape[0], self.spec.num_kv_heads, head_dim)
+
 
 def model_audit_contract(spec: ResumableModelSpec) -> Mapping[str, Any]:
     return asdict(spec)

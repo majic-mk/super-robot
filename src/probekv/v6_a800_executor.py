@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from .cacheblend_v6_online_engine import (
     CacheBlendV6OnlineEngine,
     CacheBlendV7OnlineEngine,
+    CacheBlendV8OnlineEngine,
     TorchLayerwiseSourceLoader,
 )
 from .contracts import KVLocation
@@ -31,10 +32,17 @@ class RuntimeFixture:
     canonical_variants: Tuple[
         Tuple[Tuple[Tuple[Any, Any], ...], ...], ...
     ]
+    # Independent Source-selection backing: segment -> variant -> depth K.
+    # It is materialized during the canonical full prefill and comparison is
+    # forbidden from slicing the full-KV Artifact as an implicit fallback.
+    selection_variants: Tuple[
+        Tuple[Tuple[Any, ...], ...], ...
+    ]
     # segment -> Transformer layer -> current request (pre-RoPE K, V)
     current_layers: Tuple[Tuple[Tuple[Any, Any], ...], ...]
     exact_prefix_tokens: int = 0
     exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
+    selection_state_separate_backing_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,7 @@ class GenerationTrace:
     prefix_rows_excluded_from_repair: int = 0
     prefix_active_positions_valid: bool = True
     artifact_digests_unchanged: bool = True
+    completed_depth_hook_verified: bool = False
 
 
 def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> float:
@@ -89,6 +98,7 @@ class RealCacheBlendA800Executor:
         expected_cacheblend_tree: str = "",
         engine_class: Any = CacheBlendV6OnlineEngine,
         protocol_version: int = 6,
+        selection_scratch_capacity_bytes: int = 256 * 1024 * 1024,
     ) -> None:
         import torch
         from vllm import LLM, SamplingParams
@@ -101,13 +111,19 @@ class RealCacheBlendA800Executor:
         self.SequenceData = SequenceData
         self.SequenceGroupMetadata = SequenceGroupMetadata
         self.model_spec = model_spec
-        if protocol_version not in {6, 7}:
-            raise ValueError("qualification executor supports protocol v6 or v7")
+        if protocol_version not in {6, 7, 8}:
+            raise ValueError("qualification executor supports protocol v6, v7 or v8")
         if protocol_version == 7 and engine_class is not CacheBlendV7OnlineEngine:
             raise ValueError("protocol v7 requires CacheBlendV7OnlineEngine")
+        if protocol_version == 8 and engine_class is not CacheBlendV8OnlineEngine:
+            raise ValueError("protocol v8 requires CacheBlendV8OnlineEngine")
         self.protocol_version = protocol_version
         self.engine_class = engine_class
-        self.repair_rounding_policy = "ceil" if protocol_version == 7 else "floor"
+        if selection_scratch_capacity_bytes <= 0:
+            raise ValueError("selection scratch capacity must be positive")
+        self.selection_scratch_capacity_bytes = int(selection_scratch_capacity_bytes)
+        self.selection_scratch_peak_bytes = 0
+        self.repair_rounding_policy = "ceil" if protocol_version in {7, 8} else "floor"
         self.adapter_name = model_spec.adapter_name
         self.llm = LLM(
             model=model_path,
@@ -318,13 +334,32 @@ class RealCacheBlendA800Executor:
                     ))
         finally:
             metadata["collect"] = False
+        selection_variants = tuple(
+            tuple(
+                tuple(key.detach().clone() for key, _ in layers)
+                for layers in variants
+            )
+            for variants in per_segment
+        )
+        separate_selection_backing = all(
+            selection_key.data_ptr() != artifact_key.data_ptr()
+            and self.torch.equal(selection_key, artifact_key)
+            for segment_index, variants in enumerate(per_segment)
+            for variant_index, layers in enumerate(variants)
+            for layer_index, (artifact_key, _) in enumerate(layers)
+            for selection_key in (
+                selection_variants[segment_index][variant_index][layer_index],
+            )
+        )
         fixture = RuntimeFixture(
             prompt_ids=tuple(int(v) for v in current),
             segment_positions=tuple(current_positions),
             canonical_variants=tuple(tuple(rows) for rows in per_segment),
+            selection_variants=selection_variants,
             current_layers=tuple(tuple(rows) for rows in current_layers),
             exact_prefix_tokens=len(prefix_ids),
             exact_prefix_layers=tuple(exact_prefix_layers),
+            selection_state_separate_backing_verified=separate_selection_backing,
         )
         self.fixtures[cache_key] = fixture
         return fixture
@@ -531,8 +566,14 @@ class RealCacheBlendA800Executor:
                 attention_metadata=attention,
                 working_kv=self.kv_caches,
             )
+            observed_k0 = None
+            observed_kd = None
+            if self.protocol_version == 8:
+                observed_k0 = engine.session.observe_pre_rope_k(0)
             first_probe = min(max(1, int(probe_layer)), self.model_spec.num_layers - 1)
             engine.advance_to_layer(first_probe)
+            if self.protocol_version == 8:
+                observed_kd = engine.session.observe_pre_rope_k(first_probe)
             tickets = []
             for index, positions in enumerate(fixture.segment_positions):
                 variants = fixture.canonical_variants[index]
@@ -540,7 +581,9 @@ class RealCacheBlendA800Executor:
                     raise ValueError("locked winner variant is unavailable")
                 source_id = "s%d-v%d" % (index, winner_variant)
                 canonical_layers = variants[winner_variant]
-                if self.protocol_version == 7:
+                if self.protocol_version == 8:
+                    engine.freeze_source("c%d" % index, source_id)
+                if self.protocol_version in {7, 8}:
                     logical = TorchLayerwiseSourceLoader._digest(
                         self.torch, canonical_layers
                     )
@@ -629,6 +672,8 @@ class RealCacheBlendA800Executor:
                     )
                 engine.advance_to_layer(boundary)
             hidden = engine.finish_prefill()
+            if self.protocol_version == 8:
+                engine.assert_selection_transfer_invariants()
             token_ids, logits = self._decode_from_prefill(
                 fixture,
                 hidden,
@@ -640,9 +685,12 @@ class RealCacheBlendA800Executor:
             )
         end.record()
         end.synchronize()
-        expected_masks = len(engine.session.layer_audit)
+        layer_rows = [
+            row for row in engine.session.layer_audit if "active_before" in row
+        ]
+        expected_masks = len(layer_rows)
         verified_masks = sum(
-            bool(row["union_mask_digest"]) for row in engine.session.layer_audit
+            bool(row["union_mask_digest"]) for row in layer_rows
         )
         prefix_digest_after = (
             TorchLayerwiseSourceLoader._digest(self.torch, prefix_layers)
@@ -658,7 +706,7 @@ class RealCacheBlendA800Executor:
         )
         prefix_active_positions_valid = all(
             position >= prefix_tokens
-            for row in engine.session.layer_audit
+            for row in layer_rows
             for key in ("active_before", "active_after")
             for position in row[key]
         )
@@ -678,8 +726,21 @@ class RealCacheBlendA800Executor:
             prefix_active_positions_valid=prefix_active_positions_valid,
             artifact_digests_unchanged=(
                 all(engine.audit.artifact_digest_unchanged_by_segment.values())
-                if self.protocol_version == 7
+                if self.protocol_version in {7, 8}
                 else True
+            ),
+            completed_depth_hook_verified=(
+                self.protocol_version != 8
+                or (
+                    observed_k0 is not None
+                    and observed_kd is not None
+                    and observed_k0.ndim == 3
+                    and observed_kd.ndim == 3
+                    and observed_k0.shape[1:] == observed_kd.shape[1:]
+                    and observed_k0.dtype == self.torch.bfloat16
+                    and observed_kd.dtype == self.torch.bfloat16
+                    and first_probe >= 1
+                )
             ),
         )
 
@@ -704,6 +765,14 @@ class RealCacheBlendA800Executor:
             "canonical_source_digests_unchanged": reuse.source_digests_unchanged,
             "absolute_union_mask_verified": reuse.absolute_union_mask_verified,
             "artifact_digests_unchanged": reuse.artifact_digests_unchanged,
+            "completed_depth_hook_verified": reuse.completed_depth_hook_verified,
+            "selection_state_separate_backing_verified": (
+                fixture.selection_state_separate_backing_verified
+                if self.protocol_version == 8 else True
+            ),
+            "request_attributed_full_kv_bytes_transferred_for_selection": 0,
+            "request_attributed_nonwinner_full_kv_bytes_transferred": 0,
+            "request_attributed_full_kv_prefetch_before_source_freeze": 0,
             "dense_token_ids": list(dense.token_ids),
             "reuse_token_ids": list(reuse.token_ids),
             "dense_gpu_ms": dense.gpu_ms,
@@ -713,6 +782,10 @@ class RealCacheBlendA800Executor:
             raise RuntimeError("r=1 A800 sentinel differs from dense reference")
         if not reuse.source_digests_unchanged or not reuse.absolute_union_mask_verified:
             raise RuntimeError("r=1 A800 sentinel failed Source/mask integrity")
+        if self.protocol_version == 8 and not reuse.completed_depth_hook_verified:
+            raise RuntimeError("v8 completed-depth K observation hook failed")
+        if self.protocol_version == 8 and not result["selection_state_separate_backing_verified"]:
+            raise RuntimeError("v8 SelectionState is not independent from full KV")
         return result
 
     def run_native_prefix_cache_sentinel(
@@ -855,7 +928,12 @@ class RealCacheBlendA800Executor:
         layer: int,
         compared_variants: int,
     ) -> Tuple[Any, Any]:
-        layer_index = int(layer) - 1
+        # v6/v7 jobs name the Transformer layer directly.  In v8 the job
+        # coordinate is ``completed_depth`` and observes K entering the next
+        # causal self-attention block, so d=1 reads the pre-RoPE K of layer 2.
+        layer_index = int(layer) if self.protocol_version == 8 else int(layer) - 1
+        if not 0 <= layer_index < self.model_spec.num_layers:
+            raise ValueError("selection-state depth has no following layer")
         current_rows = []
         source_rows: List[List[Any]] = [
             [] for _ in range(compared_variants)
@@ -863,23 +941,69 @@ class RealCacheBlendA800Executor:
         for segment_index in range(len(fixture.segment_positions)):
             key, value = fixture.current_layers[segment_index][layer_index]
             current_rows.append(
-                self.torch.cat((key, value), dim=-1).to("cuda")
+                (key if self.protocol_version == 8 else self.torch.cat((key, value), dim=-1))
+                .to("cuda")
             )
             for variant in range(compared_variants):
-                source_key, source_value = (
-                    fixture.canonical_variants[segment_index][variant][layer_index]
-                )
+                if self.protocol_version == 8:
+                    try:
+                        source_key = fixture.selection_variants[segment_index][variant][layer_index]
+                    except (IndexError, TypeError):
+                        raise RuntimeError(
+                            "v8 SelectionState is missing; full-KV fallback is forbidden"
+                        ) from None
+                    source_value = None
+                else:
+                    source_key, source_value = (
+                        fixture.canonical_variants[segment_index][variant][layer_index]
+                    )
                 source_rows[variant].append(
-                    self.torch.cat((source_key, source_value), dim=-1).to("cuda")
+                    (
+                        source_key
+                        if self.protocol_version == 8
+                        else self.torch.cat((source_key, source_value), dim=-1)
+                    ).to("cuda")
                 )
         current = self.torch.cat(current_rows, dim=0).contiguous()
         sources = self.torch.stack(
             [self.torch.cat(rows, dim=0) for rows in source_rows], dim=0
         ).contiguous() if source_rows else current.new_empty((0,) + current.shape)
+        scratch_bytes = (
+            current.numel() * current.element_size()
+            + sources.numel() * sources.element_size()
+        )
+        self.selection_scratch_peak_bytes = max(
+            self.selection_scratch_peak_bytes, int(scratch_bytes)
+        )
+        if self.protocol_version == 8 and scratch_bytes > self.selection_scratch_capacity_bytes:
+            raise MemoryError("v8 SelectionState comparison exceeded bounded GPU scratch")
         return current, sources
 
-    @staticmethod
-    def _cuda_compare(current: Any, sources: Any) -> float:
+    def _cuda_compare(
+        self, current: Any, sources: Any, *, residual_ratio: float | None = None
+    ) -> float:
+        if sources.shape[0] == 0:
+            raise ValueError("comparison requires at least one Source")
+        if residual_ratio is not None:
+            # [K, tokens, kv_heads, head_dim] -> per-Source, per-token drift.
+            if current.ndim != 3 or sources.ndim != 4:
+                raise ValueError("v8 residual-K comparison requires K-only tensors")
+            numerator = (
+                (sources - current.unsqueeze(0)).float().square().sum(dim=(2, 3)).sqrt()
+            )
+            denominator = current.float().square().sum(dim=(1, 2)).sqrt().clamp_min(1e-12)
+            drifts = numerator / denominator.unsqueeze(0)
+            token_count = int(current.shape[0])
+            if token_count < 2:
+                raise ValueError("residual-K scoring requires at least two tokens")
+            ignored = min(token_count - 1, int(math.ceil(residual_ratio * token_count)))
+            # Stable sorting makes equal drift values fall back to increasing
+            # absolute/local token position, matching the CPU selector contract.
+            ranked = drifts.argsort(dim=1, descending=True, stable=True)
+            keep_mask = self.torch.ones_like(drifts, dtype=self.torch.bool)
+            keep_mask.scatter_(1, ranked[:, :ignored], False)
+            scores = (drifts * keep_mask).sum(dim=1) / (token_count - ignored)
+            return float(scores.min().item())
         dimensions = tuple(range(1, sources.ndim))
         numerator = (
             (sources - current.unsqueeze(0)).float().square().sum(dim=dimensions)
@@ -973,7 +1097,11 @@ class RealCacheBlendA800Executor:
                 V6A800JobKind.CANDIDATE_COMPARE,
                 V6A800JobKind.MULTISEGMENT_COMPARE,
             ):
-                self._cuda_compare(summary_current, summary_sources)
+                self._cuda_compare(
+                    summary_current,
+                    summary_sources,
+                    residual_ratio=(0.15 if self.protocol_version == 8 else None),
+                )
             elif job.kind == V6A800JobKind.MULTISOURCE_LOAD:
                 tickets = [
                     self.source_loader.begin(

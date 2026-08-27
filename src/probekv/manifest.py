@@ -80,7 +80,7 @@ class ManifestCase:
         effective_kmax = (
             int(online_kmax)
             if online_kmax is not None
-            else (16 if self.protocol_version == 7 else 4)
+            else (16 if self.protocol_version in {7, 8} else 4)
         )
         if not 1 <= len(self.sources) <= effective_kmax:
             raise ValueError("source count exceeds online Kmax")
@@ -97,7 +97,7 @@ class ManifestCase:
             raise ValueError(
                 "current context must not be reused as a historical source context"
             )
-        if self.protocol_version == 7 and not all(
+        if self.protocol_version in {7, 8} and not all(
             (
                 self.canonicalizer_signature,
                 self.segment_provenance_id,
@@ -105,15 +105,15 @@ class ManifestCase:
                 self.canonical_parent_content_hash,
             )
         ):
-            raise ValueError("v7 manifest requires canonical Segment provenance")
-        if self.protocol_version == 7 and self.canonical_parent_content_hash != (
+            raise ValueError("v7/v8 manifest requires canonical Segment provenance")
+        if self.protocol_version in {7, 8} and self.canonical_parent_content_hash != (
             token_content_hash(
                 self.canonical_parent_left_token_ids
                 + self.segment_token_ids
                 + self.canonical_parent_right_token_ids
             )
         ):
-            raise ValueError("v7 canonical parent token sequence is incomplete")
+            raise ValueError("v7/v8 canonical parent token sequence is incomplete")
 
     def to_row(self) -> Dict[str, Any]:
         row = asdict(self)

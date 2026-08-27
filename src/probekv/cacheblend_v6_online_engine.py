@@ -480,3 +480,81 @@ class CacheBlendV7OnlineEngine(CacheBlendV6OnlineEngine):
             == artifact.artifact_logical_digest
         )
         return ticket
+
+
+class CacheBlendV8OnlineEngine(CacheBlendV7OnlineEngine):
+    """v8 data-plane contract; Source ranking is handled by K-only states."""
+
+    patch_mode = "probekv_v8_training_free_residual_k"
+    implementation_status = "requires_dual_model_a800_profile_freeze_and_qualification"
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.request_attributed_full_kv_bytes_transferred_for_selection = 0
+        self.request_attributed_nonwinner_full_kv_bytes_transferred = 0
+        self.request_attributed_full_kv_prefetch_before_source_freeze = 0
+        self.frozen_source_by_segment: Dict[str, str] = {}
+
+    @staticmethod
+    def capabilities() -> Mapping[str, bool]:
+        result = dict(CacheBlendV7OnlineEngine.capabilities())
+        result.update(
+            {
+                "completed_depth_k_observation": True,
+                "training_free_residual_k_selection": True,
+                "selection_state_k_only": True,
+                "selection_state_separate_backing": True,
+                "selection_state_scratch_bounded": True,
+                "winner_only_prefetch": True,
+                "predicted_and_refined_joint_planners": True,
+                "atomic_logical_source_lease": True,
+                "atomic_replica_batch_lease": True,
+                "fixed_repair_ratio_015": True,
+            }
+        )
+        return result
+
+    def freeze_source(self, segment_id: str, source_variant_id: str) -> None:
+        previous = self.frozen_source_by_segment.get(segment_id)
+        if previous is not None and previous != source_variant_id:
+            raise RuntimeError("v8 Source freeze forbids Source substitution")
+        self.frozen_source_by_segment[segment_id] = source_variant_id
+
+    def start_artifact_replica_prefetch(
+        self,
+        *,
+        segment_id: str,
+        source_variant_id: str,
+        artifact: CanonicalKVArtifact,
+        replica: PhysicalReplica,
+        canonical_layers: Sequence[Tuple[Any, Any]],
+        segment_positions: Sequence[int],
+    ) -> LayerwiseLoadTicket:
+        frozen = self.frozen_source_by_segment.get(segment_id)
+        if frozen != source_variant_id:
+            self.request_attributed_full_kv_prefetch_before_source_freeze += 1
+            if frozen is not None:
+                self.request_attributed_nonwinner_full_kv_bytes_transferred += int(
+                    replica.size_bytes
+                )
+            raise RuntimeError(
+                "v8 full-KV prefetch is legal only for the frozen winner"
+            )
+        return super().start_artifact_replica_prefetch(
+            segment_id=segment_id,
+            source_variant_id=source_variant_id,
+            artifact=artifact,
+            replica=replica,
+            canonical_layers=canonical_layers,
+            segment_positions=segment_positions,
+        )
+
+    def assert_selection_transfer_invariants(self) -> None:
+        if any(
+            (
+                self.request_attributed_full_kv_bytes_transferred_for_selection,
+                self.request_attributed_nonwinner_full_kv_bytes_transferred,
+                self.request_attributed_full_kv_prefetch_before_source_freeze,
+            )
+        ):
+            raise RuntimeError("v8 Source selection triggered forbidden full-KV transfer")

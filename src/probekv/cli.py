@@ -18,6 +18,7 @@ from .manifest import case_from_mapping, manifest_digest, validate_manifest
 from .simulation import run_local_simulation
 from .v6_simulation import run_v6_local_simulation
 from .v7_simulation import run_v7_local_simulation
+from .v8_simulation import run_v8_local_simulation
 from .v6_manifest import (
     request_case_from_mapping,
     request_manifest_digest,
@@ -29,7 +30,9 @@ def _simulate(config_path: str, output_override: str = None) -> int:
     config = load_config(config_path)
     if config.evidence_class != "local_simulation":
         raise ValueError("simulate command only accepts local_simulation configs")
-    if config.protocol_version == 7:
+    if config.protocol_version == 8:
+        result = run_v8_local_simulation(config)
+    elif config.protocol_version == 7:
         result = run_v7_local_simulation(config)
     elif config.protocol_version == 6:
         result = run_v6_local_simulation(config)

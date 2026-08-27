@@ -83,6 +83,19 @@ class ExperimentConfig:
     alignment_policy: str = "soft"
     tail_policy: str = "semantic_rebalance"
     padding: bool = False
+    source_selector_type: str = "legacy"
+    learned_selector_enabled: bool = True
+    quality_predictor_enabled: bool = True
+    fixed_repair_ratio: float = 0.15
+    min_compared_variants_for_multisource: int = 2
+    insufficient_ranking_policy: str = "abstain_dense"
+    early_exit_margin: float = 0.30
+    strong_early_exit_margin: float = 0.60
+    residual_band_relative_tolerance: float = 0.05
+    residual_band_numeric_slack: float = 1e-6
+    selector_profile_status: str = "legacy"
+    selector_profile_sha256: str = ""
+    v8_execution_phase: str = "online_main"
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -262,6 +275,33 @@ class ExperimentConfig:
             alignment_policy=str(raw.get("alignment_policy", "soft")),
             tail_policy=str(raw.get("tail_policy", "semantic_rebalance")),
             padding=bool(raw.get("padding", False)),
+            source_selector_type=str(raw.get("source_selector_type", "legacy")),
+            learned_selector_enabled=bool(raw.get("learned_selector_enabled", True)),
+            quality_predictor_enabled=bool(raw.get("quality_predictor_enabled", True)),
+            fixed_repair_ratio=float(raw.get("fixed_repair_ratio", 0.15)),
+            min_compared_variants_for_multisource=int(
+                raw.get("min_compared_variants_for_multisource", 2)
+            ),
+            insufficient_ranking_policy=str(
+                raw.get("insufficient_ranking_policy", "abstain_dense")
+            ),
+            early_exit_margin=float(raw.get("early_exit_margin", 0.30)),
+            strong_early_exit_margin=float(
+                raw.get("strong_early_exit_margin", 0.60)
+            ),
+            residual_band_relative_tolerance=float(
+                raw.get("residual_band_relative_tolerance", 0.05)
+            ),
+            residual_band_numeric_slack=float(
+                raw.get("residual_band_numeric_slack", 1e-6)
+            ),
+            selector_profile_status=str(
+                raw.get("selector_profile_status", "legacy")
+            ),
+            selector_profile_sha256=str(
+                raw.get("selector_profile_sha256", "")
+            ),
+            v8_execution_phase=str(raw.get("v8_execution_phase", "online_main")),
         )
         result.validate()
         return result
@@ -279,6 +319,8 @@ class ExperimentConfig:
             self._validate_v6()
         elif self.protocol_version == 7:
             self._validate_v7()
+        elif self.protocol_version == 8:
+            self._validate_v8()
         elif not 1 <= self.online_kmax <= 4:
             raise ValueError("online_kmax must be in [1, 4]")
         if not 0 < self.gamma <= 1:
@@ -338,12 +380,14 @@ class ExperimentConfig:
             "cacheblend_closed_loop",
             "cacheblend_multisegment_closed_loop",
             "cacheblend_v7_closed_loop",
+            "cacheblend_v8_training_free",
         }:
             raise ValueError("unsupported runtime_backend")
         if self.runtime_backend in {
             "cacheblend_closed_loop",
             "cacheblend_multisegment_closed_loop",
             "cacheblend_v7_closed_loop",
+            "cacheblend_v8_training_free",
         }:
             if (
                 self.closed_loop_policy
@@ -524,6 +568,104 @@ class ExperimentConfig:
             self.runtime_backend != "cacheblend_v7_closed_loop"
         ):
             raise ValueError("v7 server runs require the explicit v7 runtime")
+
+    def _validate_v8(self) -> None:
+        if self.legacy_online_kmax_present:
+            raise ValueError("v8 forbids legacy online_kmax")
+        if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
+            raise ValueError("v8 requires training-free residual-K selection")
+        if self.source_selector_type != "training_free":
+            raise ValueError("v8 Source selector must be training_free")
+        if self.learned_selector_enabled or self.quality_predictor_enabled:
+            raise ValueError("v8 forbids learned selectors and quality predictors")
+        if self.fixed_repair_ratio != 0.15:
+            raise ValueError("v8 freezes the main online repair ratio at 0.15")
+        diagnostic_grid = (0.0, 0.05, 0.10, 0.16, 0.20, 0.30, 0.50, 0.75, 1.0)
+        if self.v8_execution_phase == "online_main":
+            if tuple(self.repair_ratios) != (0.15,):
+                raise ValueError("v8 online main path uses only repair ratio 0.15")
+        elif self.v8_execution_phase == "h1_offline_diagnostic":
+            if tuple(self.repair_ratios) != diagnostic_grid:
+                raise ValueError("v8 H1 diagnostic requires the frozen endpoint grid")
+        else:
+            raise ValueError("unsupported v8 execution phase")
+        if self.max_stored_variants_per_content != 16:
+            raise ValueError("v8 stores at most 16 variants per content")
+        if self.min_variants_per_retained_content != 1:
+            raise ValueError("v8 retained content minimum must be one variant")
+        if not 1 <= self.max_compared_variants_per_segment <= 16:
+            raise ValueError("v8 comparison maximum must be in [1, 16]")
+        if self.min_compared_variants_for_multisource != 2:
+            raise ValueError("v8 multi-Source ranking requires two comparisons")
+        if self.insufficient_ranking_policy not in {
+            "abstain_dense", "cfo_top1_fallback"
+        }:
+            raise ValueError("unsupported v8 insufficient-ranking policy")
+        if self.candidate_compare_policy != "all_within_request_budget":
+            raise ValueError("v8 requires budgeted candidate comparison")
+        if self.probe_compare_budget_fraction != 0.05:
+            raise ValueError("v8 freezes the selection budget at 5%")
+        if not 0 <= self.early_exit_margin <= self.strong_early_exit_margin <= 1:
+            raise ValueError("invalid v8 early-exit margins")
+        if not 0 <= self.residual_band_relative_tolerance <= 1:
+            raise ValueError("invalid residual-band tolerance")
+        if self.residual_band_numeric_slack != 1e-6:
+            raise ValueError("v8 freezes the residual numeric slack")
+        if self.segment_planning_policy != "all_exact_nonprefix":
+            raise ValueError("v8 must plan every exact non-prefix Segment")
+        if self.max_detected_segments is not None:
+            raise ValueError("v8 cannot impose a detected-Segment cap")
+        if self.boundary_policy != "per_segment_staggered":
+            raise ValueError("v8 requires per-Segment staggered boundaries")
+        if self.selection_execution_policy not in {
+            SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
+            SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
+        }:
+            raise ValueError("v8 supports only the frozen A/C policies")
+        if self.calibration_policy_match_required:
+            raise ValueError("v8 has no online calibration eligibility")
+        if self.joint_quality_policy != "fixed_repair_offline_audit":
+            raise ValueError("v8 requires fixed-repair offline quality audit")
+        if not self.partial_reuse_enabled:
+            raise ValueError("v8 requires partial reuse")
+        if self.source_pool_policy != "global_hard_model_soft":
+            raise ValueError("v8 requires the global Source pool")
+        if self.summary_format != "selection_k_bf16":
+            raise ValueError("v8 compares exact BF16 selection-layer K states")
+        if self.artifact_policy != "single_canonical_lossless":
+            raise ValueError("v8 requires one canonical lossless Artifact")
+        if self.max_artifacts_per_source_variant != 1:
+            raise ValueError("v8 permits one Artifact per Source Variant")
+        if (
+            self.canonical_kv_dtype != "bfloat16"
+            or self.canonical_k_semantics != "pre_rope"
+            or self.canonical_v_semantics != "raw"
+            or not self.canonical_kv_lossless
+            or self.lossy_full_kv_artifacts_enabled
+        ):
+            raise ValueError("v8 canonical Artifact must be lossless BF16 pre-RoPE")
+        if self.replica_policy != "one_backing_plus_transient_hot":
+            raise ValueError("v8 requires one backing plus transient hot Replicas")
+        if self.max_replicas_per_artifact_per_tier != 1:
+            raise ValueError("v8 permits one Replica per tier")
+        if tuple(self.replica_tiers) != ("gpu", "pinned_cpu", "ssd"):
+            raise ValueError("v8 Replica tiers must be gpu/pinned_cpu/ssd")
+        if self.canonicalizer_version != "semantic_block_v1":
+            raise ValueError("v8 requires semantic_block_v1")
+        if (self.target_tokens, self.min_tokens, self.max_tokens) != (512, 128, 640):
+            raise ValueError("v8 canonical token defaults changed")
+        if self.alignment_quantum != 16 or self.search_window_tokens != 64:
+            raise ValueError("v8 canonical alignment defaults changed")
+        if self.alignment_policy != "soft" or self.tail_policy != "semantic_rebalance" or self.padding:
+            raise ValueError("v8 canonical semantic policy changed")
+        if self.interference_accounting_mode is not InterferenceAccountingMode.EXPLICIT_PENALTY:
+            raise ValueError("v8 requires explicit interference accounting")
+        if self.selector_profile_status not in {"local_test_only", "unfrozen", "frozen"}:
+            raise ValueError("invalid v8 selector profile status")
+        if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
+            raise ValueError("a frozen v8 profile requires a SHA256")
+        if self.evidence_class != "local_simulation" and self.runtime_backend != "cacheblend_v8_training_free":
+            raise ValueError("v8 server runs require the explicit v8 runtime")
 
 
 def load_config(path: str) -> ExperimentConfig:

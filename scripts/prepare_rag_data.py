@@ -39,7 +39,7 @@ def main() -> int:
         default="both",
     )
     parser.add_argument("--seed", type=int, default=20260726)
-    parser.add_argument("--protocol-version", type=int, choices=(6, 7), default=6)
+    parser.add_argument("--protocol-version", type=int, choices=(6, 7, 8), default=6)
     parser.add_argument("--tokenizer-signature", default="")
     parser.add_argument("--limit-records", type=int, default=0)
     parser.add_argument("--max-cases", type=int, default=0)
@@ -141,7 +141,7 @@ def main() -> int:
                         max_cases=corpus_limit,
                     )
                 )
-    if args.protocol_version == 7:
+    if args.protocol_version in {7, 8}:
         tokenizer_signature = args.tokenizer_signature or str(args.tokenizer)
         canonical_cases = []
         for case in cases:
@@ -173,7 +173,7 @@ def main() -> int:
                         segment_text=text,
                         segment_token_ids=segment.token_ids,
                         content_hash=token_content_hash(segment.token_ids),
-                        protocol_version=7,
+                        protocol_version=args.protocol_version,
                         canonicalizer_signature=segment.canonicalizer_signature,
                         segment_provenance_id=provenance,
                         reuse_content_key=segment.reuse_content_key(
@@ -223,7 +223,7 @@ def main() -> int:
             "evidence_class": "data_preparation",
             "paper_evidence": False,
             "protocol_version": args.protocol_version,
-            "canonical_segmentation": args.protocol_version == 7,
+            "canonical_segmentation": args.protocol_version in {7, 8},
         }
     )
     atomic_write_json(output / "audit.json", audit)

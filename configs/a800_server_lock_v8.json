@@ -1,0 +1,83 @@
+{
+  "schema_version": 4,
+  "protocol_version": 8,
+  "purpose": "non-paper A800 v8 profile freeze and runtime qualification",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "platform": {
+    "os": "Ubuntu 22.04",
+    "python_major_minor": "3.10",
+    "minimum_cpu_count": 16,
+    "minimum_host_memory_gib": 110,
+    "minimum_combined_free_gib": 70,
+    "minimum_largest_writable_free_gib": 50,
+    "minimum_system_free_gib": 15
+  },
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "numpy": "1.26.4",
+    "transformers": "4.40.2",
+    "tokenizers": "0.19.1",
+    "huggingface-hub": "0.36.2",
+    "ray": "2.10.0",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v8_training_free_residual_k"
+  },
+  "models": {
+    "mistral": {
+      "role": "runtime_qualification_and_secondary",
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "adapter_name": "mistral_cacheblend_llama_v041",
+      "num_layers": 32,
+      "completed_depths": [1, 2, 4, 5, 8],
+      "dtype": "bfloat16"
+    },
+    "qwen": {
+      "role": "formal_primary",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "adapter_name": "qwen2_5_vllm041",
+      "num_layers": 28,
+      "completed_depths": [1, 2, 4, 5, 7],
+      "dtype": "bfloat16"
+    }
+  },
+  "runtime": {
+    "backend": "cacheblend_v8_training_free",
+    "required_capabilities": [
+      "native_prefix_cache_block_metadata",
+      "completed_depth_k_observation",
+      "selection_state_k_only",
+      "selection_state_separate_backing",
+      "selection_state_scratch_bounded",
+      "training_free_residual_k_selection",
+      "winner_only_prefetch",
+      "predicted_and_refined_joint_planners",
+      "atomic_logical_source_lease",
+      "atomic_replica_batch_lease",
+      "single_lossless_bf16_artifact",
+      "multiple_physical_replicas",
+      "per_segment_staggered_boundaries",
+      "absolute_union_repair_mask",
+      "cuda_event_timing"
+    ],
+    "fixed_repair_ratio": 0.15,
+    "selection_scratch_capacity_mib": 256,
+    "probe_compare_budget_fraction": 0.05,
+    "gamma": 0.8,
+    "alignment_quantum": 16,
+    "runtime_vllm_block_size": 16,
+    "profile_freeze_required_before_final_qualification": true,
+    "qualification_required_before_h1_h2": true
+  }
+}

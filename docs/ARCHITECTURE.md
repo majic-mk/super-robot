@@ -158,7 +158,9 @@ layer-wise repair ratio is
 The pinned CacheBlend backend ranks C tokens by its V-drift rule. For a
 requested ratio `r`, it recomputes zero tokens at `r=0`, all C tokens at
 `r=1`, and otherwise `floor(r * |C|)` tokens in frozen v3-v6 protocols. v7
-uses `ceil(r * |C|)` as the conservative discretization. Ratio grids must use nested
+and v8 use `ceil(r * |C|)` as the conservative discretization. v8 fixes the
+online main ratio at 0.15; its wider ratio grid is an offline H1 diagnostic.
+Ratio grids must use nested
 sets: a token repaired at
 10% is also repaired at 20%. Thus `r=0` means reuse all token KVs, while `r=1`
 means recompute all `C` tokens at every active repair layer.
@@ -183,6 +185,10 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v7 Source pool | `v7_source_pool.py` | one Artifact per Variant, backing/transient Replicas, generations, leases, probation and model purge |
 | v7 eligibility/access | `v7_eligibility.py` | separate correctness, calibration, Artifact, preview and runtime decisions with same-Source replan |
 | v7 joint planner | `v7_planner.py` | shared sunk cost once, per-Segment staggered partial reuse and request-level final admission |
+| v8 SelectionState | `v8_contracts.py`, `v8_selection_state_store.py` | exact completed-depth BF16 pre-RoPE K identity with tier-independent Replicas |
+| v8 residual selector | `v8_selector.py` | CFO-budgeted, training-free residual-K scoring, early exit and explicit compared-K=1 states |
+| v8 leases | `v8_leases.py` | logical Source preservation, atomic physical Replica binding and orphan recovery |
+| v8 two-stage closure | `v8_planner.py`, `v8_orchestration.py` | Source freeze, Predicted preparation and scheduler-fed Refined admission without reselection |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |
@@ -212,3 +218,14 @@ copy engine can deliver at least one layer of KV during the time the GPU spends
 computing one layer. It is necessary for steady-state overlap, not sufficient
 for perfect overlap: the first needed layer must already be present, HBM and
 copy traffic may interfere, and scheduling gaps can expose transfer latency.
+
+## Protocol v8 data/control split
+
+v8 compares K-only SelectionStates, not full-KV Artifacts. A Source lock obtains
+a logical lease; Predicted planning then atomically binds only winner Replicas
+and may start layer-wise transfer. Real source-ready, A-resume, blocking,
+interference and actual boundaries feed Refined planning. Refinement can only
+keep reuse or downgrade it to dense. It cannot choose another Source or promote
+a Segment that Predicted planning already made dense. Policy A waits to preserve
+clean causal selection state; policy C selects later Segments from the real
+state produced by earlier staggered reuse.

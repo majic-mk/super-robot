@@ -45,6 +45,16 @@ Source may replan among Replicas of its Artifact but may never switch Variant.
 The request-level joint planner uses per-Segment staggered boundaries and may
 accept all, some, or none of the locked Segments. v6 gates cannot authorize v7.
 
+Protocol v8 is another explicit path and does not reinterpret v7 results. It
+uses training-free current-state Residual-K Source selection instead of a
+learned/calibrated selector. CFO only orders budgeted comparisons, online
+CacheBlend repair is fixed at 15%, and early Source lock remains enabled at
+completed-depth checkpoints. Selection reads exact BF16 K-only states through
+bounded GPU scratch and never transfers full-KV Artifacts to compare candidates.
+One logical Artifact may move through SSD, pinned CPU and GPU Replicas without
+becoming three permanent copies. Profile freeze must precede Profile-bound
+140-job A800 qualification; v7 and v8 Gates cannot authorize each other.
+
 Mistral-7B-Instruct-v0.3 is the CacheBlend qualification and secondary model;
 Qwen2.5-7B-Instruct is the formal primary model. Llama 3.1 is deferred until
 the Qwen end-to-end gain is at least 5%.
@@ -71,6 +81,8 @@ python -m probekv simulate --config configs/local_system_v5.json
 python -m probekv.cli --config configs/local_system_v6.json
 python -m probekv.cli --config configs/local_system_v7_causal_wait.json
 python -m probekv.cli --config configs/local_system_v7_immediate_staggered.json
+python -m probekv.cli --config configs/local_system_v8_causal_wait.json
+python -m probekv.cli --config configs/local_system_v8_immediate_staggered.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -90,6 +102,10 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
   qualification and one-case H1 sentinel procedure.
 - `docs/V7_IMPLEMENTATION_STATUS.md`: explicit local-complete versus
   server/GPU-pending boundary; never treat it as GPU evidence.
+- `docs/PROBEKV_V8_PROTOCOL.md`: frozen training-free Residual-K, K-state,
+  lease and two-stage Planner protocol.
+- `docs/A800_V8_RUNBOOK.md`: Profile-before-qualification server sequence.
+- `docs/V8_IMPLEMENTATION_STATUS.md`: v8 local-complete/GPU-pending boundary.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.
 - `docs/NOVELTY_AUDIT_SOURCES.tsv`: machine-readable primary-source audit index.

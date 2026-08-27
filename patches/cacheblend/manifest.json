@@ -38,6 +38,14 @@
       "0004-probekv-staggered-resumable-dual-model.patch",
       "0005-probekv-native-prefix-shadow.patch",
       "0006-probekv-v7-conservative-repair-rounding.patch"
+    ],
+    "probekv_v8_training_free_residual_k": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch"
     ]
   },
   "runtime_modes": {
@@ -111,6 +119,19 @@
       "status": "requires_dual_model_a800_qualification",
       "paper_evidence": false,
       "purpose": "v7 single-Artifact multi-Replica dual-model qualification"
+    },
+    "training_free_residual_k_runtime_v8": {
+      "patch_mode": "probekv_v8_training_free_residual_k",
+      "inherits": "probekv_v7_single_artifact_runtime",
+      "training_free_residual_k_selection": true,
+      "selection_state_k_only": true,
+      "full_kv_transfer_for_selection": false,
+      "winner_only_prefetch": true,
+      "predicted_and_refined_joint_planners": true,
+      "repair_ratio": 0.15,
+      "status": "requires_dual_model_a800_profile_freeze_and_qualification",
+      "paper_evidence": false,
+      "purpose": "v8 training-free Source selection and two-stage runtime qualification"
     }
   },
   "innovation_claim": false,
@@ -119,5 +140,6 @@
   "suffix_policy": "mandatory dense suffix S is excluded from repair ratio",
   "causal_mask_policy": "absolute rows of arbitrary selected query positions",
   "source_k_representation": "pre-RoPE; rotate at current org_pos",
-  "v7_full_kv_artifact_policy": "one lossless BF16 Artifact per Source Variant"
+  "v7_full_kv_artifact_policy": "one lossless BF16 Artifact per Source Variant",
+  "v8_source_selection_policy": "training-free residual K with K-only SelectionState"
 }

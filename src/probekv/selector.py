@@ -11,6 +11,7 @@ class SelectorPolicy(str, Enum):
     STRICT_INTERVAL = "strict_interval"
     FINAL_ECONOMIC_MIN_COST = "final_economic_min_cost"
     FINAL_ECONOMIC_MAX_REUSE = "final_economic_max_reuse"
+    RESIDUAL_K_DRIFT_ARGMIN = "residual_k_drift_argmin"
 
 
 @dataclass(frozen=True)
