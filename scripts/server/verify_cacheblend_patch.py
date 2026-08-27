@@ -48,6 +48,7 @@ def main() -> int:
             "probekv_v6_staggered_runtime",
             "probekv_v6_prefix_hardened_runtime",
             "probekv_v7_single_artifact_runtime",
+            "probekv_v8_training_free_residual_k",
         ),
     )
     parser.add_argument("--manifest")

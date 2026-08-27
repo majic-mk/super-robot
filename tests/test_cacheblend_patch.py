@@ -88,9 +88,11 @@ class CacheBlendPatchTests(unittest.TestCase):
         verify = (ROOT / "scripts/server/verify_cacheblend_patch.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("probekv_v7_single_artifact_runtime)", prepare)
+        self.assertIn("probekv_v7_single_artifact_runtime|", prepare)
+        self.assertIn("probekv_v8_training_free_residual_k)", prepare)
         self.assertIn('"0006-probekv-v7-conservative-repair-rounding.patch"', prepare)
         self.assertIn('"probekv_v7_single_artifact_runtime"', verify)
+        self.assertIn('"probekv_v8_training_free_residual_k"', verify)
 
     def test_runtime_patch_freezes_segment_only_denominator(self):
         patch = patch_files_for_mode(MANIFEST, "probekv")[1].read_text(
