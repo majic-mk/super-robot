@@ -389,9 +389,10 @@ class V8NoGpuReadinessTests(unittest.TestCase):
             inputs = {}
             for dataset in ("musique", "2wikimultihopqa", "hotpotqa"):
                 path = root / (dataset + ".jsonl")
+                second_path = root / (dataset + "-second.jsonl")
                 rows = []
-                for index in range(40):
-                    role = "calibration" if index < 30 else "train"
+                for index in range(41):
+                    role = "calibration" if index < 31 else "train"
                     rows.append(
                         {
                             "case_id": "%s-%s-%02d" % (dataset, role, index),
@@ -410,15 +411,24 @@ class V8NoGpuReadinessTests(unittest.TestCase):
                     "".join(json.dumps(row) + "\n" for row in rows),
                     encoding="utf-8",
                 )
-                inputs[dataset] = path
+                second_rows = [dict(row) for row in rows]
+                second_rows[0]["split"] = "train"
+                second_path.write_text(
+                    "".join(json.dumps(row) + "\n" for row in second_rows),
+                    encoding="utf-8",
+                )
+                inputs[dataset] = (path, second_path)
             output = root / "development.jsonl"
             subprocess.run(
                 [
                     sys.executable,
                     str(ROOT / "scripts/server/build_v8_development_partition.py"),
-                    "--musique", str(inputs["musique"]),
-                    "--2wikimultihopqa", str(inputs["2wikimultihopqa"]),
-                    "--hotpotqa", str(inputs["hotpotqa"]),
+                    "--musique", str(inputs["musique"][0]),
+                    "--musique", str(inputs["musique"][1]),
+                    "--2wikimultihopqa", str(inputs["2wikimultihopqa"][0]),
+                    "--2wikimultihopqa", str(inputs["2wikimultihopqa"][1]),
+                    "--hotpotqa", str(inputs["hotpotqa"][0]),
+                    "--hotpotqa", str(inputs["hotpotqa"][1]),
                     "--output", str(output),
                 ],
                 cwd=str(ROOT),

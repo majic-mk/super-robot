@@ -29,35 +29,60 @@ def _rank(dataset: str, case_id: str) -> str:
     return hashlib.sha256(f"{SEED}:{dataset}:{case_id}".encode("utf-8")).hexdigest()
 
 
+def _group(row: dict) -> str:
+    case_id = str(row.get("case_id", ""))
+    return str(
+        row.get(
+            "group_id",
+            row.get("document_id", row.get("content_hash", case_id)),
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     for dataset in DATASETS:
-        parser.add_argument("--%s" % dataset, required=True)
+        parser.add_argument("--%s" % dataset, action="append", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     result = []
     seen_groups = set()
     for dataset in DATASETS:
-        rows = _read(Path(getattr(args, dataset)).resolve())
+        input_rows = [
+            _read(Path(path).resolve()) for path in getattr(args, dataset)
+        ]
+        indexed = [
+            {str(row.get("case_id", "")): row for row in rows if row.get("case_id")}
+            for rows in input_rows
+        ]
+        common_case_ids = set(indexed[0])
+        for rows_by_id in indexed[1:]:
+            common_case_ids.intersection_update(rows_by_id)
         allowed = []
-        for row in rows:
-            role = str(row.get("split", row.get("split_role", ""))).lower()
+        for case_id in common_case_ids:
+            rows = [rows_by_id[case_id] for rows_by_id in indexed]
+            roles = {
+                str(row.get("split", row.get("split_role", ""))).lower()
+                for row in rows
+            }
             # The source manifests already carry a group-isolated calibration
             # partition.  Do not silently sample from train: H1 pilot cases are
             # also drawn from train and would otherwise be eligible for both
             # system-profile selection and the subsequent H1 diagnostic.
-            if role not in DEVELOPMENT_SOURCE_ROLES:
+            if not roles or not roles.issubset(DEVELOPMENT_SOURCE_ROLES):
                 continue
-            case_id = str(row.get("case_id", ""))
-            group = str(
-                row.get(
-                    "group_id",
-                    row.get("document_id", row.get("content_hash", case_id)),
+            groups = {_group(row) for row in rows}
+            if len(groups) != 1:
+                raise ValueError(
+                    "%s case %s has model-dependent experiment group" %
+                    (dataset, case_id)
                 )
-            )
-            if not case_id or not group or group in seen_groups:
+            group = next(iter(groups))
+            if not group or group in seen_groups:
                 continue
-            allowed.append((_rank(dataset, case_id), case_id, group, role))
+            allowed.append(
+                (_rank(dataset, case_id), case_id, group, sorted(roles)[0])
+            )
         chosen = sorted(allowed)[:30]
         if len(chosen) != 30:
             raise ValueError("%s lacks 30 isolated development cases" % dataset)
