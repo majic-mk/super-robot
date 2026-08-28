@@ -12,6 +12,14 @@ v8 has no learned selector, probability calibration, conformal predictor or
 online `r_safe` model. Online repair is fixed at 0.15. The full ratio grid is an
 offline H1 quality/correctness diagnostic only.
 
+Experiment splitting and KV identity are deliberately separate. The frozen
+train/development/test group is derived from the normalized document identity
+(title + text) and is therefore identical for Mistral and Qwen. The per-model
+`content_hash` is still derived from that model's exact token IDs and remains
+the only key for KV content-bucket matching. Changing tokenizers may change KV
+identity, but must never move the underlying document between experiment
+partitions.
+
 ## Request path
 
 ```text

@@ -397,10 +397,12 @@ def build_controlled_cases(
         repeated = segment_text(target)
         token_ids = tuple(int(token) for token in encoder(repeated))
         content_hash = token_content_hash(token_ids)
-        # Use the exact tokenized segment group for every construction so a
-        # controlled and corpus-repeat view of the same C can never diverge
-        # into different splits.
-        group_id = "%s:%s" % (example.dataset, content_hash)
+        # Dataset partitioning must be model/tokenizer independent.  The
+        # normalized document id is a digest of title + text, so it keeps
+        # exact repeated content together without coupling the split to a
+        # model-specific token content hash.  token content_hash remains the
+        # strict per-model KV reuse identity.
+        group_id = "%s:%s" % (example.dataset, target.document_id)
         current_context = render_preceding_context(current_documents)
         sources = tuple(
             ManifestSource(
@@ -605,7 +607,7 @@ def build_streaming_pilot_cases(
         historical = distinct[:4]
         current = distinct[4]
         content_hash = current.content_hash
-        group_id = "%s:%s" % (current.example.dataset, content_hash)
+        group_id = "%s:%s" % (current.example.dataset, document_id)
         sources = tuple(
             ManifestSource(
                 "s%d" % index,
@@ -721,7 +723,10 @@ def build_corpus_repeat_cases(
             continue
         historical = distinct[:4]
         current = distinct[4]
-        group_id = "%s:%s" % (current.example.dataset, content_hash)
+        group_id = "%s:%s" % (
+            current.example.dataset,
+            current.target.document_id,
+        )
         sources = tuple(
             ManifestSource(
                 "s%d" % index,

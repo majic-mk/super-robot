@@ -213,6 +213,22 @@ class ConstructionTests(unittest.TestCase):
         ]
         self.assertEqual(shared_controlled[0].group_id, shared_corpus[0].group_id)
 
+    def test_document_split_is_stable_across_model_tokenizers(self):
+        example = RAGExample(
+            "fixture", "e1", "Question?", ("Answer",), documents()
+        )
+
+        def other_model_encode(text):
+            return [1000, *[ord(character) + 1 for character in text]]
+
+        first = build_controlled_cases([example], encode, "model-a@revision")[0]
+        second = build_controlled_cases(
+            [example], other_model_encode, "model-b@revision"
+        )[0]
+        self.assertEqual(first.group_id, second.group_id)
+        self.assertEqual(first.split, second.split)
+        self.assertNotEqual(first.content_hash, second.content_hash)
+
     def test_corpus_repeat_tokenizes_each_unique_document_once(self):
         examples = [
             RAGExample(

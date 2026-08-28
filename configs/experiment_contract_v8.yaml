@@ -7,6 +7,8 @@ evidence:
   profile_freeze_split: pooled_development_only
   development_source_roles: [calibration, development, development_profile_freeze]
   train_and_h1_pilot_are_forbidden_for_profile_freeze: true
+  cross_model_split_identity: normalized_document_id
+  kv_reuse_identity: model_scoped_exact_token_ids
   probability_calibration_used: false
 method:
   claim: training_free_current_state_residual_k_historical_source_selection
