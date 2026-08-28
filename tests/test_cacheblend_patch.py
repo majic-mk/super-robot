@@ -34,6 +34,9 @@ class CacheBlendPatchTests(unittest.TestCase):
         v7 = patch_files_for_mode(
             MANIFEST, "probekv_v7_single_artifact_runtime"
         )
+        schema6 = patch_files_for_mode(
+            MANIFEST, "probekv_v8_schema6_joint_cfo"
+        )
         self.assertEqual(len(cb0), 1)
         self.assertEqual(len(probekv), 2)
         self.assertEqual(closed_loop, probekv)
@@ -45,6 +48,9 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertEqual(prefix_hardened[:4], staggered)
         self.assertEqual(len(v7), 6)
         self.assertEqual(v7[:5], prefix_hardened)
+        self.assertEqual(len(schema6), 7)
+        self.assertEqual(schema6[:6], v7)
+        self.assertIn("probekv_cfo_collector", schema6[-1].read_text(encoding="utf-8"))
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
@@ -110,9 +116,7 @@ class CacheBlendPatchTests(unittest.TestCase):
         )
 
     def test_all_tracked_patches_have_valid_hunk_counts(self):
-        for path in patch_files_for_mode(
-            MANIFEST, "probekv_v6_prefix_hardened_runtime"
-        ):
+        for path in patch_files_for_mode(MANIFEST, "probekv_v8_schema6_joint_cfo"):
             validate_unified_diff(path)
 
     def test_prefix_hardening_is_explicit_and_does_not_change_legacy_mode(self):

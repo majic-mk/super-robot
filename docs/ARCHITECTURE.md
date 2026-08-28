@@ -189,6 +189,9 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v8 residual selector | `v8_selector.py` | CFO-budgeted, training-free residual-K scoring, early exit and explicit compared-K=1 states |
 | v8 leases | `v8_leases.py` | logical Source preservation, atomic physical Replica binding and orphan recovery |
 | v8 two-stage closure | `v8_planner.py`, `v8_orchestration.py` | Source freeze, Predicted preparation and scheduler-fed Refined admission without reselection |
+| v8 schema-v6 closure | `v8_schema6_planner.py`, `v8_schema6_runtime.py` | complete-inventory joint timeline, orthogonal states, deferred winner preparation and ready-subset Gate3 |
+| v8 schema-v6 resources | `v8_schema6_hbm.py`, `v8_schema6_workspace.py` | unified HBM reservations and elastic one-shot-or-microbatch comparison |
+| Cache-Craft CFO data | `v8_cfo.py` | occurrence-aware metadata and post-RoPE streaming log-sum-exp attention accumulation |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |

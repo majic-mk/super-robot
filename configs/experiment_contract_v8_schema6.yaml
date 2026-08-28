@@ -1,0 +1,65 @@
+protocol_version: 8
+schema_version: 6
+stage: v8_schema6_runtime_contract
+paper_evidence: false
+locked_test_accessed: false
+
+selector:
+  type: training_free_residual_k
+  fixed_repair_ratio: 0.15
+  source_freeze_is_final: true
+  checkpoints:
+    mistral: [1, 2, 4, 5, 8]
+    qwen: [1, 2, 4, 5, 7]
+
+gate1:
+  boundary: completed_depth_plus_one
+  source_local_only: true
+  gamma: 0.8
+
+gate2:
+  accounting: request_joint_timeline
+  unresolved_policy: dense_fallback
+  outcomes: [deferred, provisional_reuse, predicted_dense]
+  gamma: 0.8
+
+speculative_preparation:
+  winner_only: true
+  requires_source_freeze: true
+  requires_physical_replica_lease: true
+  lease_purpose: speculative_preparation
+  requires_hbm_reservation: true
+  waste_limit_relative_to_dense: 1.0
+
+gate3:
+  decision: ready_subset
+  subset_algorithm: deterministic_marginal_pruning
+  committed_reuse_is_irreversible: true
+  gamma: 0.8
+
+state_axes:
+  selection: [probing, decision_ready, source_frozen, abstained]
+  gate2: [not_evaluated, deferred, provisional_reuse, predicted_dense]
+  preparation: [none, prefetching, ready]
+  commit: [uncommitted, reuse_commit, refined_dense]
+
+hbm:
+  manager: unified
+  safety_gib: 4
+  workspace_policy: one_shot_if_fit_else_deterministic_microbatch
+
+cfo:
+  raw_equation: alpha_times_cci_times_one_minus_beta_prime
+  operational_clipping: true
+  attention_accumulator: streaming_logsumexp_fp32
+  full_prefill_only: true
+
+first_gpu_session:
+  model: mistral
+  max_hours: 4
+  max_hourly_cny: 7.5
+  max_total_cny: 30.0
+  sparse_measurement_grid: true
+  runtime_cost_profile_frozen: false
+  run_qualification: false
+  run_h1: false

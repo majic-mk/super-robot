@@ -28,6 +28,7 @@ class LeasePurpose(str, Enum):
     LOGICAL_SOURCE = "logical_source"
     COPY_SOURCE = "copy_source"
     COPY_TARGET = "copy_target"
+    SPECULATIVE_PREPARATION = "speculative_preparation"
     EXECUTION = "execution"
 
 
@@ -92,6 +93,9 @@ class LeaseRecord:
     state: LeaseLifecycle = LeaseLifecycle.ACTIVE
     suspect_at_s: Optional[float] = None
     release_reason: Optional[str] = None
+    copy_active: bool = False
+    execution_active: bool = False
+    physical_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,12 +272,54 @@ class V8LeaseManager:
                 now_s=timestamp,
             )
             replica.lease_refcount += 1
-            if request.purpose in {LeasePurpose.COPY_SOURCE, LeasePurpose.COPY_TARGET}:
+            if request.purpose in {
+                LeasePurpose.COPY_SOURCE,
+                LeasePurpose.COPY_TARGET,
+                LeasePurpose.SPECULATIVE_PREPARATION,
+            }:
                 replica.copy_in_flight += 1
+                record.copy_active = True
             elif request.purpose is LeasePurpose.EXECUTION:
                 replica.execution_in_flight += 1
+                record.execution_active = True
             records.append(record)
         return tuple(records)
+
+    def mark_physical_ready(self, lease_id: str) -> LeaseRecord:
+        """Finish a physical copy without releasing its eviction protection."""
+
+        record = self.leases[lease_id]
+        if record.state is not LeaseLifecycle.ACTIVE or record.replica_id is None:
+            raise RuntimeError("only an active physical lease can become ready")
+        if record.physical_ready:
+            return record
+        if not record.copy_active:
+            raise RuntimeError("physical readiness requires an active copy")
+        replica = self.sources[record.source_variant_id].replicas[record.replica_id]
+        replica.copy_in_flight -= 1
+        if replica.copy_in_flight < 0:
+            raise RuntimeError("physical copy counter underflow")
+        record.copy_active = False
+        record.physical_ready = True
+        return record
+
+    def promote_speculative_to_execution(self, lease_id: str) -> LeaseRecord:
+        """Atomically promote a ready frozen-winner lease without an eviction gap."""
+
+        record = self.leases[lease_id]
+        if record.state is not LeaseLifecycle.ACTIVE:
+            raise RuntimeError("only an active lease can be promoted")
+        if record.purpose is not LeasePurpose.SPECULATIVE_PREPARATION:
+            raise RuntimeError("only a speculative preparation lease can be promoted")
+        if record.replica_id is None:
+            raise RuntimeError("speculative lease lacks a physical Replica")
+        replica = self.sources[record.source_variant_id].replicas[record.replica_id]
+        if not replica.healthy:
+            raise RuntimeError("cannot promote an unavailable Replica")
+        record.purpose = LeasePurpose.EXECUTION
+        record.execution_active = True
+        replica.execution_in_flight += 1
+        return record
 
     def heartbeat(self, lease_id: str, *, now_s: Optional[float] = None) -> LeaseRecord:
         record = self.leases[lease_id]
@@ -299,10 +345,12 @@ class V8LeaseManager:
         else:
             replica = source.replicas[record.replica_id]
             replica.lease_refcount -= 1
-            if record.purpose in {LeasePurpose.COPY_SOURCE, LeasePurpose.COPY_TARGET}:
+            if record.copy_active:
                 replica.copy_in_flight -= 1
-            elif record.purpose is LeasePurpose.EXECUTION:
+                record.copy_active = False
+            if record.execution_active:
                 replica.execution_in_flight -= 1
+                record.execution_active = False
             if min(replica.lease_refcount, replica.copy_in_flight, replica.execution_in_flight) < 0:
                 raise RuntimeError("physical lease counter underflow")
         record.state = LeaseLifecycle.RELEASED
@@ -382,4 +430,3 @@ class V8LeaseManager:
             key=lambda item: (priority[item.tier], item.replica_id),
             default=None,
         )
-

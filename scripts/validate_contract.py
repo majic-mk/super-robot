@@ -11,6 +11,7 @@ import yaml
 from probekv.matrix import main_rag_matrix, profile_matrix
 from probekv.config import load_config
 from probekv.statistics import minimum_zero_violation_trials
+from probekv.cacheblend_patch import load_patch_manifest, patch_files_for_mode
 
 
 def main() -> int:
@@ -24,11 +25,17 @@ def main() -> int:
     parser.add_argument(
         "--v8-contract", default="configs/experiment_contract_v8.yaml"
     )
+    parser.add_argument(
+        "--v8-schema6-contract",
+        default="configs/experiment_contract_v8_schema6.yaml",
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     v8_contract_path = Path(args.v8_contract)
     v8_contract = yaml.safe_load(v8_contract_path.read_text(encoding="utf-8"))
+    v8_schema6_path = Path(args.v8_schema6_contract)
+    v8_schema6 = yaml.safe_load(v8_schema6_path.read_text(encoding="utf-8"))
     errors = []
     if contract.get("schema_version") != 7:
         errors.append("current experiment contract must use schema version 7")
@@ -124,6 +131,39 @@ def main() -> int:
         errors.append("v8 requires 140 qualification jobs per Model x Policy")
     if profile_contract.get("qualification_jobs_total") != 560:
         errors.append("v8 requires four independent 140-job qualifications")
+    if v8_schema6.get("protocol_version") != 8 or v8_schema6.get("schema_version") != 6:
+        errors.append("new v8 runtime contract must use schema-v6")
+    if v8_schema6.get("gate2", {}).get("accounting") != "request_joint_timeline":
+        errors.append("schema-v6 Gate 2 must use request joint-timeline accounting")
+    if v8_schema6.get("gate3", {}).get("decision") != "ready_subset":
+        errors.append("schema-v6 Gate 3 must return a ready-subset decision")
+    speculative = v8_schema6.get("speculative_preparation", {})
+    if not speculative.get("requires_physical_replica_lease") or not speculative.get("requires_hbm_reservation"):
+        errors.append("schema-v6 speculative preparation requires lease and HBM reservation")
+    if v8_schema6.get("selector", {}).get("checkpoints", {}).get("mistral") != [1, 2, 4, 5, 8]:
+        errors.append("schema-v6 Mistral checkpoints must be 1,2,4,5,8")
+    try:
+        schema6_lock = json.loads(
+            Path("configs/a800_server_lock_v8_schema6.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest_path = Path("patches/cacheblend/manifest.json")
+        load_patch_manifest(manifest_path)
+        schema6_patches = patch_files_for_mode(
+            manifest_path, "probekv_v8_schema6_joint_cfo"
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors.append("schema-v6 server/patch contract is invalid: %s" % error)
+    else:
+        if (
+            schema6_lock.get("schema_version") != 6
+            or schema6_lock.get("stack", {}).get("cacheblend_patch_mode")
+            != "probekv_v8_schema6_joint_cfo"
+        ):
+            errors.append("schema-v6 server lock uses another runtime/patch mode")
+        if len(schema6_patches) != 7:
+            errors.append("schema-v6 CacheBlend patchset must contain seven patches")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:
@@ -157,6 +197,17 @@ def main() -> int:
         else:
             if local_v8.protocol_version != 8:
                 errors.append("v8 config did not load as protocol 8: %s" % name)
+    for name in (
+        "configs/local_system_v8_schema6_causal_wait.json",
+        "configs/local_system_v8_schema6_immediate_staggered.json",
+    ):
+        try:
+            local_v8_schema6 = load_config(name)
+        except (OSError, ValueError) as error:
+            errors.append("v8 schema-v6 config is invalid: %s: %s" % (name, error))
+        else:
+            if local_v8_schema6.v8_schema_version != 6:
+                errors.append("v8 schema-v6 config did not select schema-v6: %s" % name)
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")
@@ -193,6 +244,7 @@ def main() -> int:
     result = {
         "contract": str(contract_path.resolve()),
         "v8_contract": str(v8_contract_path.resolve()),
+        "v8_schema6_contract": str(v8_schema6_path.resolve()),
         "valid": not errors,
         "errors": errors,
         "matrix_counts": matrix_counts,

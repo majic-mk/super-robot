@@ -55,6 +55,13 @@ One logical Artifact may move through SSD, pinned CPU and GPU Replicas without
 becoming three permanent copies. Profile freeze must precede Profile-bound
 140-job A800 qualification; v7 and v8 Gates cannot authorize each other.
 
+Protocol v8 schema-v6 is an explicit runtime successor while schema-v5 remains
+readable. It replaces per-Segment additive Gate2/Gate3 timing with one joint
+request critical path, separates selection/admission/preparation/commit state,
+permits resource-safe frozen-winner preparation while Gate2 is deferred, and
+returns partial ready-subset Gate3 decisions. Full-KV transfer always requires
+a physical Replica lease plus a unified HBM reservation.
+
 Mistral-7B-Instruct-v0.3 is the CacheBlend qualification and secondary model;
 Qwen2.5-7B-Instruct is the formal primary model. Llama 3.1 is deferred until
 the Qwen end-to-end gain is at least 5%.
@@ -83,6 +90,8 @@ python -m probekv.cli --config configs/local_system_v7_causal_wait.json
 python -m probekv.cli --config configs/local_system_v7_immediate_staggered.json
 python -m probekv.cli --config configs/local_system_v8_causal_wait.json
 python -m probekv.cli --config configs/local_system_v8_immediate_staggered.json
+python -m probekv.cli --config configs/local_system_v8_schema6_causal_wait.json
+python -m probekv.cli --config configs/local_system_v8_schema6_immediate_staggered.json
 python -m probekv local-e1e2 --config configs/local_e1e2.json --resume
 ```
 
@@ -105,6 +114,9 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `docs/PROBEKV_V8_PROTOCOL.md`: frozen training-free Residual-K, K-state,
   lease and two-stage Planner protocol.
 - `docs/A800_V8_RUNBOOK.md`: Profile-before-qualification server sequence.
+- `docs/PROBEKV_V8_SCHEMA6_PROTOCOL.md`: joint-timeline, orthogonal-state,
+  speculative-winner and subset-Gate3 runtime contract.
+- `docs/A800_V8_SCHEMA6_SENTINEL_RUNBOOK.md`: first four-hour Mistral sentinel.
 - `docs/V8_IMPLEMENTATION_STATUS.md`: v8 local-complete/GPU-pending boundary.
 - `docs/ARCHITECTURE.md`: end-to-end system explanation.
 - `docs/NOVELTY_AUDIT.md`: frozen claim boundary, prior-art matrix and novelty gates.

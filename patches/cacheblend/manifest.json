@@ -46,6 +46,15 @@
       "0004-probekv-staggered-resumable-dual-model.patch",
       "0005-probekv-native-prefix-shadow.patch",
       "0006-probekv-v7-conservative-repair-rounding.patch"
+    ],
+    "probekv_v8_schema6_joint_cfo": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch",
+      "0007-probekv-schema6-cfo-post-rope-hook.patch"
     ]
   },
   "runtime_modes": {
@@ -132,6 +141,16 @@
       "status": "requires_dual_model_a800_profile_freeze_and_qualification",
       "paper_evidence": false,
       "purpose": "v8 training-free Source selection and two-stage runtime qualification"
+    },
+    "schema6_joint_cfo_runtime_v8": {
+      "patch_mode": "probekv_v8_schema6_joint_cfo",
+      "inherits": "probekv_v8_training_free_residual_k",
+      "post_rope_cfo_hook": true,
+      "streaming_attention_aggregation": true,
+      "joint_timeline_gate2_gate3": true,
+      "status": "requires_mistral_a800_sparse_sentinel",
+      "paper_evidence": false,
+      "purpose": "schema-v6 CFO and joint-runtime sentinel only"
     }
   },
   "innovation_claim": false,

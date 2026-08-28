@@ -76,6 +76,7 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_v6_prefix_hardened_runtime",
         "probekv_v7_single_artifact_runtime",
         "probekv_v8_training_free_residual_k",
+        "probekv_v8_schema6_joint_cfo",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
@@ -181,6 +182,18 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         raise ValueError("v8 selection must not transfer full KV")
     if v8.get("repair_ratio") != 0.15:
         raise ValueError("v8 runtime must freeze repair ratio 0.15")
+    schema6 = runtime_modes.get("schema6_joint_cfo_runtime_v8")
+    if not isinstance(schema6, dict):
+        raise ValueError("patch manifest must define schema6_joint_cfo_runtime_v8")
+    if schema6.get("patch_mode") != "probekv_v8_schema6_joint_cfo":
+        raise ValueError("schema-v6 runtime must use its explicit patch mode")
+    for key in (
+        "post_rope_cfo_hook",
+        "streaming_attention_aggregation",
+        "joint_timeline_gate2_gate3",
+    ):
+        if schema6.get(key) is not True:
+            raise ValueError("schema-v6 runtime must require %s" % key)
     return manifest
 
 

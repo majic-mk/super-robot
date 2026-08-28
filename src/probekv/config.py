@@ -96,6 +96,7 @@ class ExperimentConfig:
     selector_profile_status: str = "legacy"
     selector_profile_sha256: str = ""
     v8_execution_phase: str = "online_main"
+    v8_schema_version: int = 5
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -302,6 +303,7 @@ class ExperimentConfig:
                 raw.get("selector_profile_sha256", "")
             ),
             v8_execution_phase=str(raw.get("v8_execution_phase", "online_main")),
+            v8_schema_version=int(raw.get("v8_schema_version", 5)),
         )
         result.validate()
         return result
@@ -570,6 +572,8 @@ class ExperimentConfig:
             raise ValueError("v7 server runs require the explicit v7 runtime")
 
     def _validate_v8(self) -> None:
+        if self.v8_schema_version not in {5, 6}:
+            raise ValueError("v8 runtime schema must be 5 or 6")
         if self.legacy_online_kmax_present:
             raise ValueError("v8 forbids legacy online_kmax")
         if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
@@ -664,8 +668,16 @@ class ExperimentConfig:
             raise ValueError("invalid v8 selector profile status")
         if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
             raise ValueError("a frozen v8 profile requires a SHA256")
-        if self.evidence_class != "local_simulation" and self.runtime_backend != "cacheblend_v8_training_free":
-            raise ValueError("v8 server runs require the explicit v8 runtime")
+        if self.evidence_class != "local_simulation":
+            required_backend = (
+                "cacheblend_v8_schema6_joint"
+                if self.v8_schema_version == 6
+                else "cacheblend_v8_training_free"
+            )
+            if self.runtime_backend != required_backend:
+                raise ValueError(
+                    "v8 server runs require the explicit schema-selected runtime"
+                )
 
 
 def load_config(path: str) -> ExperimentConfig:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence, Tuple
 
@@ -89,6 +89,43 @@ QWEN_SPEC = ResumableModelSpec(
 )
 
 MODEL_SPECS = {spec.model_id: spec for spec in (MISTRAL_SPEC, QWEN_SPEC)}
+
+# Historical v6/v7 manifests keep the original Mistral checkpoint at depth 6.
+# Schema-v6 is an explicit new runtime contract and uses depth 5 instead.
+MISTRAL_SCHEMA6_CHECKPOINTS = (1, 2, 4, 5, 8)
+QWEN_SCHEMA6_CHECKPOINTS = (1, 2, 4, 5, 7)
+MISTRAL_SCHEMA6_SPEC = replace(
+    MISTRAL_SPEC,
+    adapter_name="mistral_cacheblend_llama_v041_schema6",
+    checkpoints=MISTRAL_SCHEMA6_CHECKPOINTS,
+)
+QWEN_SCHEMA6_SPEC = replace(
+    QWEN_SPEC,
+    adapter_name="qwen2_5_vllm041_schema6",
+    checkpoints=QWEN_SCHEMA6_CHECKPOINTS,
+)
+SCHEMA6_MODEL_SPECS = {
+    spec.model_id: spec for spec in (MISTRAL_SCHEMA6_SPEC, QWEN_SCHEMA6_SPEC)
+}
+
+
+def validate_schema6_checkpoint_contract(
+    *, model_id: str, checkpoint_sources: Mapping[str, Sequence[int]]
+) -> Tuple[int, ...]:
+    spec = SCHEMA6_MODEL_SPECS.get(model_id)
+    if spec is None:
+        raise ValueError("unsupported schema-v6 model")
+    expected = spec.checkpoints
+    if not checkpoint_sources:
+        raise ValueError("schema-v6 checkpoint validator requires sources")
+    for source_name, checkpoints in checkpoint_sources.items():
+        observed = tuple(int(value) for value in checkpoints)
+        if observed != expected:
+            raise ValueError(
+                "schema-v6 checkpoints differ for %s: %r != %r"
+                % (source_name, observed, expected)
+            )
+    return expected
 
 
 def tokenizer_assets_hash(snapshot: Path) -> str:

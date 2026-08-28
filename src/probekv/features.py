@@ -55,14 +55,41 @@ def cache_craft_cfo(
     cci: float,
     alpha: float = 1.0,
 ) -> float:
-    """Cache-Craft Eq. 8 and Eq. 12 with an explicit deployment alpha."""
+    """Legacy operational CFO clipped to a valid recomputation fraction."""
+
+    return cache_craft_cfo_operational(
+        prefix_overlap, order_penalty, cci, alpha
+    )
+
+
+def cache_craft_cfo_raw(
+    prefix_overlap: float,
+    order_penalty: float,
+    cci: float,
+    alpha: float = 1.0,
+) -> float:
+    """Cache-Craft Eq. 8 and Eq. 12 without ProbeKV operational clipping."""
 
     if not all(0 <= value <= 1 for value in (prefix_overlap, order_penalty, cci)):
         raise ValueError("Cache-Craft inputs must be in [0, 1]")
     if alpha < 0 or not math.isfinite(alpha):
         raise ValueError("Cache-Craft alpha must be finite and non-negative")
     beta_prime = prefix_overlap * (1.0 - order_penalty)
-    return min(1.0, alpha * cci * (1.0 - beta_prime))
+    return alpha * cci * (1.0 - beta_prime)
+
+
+def cache_craft_cfo_operational(
+    prefix_overlap: float,
+    order_penalty: float,
+    cci: float,
+    alpha: float = 1.0,
+) -> float:
+    """Clip raw Eq. 12 only when it is used as a repair fraction/shortlist key."""
+
+    return min(
+        1.0,
+        max(0.0, cache_craft_cfo_raw(prefix_overlap, order_penalty, cci, alpha)),
+    )
 
 
 def cache_craft_style_score(metadata: CacheCraftMetadata) -> float:

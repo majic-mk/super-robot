@@ -1,0 +1,24 @@
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -184,0 +185,6 @@ class LlamaAttention(nn.Module):
++        cfo_collector = cache_fuse_metadata.get("probekv_cfo_collector")
++        if cfo_collector is not None:
++            cfo_collector(
++                q=q, k=k, positions=positions, scale=self.scaling,
++                q_heads=self.num_heads, kv_heads=self.num_kv_heads,
++                head_dim=self.head_dim)
+@@ -328,0 +336 @@ class LlamaModel(nn.Module):
++                                    "probekv_cfo_collector": None,
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -164,0 +165,6 @@ class Qwen2Attention(nn.Module):
++        cfo_collector = cache_fuse_metadata.get("probekv_cfo_collector")
++        if cfo_collector is not None:
++            cfo_collector(
++                q=q, k=k, positions=positions, scale=self.scaling,
++                q_heads=self.num_heads, kv_heads=self.num_kv_heads,
++                head_dim=self.head_dim)
+@@ -279,0 +287 @@ class Qwen2Model(nn.Module):
++            "probekv_cfo_collector": None,

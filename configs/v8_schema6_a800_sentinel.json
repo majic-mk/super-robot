@@ -1,0 +1,41 @@
+{
+  "protocol_version": 8,
+  "schema_version": 6,
+  "stage": "mistral_schema6_a800_4h_sentinel",
+  "model_key": "mistral",
+  "checkpoint_depths": [1, 2, 4, 5, 8],
+  "comparison_k": [1, 2, 4, 8, 16],
+  "anchor_token_count": 512,
+  "length_supplement": [128, 640],
+  "joint_segment_counts": [1, 2, 5],
+  "policies": ["causal_commit_wait", "immediate_staggered_closed_loop"],
+  "ordinary_warmups": 2,
+  "ordinary_repeats": 5,
+  "bootstrap_anchor": {
+    "k": 16,
+    "token_count": 512,
+    "completed_depth": 5,
+    "warmups": 20,
+    "repeats": 100,
+    "resamples": 10000,
+    "seed": 20260726,
+    "prng": "PCG64",
+    "quantile_method": "linear",
+    "outlier_policy": "none"
+  },
+  "hbm": {
+    "reservation_manager": "unified",
+    "safety_gib": 4,
+    "workspace_policy": "one_shot_if_fit_else_deterministic_microbatch"
+  },
+  "limits": {
+    "max_session_hours": 4,
+    "max_hourly_cny": 7.5,
+    "max_total_cny": 30.0
+  },
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "freeze_runtime_cost_profile": false,
+  "run_qualification": false,
+  "run_h1": false
+}

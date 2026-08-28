@@ -8,7 +8,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
 from .cacheblend_v6_online_engine import (
     CacheBlendV6OnlineEngine,
@@ -99,6 +99,9 @@ class RealCacheBlendA800Executor:
         engine_class: Any = CacheBlendV6OnlineEngine,
         protocol_version: int = 6,
         selection_scratch_capacity_bytes: int = 256 * 1024 * 1024,
+        runtime_schema_version: int = 5,
+        selection_workspace_capacity_provider: Callable[[], int] | None = None,
+        full_kv_transfer_authorizer: Any | None = None,
     ) -> None:
         import torch
         from vllm import LLM, SamplingParams
@@ -118,6 +121,17 @@ class RealCacheBlendA800Executor:
         if protocol_version == 8 and engine_class is not CacheBlendV8OnlineEngine:
             raise ValueError("protocol v8 requires CacheBlendV8OnlineEngine")
         self.protocol_version = protocol_version
+        if protocol_version == 8 and runtime_schema_version not in {5, 6}:
+            raise ValueError("protocol v8 supports runtime schema-v5 or schema-v6")
+        if protocol_version != 8 and runtime_schema_version != 5:
+            raise ValueError("runtime schema selection is only defined for protocol v8")
+        if runtime_schema_version == 6 and selection_workspace_capacity_provider is None:
+            raise ValueError("schema-v6 requires an elastic workspace capacity provider")
+        if runtime_schema_version == 6 and full_kv_transfer_authorizer is None:
+            raise ValueError("schema-v6 requires a full-KV transfer authorizer")
+        self.runtime_schema_version = int(runtime_schema_version)
+        self.selection_workspace_capacity_provider = selection_workspace_capacity_provider
+        self.full_kv_transfer_authorizer = full_kv_transfer_authorizer
         self.engine_class = engine_class
         if selection_scratch_capacity_bytes <= 0:
             raise ValueError("selection scratch capacity must be positive")
@@ -191,7 +205,102 @@ class RealCacheBlendA800Executor:
         }
 
     def capabilities(self) -> Mapping[str, bool]:
-        return self.engine_class.capabilities()
+        capabilities = dict(self.engine_class.capabilities())
+        if self.runtime_schema_version == 6:
+            capabilities.update(
+                {
+                    "cfo_post_rope_qk_hook": (
+                        "probekv_cfo_collector"
+                        in self.inner_model.cache_fuse_metadata
+                    ),
+                    "elastic_selection_workspace": (
+                        self.selection_workspace_capacity_provider is not None
+                    ),
+                    "joint_timeline_gate2_gate3": True,
+                    "orthogonal_segment_state_axes": True,
+                    "gate3_subset_decision": True,
+                    "speculative_replica_lease_promotion": True,
+                    "full_kv_transfer_lease_enforced": (
+                        self.full_kv_transfer_authorizer is not None
+                    ),
+                }
+            )
+        return capabilities
+
+    def run_cfo_eager_streaming_sentinel(
+        self, *, token_count: int = 128
+    ) -> Mapping[str, Any]:
+        """Exercise the patched post-RoPE hook on a real model full-prefill."""
+
+        from .v8_cfo import (
+            CFOFullPrefillCollector,
+            CanonicalChunkOccurrence,
+            compute_cachecraft_cfo,
+        )
+
+        if token_count < 12:
+            raise ValueError("CFO sentinel requires at least twelve tokens")
+        metadata = self.inner_model.cache_fuse_metadata
+        if "probekv_cfo_collector" not in metadata:
+            raise RuntimeError("the imported CacheBlend tree lacks the schema-v6 CFO hook")
+        prompt_ids = self._exact_prefix_ids(token_count)
+        first_end = token_count // 4
+        second_end = token_count // 2
+        prefix = (
+            CanonicalChunkOccurrence("sentinel-prefix-a", 0, 0, first_end),
+            CanonicalChunkOccurrence(
+                "sentinel-prefix-b", 0, first_end, second_end - first_end
+            ),
+        )
+        target = CanonicalChunkOccurrence(
+            "sentinel-target", 0, second_end, token_count - second_end
+        )
+        occurrence_ids = (
+            [prefix[0].match_id] * prefix[0].token_count
+            + [prefix[1].match_id] * prefix[1].token_count
+            + [target.match_id] * target.token_count
+        )
+        collector = CFOFullPrefillCollector(
+            occurrence_ids,
+            expected_layers=self.model_spec.num_layers,
+            block_size=32,
+            eager_reference=True,
+            eager_tolerance=2e-5,
+        )
+        previous = {
+            key: metadata.get(key)
+            for key in ("check", "collect", "probekv_resumable", "probekv_cfo_collector")
+        }
+        metadata.update(
+            {
+                "check": False,
+                "collect": False,
+                "probekv_resumable": False,
+                "probekv_cfo_collector": collector,
+            }
+        )
+        try:
+            self.llm.generate(
+                prompt_token_ids=[prompt_ids],
+                sampling_params=self.SamplingParams(temperature=0, max_tokens=1),
+                use_tqdm=False,
+            )
+        finally:
+            metadata.update(previous)
+        source_metadata, audit = collector.finalize(
+            prefix_occurrences=prefix, target_occurrence=target
+        )
+        cfo = compute_cachecraft_cfo(source_metadata, prefix, alpha=1.0)
+        return {
+            **dict(audit),
+            "token_count": token_count,
+            "prefix_occurrences": len(prefix),
+            "cfo_raw": cfo.cfo_raw,
+            "cfo_operational": cfo.cfo_operational,
+            "cachecraft_equation_12_unclipped": True,
+            "operational_clip_is_probekv": True,
+            "paper_evidence": False,
+        }
 
     def _exact_prefix_ids(self, token_count: int) -> List[int]:
         if token_count <= 0:
@@ -575,18 +684,25 @@ class RealCacheBlendA800Executor:
             if self.protocol_version == 8:
                 observed_kd = engine.session.observe_pre_rope_k(first_probe)
             tickets = []
+            transfer_authorizations = []
             for index, positions in enumerate(fixture.segment_positions):
                 variants = fixture.canonical_variants[index]
                 if not 0 <= winner_variant < len(variants):
                     raise ValueError("locked winner variant is unavailable")
                 source_id = "s%d-v%d" % (index, winner_variant)
                 canonical_layers = variants[winner_variant]
+                logical = (
+                    TorchLayerwiseSourceLoader._digest(self.torch, canonical_layers)
+                    if self.protocol_version in {7, 8} else ""
+                )
+                if self.runtime_schema_version == 6:
+                    # Qualification fixtures may reuse local indices while
+                    # containing different token/context states.  The digest
+                    # keeps Source Variant identity exact across those runs.
+                    source_id = "%s-%s" % (source_id, logical[:16])
                 if self.protocol_version == 8:
                     engine.freeze_source("c%d" % index, source_id)
                 if self.protocol_version in {7, 8}:
-                    logical = TorchLayerwiseSourceLoader._digest(
-                        self.torch, canonical_layers
-                    )
                     first_key = canonical_layers[0][0]
                     artifact = CanonicalKVArtifact(
                         artifact_id="artifact-%s" % source_id,
@@ -616,6 +732,16 @@ class RealCacheBlendA800Executor:
                             layout_signature="contiguous-bf16",
                         ),
                     )
+                    if self.runtime_schema_version == 6:
+                        transfer_authorizations.append(
+                            self.full_kv_transfer_authorizer.authorize(
+                                segment_id="c%d" % index,
+                                source_variant_id=source_id,
+                                artifact=artifact,
+                                replica=replica,
+                                predicted_remaining_s=30.0,
+                            )
+                        )
                     tickets.append(engine.start_artifact_replica_prefetch(
                         segment_id="c%d" % index,
                         source_variant_id=source_id,
@@ -639,6 +765,10 @@ class RealCacheBlendA800Executor:
                 index: min(base + index % 3, self.model_spec.num_layers)
                 for index in range(len(fixture.segment_positions))
             })
+            for index, authorization in enumerate(transfer_authorizations):
+                authorization.mark_ready(
+                    actual_reuse_boundary=int(boundaries[index])
+                )
             expected_segments = set(range(len(fixture.segment_positions)))
             if set(boundaries) != expected_segments:
                 raise ValueError("reuse boundaries must cover every Segment")
@@ -683,6 +813,8 @@ class RealCacheBlendA800Executor:
                 teacher_tokens=teacher_tokens,
                 stop_token_ids=stop_token_ids,
             )
+            for authorization in transfer_authorizations:
+                authorization.release()
         end.record()
         end.synchronize()
         layer_rows = [
@@ -975,8 +1107,13 @@ class RealCacheBlendA800Executor:
         self.selection_scratch_peak_bytes = max(
             self.selection_scratch_peak_bytes, int(scratch_bytes)
         )
-        if self.protocol_version == 8 and scratch_bytes > self.selection_scratch_capacity_bytes:
-            raise MemoryError("v8 SelectionState comparison exceeded bounded GPU scratch")
+        capacity = self.selection_scratch_capacity_bytes
+        if self.protocol_version == 8 and self.runtime_schema_version == 6:
+            capacity = int(self.selection_workspace_capacity_provider())
+            if capacity <= 0:
+                raise MemoryError("schema-v6 elastic SelectionState workspace is unavailable")
+        if self.protocol_version == 8 and scratch_bytes > capacity:
+            raise MemoryError("v8 SelectionState comparison exceeded leased GPU workspace")
         return current, sources
 
     def _cuda_compare(
@@ -1022,6 +1159,84 @@ class RealCacheBlendA800Executor:
         end.record()
         end.synchronize()
         return float(start.elapsed_time(end)), (time.perf_counter() - host) * 1000.0
+
+    def measure_schema6_comparison_batch(
+        self,
+        *,
+        compared_k: int,
+        token_count: int,
+        completed_depth: int,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure the exact Residual-K kernel with a schema-v6 tensor shape."""
+
+        if self.runtime_schema_version != 6:
+            raise RuntimeError("schema-v6 comparison measurement requires schema-v6 runtime")
+        if compared_k not in {1, 2, 4, 8, 16} or token_count < 2:
+            raise ValueError("unsupported schema-v6 comparison cell")
+        if completed_depth not in self.model_spec.checkpoints:
+            raise ValueError("comparison completed depth differs from the adapter")
+        shape = (
+            int(token_count),
+            int(self.model_spec.num_kv_heads),
+            int(self.inner_model.layers[0].self_attn.head_dim),
+        )
+        required = (compared_k + 1) * math.prod(shape) * 2
+        available = int(self.selection_workspace_capacity_provider())
+        if required > available:
+            raise MemoryError("comparison cell exceeds elastic SelectionState workspace")
+        generator = self.torch.Generator(device="cuda")
+        generator.manual_seed(20260726 + compared_k * 100 + completed_depth)
+        current = self.torch.randn(
+            shape, device="cuda", dtype=self.torch.bfloat16, generator=generator
+        )
+        sources = self.torch.randn(
+            (compared_k,) + shape,
+            device="cuda",
+            dtype=self.torch.bfloat16,
+            generator=generator,
+        )
+        operation = lambda: self._cuda_compare(
+            current, sources, residual_ratio=0.15
+        )
+        for _ in range(warmups):
+            operation()
+        measurements = [
+            self._timed_operation(operation)[0] for _ in range(repeats)
+        ]
+        return {
+            "measurements_ms": measurements,
+            "workspace_bytes": required,
+            "one_shot": True,
+            "cuda_event_timing": True,
+        }
+
+    def measure_schema6_transfer(
+        self, *, bytes_count: int, warmups: int, repeats: int
+    ) -> Mapping[str, Any]:
+        """Measure the real pinned-CPU to GPU leg used by schema-v6 staging."""
+
+        if self.runtime_schema_version != 6 or bytes_count <= 0:
+            raise ValueError("invalid schema-v6 transfer cell")
+        source = self.torch.empty(bytes_count, dtype=self.torch.uint8, pin_memory=True)
+        target = self.torch.empty(bytes_count, dtype=self.torch.uint8, device="cuda")
+        stream = self.torch.cuda.Stream()
+
+        def operation() -> None:
+            with self.torch.cuda.stream(stream):
+                target.copy_(source, non_blocking=True)
+            stream.synchronize()
+
+        for _ in range(warmups):
+            operation()
+        measurements = [self._timed_operation(operation)[0] for _ in range(repeats)]
+        return {
+            "measurements_ms": measurements,
+            "bytes": int(bytes_count),
+            "path": "pinned_cpu_to_gpu",
+            "cuda_event_timing": True,
+        }
 
     def execute(self, job: V6A800Job) -> QualificationJobResult:
         needs_model = True
