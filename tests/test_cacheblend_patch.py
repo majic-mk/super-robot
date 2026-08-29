@@ -55,6 +55,7 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertIn("status in [2] and resumable_mode", writeback)
         self.assertIn("key_old[active_positions] = key", writeback)
         self.assertIn("value_old[active_positions] = value", writeback)
+        self.assertIn("if status in [2] and not resumable_mode", writeback)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),

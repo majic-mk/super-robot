@@ -18,3 +18,6 @@ index c1ff274..7a46f77 100644
 +            value_old[active_positions] = value
 +            key = key_old
 +            value = value_old
+@@ -426 +441 @@ class XFormersImpl(AttentionImpl):
+-        if status in [2]:
++        if status in [2] and not resumable_mode:
