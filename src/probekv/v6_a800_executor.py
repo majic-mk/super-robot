@@ -653,6 +653,59 @@ class RealCacheBlendA800Executor:
             (time.perf_counter() - host_start) * 1000.0,
         )
 
+    def _resumable_dense_generate(
+        self,
+        fixture: RuntimeFixture,
+        token_count: int,
+    ) -> GenerationTrace:
+        """Run the layer-resumable hook without installing or committing a Source.
+
+        This is a diagnostic control for r=1 failures.  Equality with the
+        monolithic dense path proves that pausing at Transformer boundaries is
+        not itself the first source of numerical divergence.
+        """
+
+        tensors = self._prepare(
+            fixture, (), is_prompt=True, reuse=True,
+            request_id="resumable-dense-prefill",
+        )
+        attention, sampling = tensors[2], tensors[3]
+        engine = self.engine_class(
+            inner_model=self.inner_model,
+            model_spec=self.model_spec,
+            source_loader=self.source_loader,
+        )
+        start = self.torch.cuda.Event(enable_timing=True)
+        end = self.torch.cuda.Event(enable_timing=True)
+        self.torch.cuda.synchronize()
+        host_start = time.perf_counter()
+        start.record()
+        with self.torch.inference_mode():
+            engine.begin_prefill(
+                model_signature="a800-r1-resumable-dense-control",
+                token_ids=fixture.prompt_ids,
+                absolute_positions=tuple(range(len(fixture.prompt_ids))),
+                attention_metadata=attention,
+                working_kv=self.kv_caches,
+            )
+            engine.advance_to_layer(self.model_spec.num_layers)
+            hidden = engine.finish_prefill()
+            token_ids, logits = self._decode_from_prefill(
+                fixture,
+                hidden,
+                sampling,
+                reuse=True,
+                token_count=token_count,
+            )
+        end.record()
+        end.synchronize()
+        return GenerationTrace(
+            token_ids,
+            logits,
+            float(start.elapsed_time(end)),
+            (time.perf_counter() - host_start) * 1000.0,
+        )
+
     def _repair_positions(
         self, positions: Sequence[int], ratio: float
     ) -> Tuple[int, ...]:
@@ -1002,6 +1055,46 @@ class RealCacheBlendA800Executor:
             "reuse_runtime_audit": dict(reuse.runtime_audit),
         }
         if not result["r1_dense_token_ids_equal"] or relative > 1e-4:
+            # Preserve enough real-GPU evidence to distinguish a resumable
+            # layer-stepping defect from the first status=1 repair transition.
+            # These controls run only after the frozen sentinel has failed and
+            # therefore cannot turn a failure into a pass.
+            resumable_dense = self._resumable_dense_generate(
+                fixture, token_count=1
+            )
+            result["resumable_dense_control"] = {
+                "first_token_id_equal": (
+                    resumable_dense.token_ids[0] == dense.token_ids[0]
+                ),
+                "first_position_logit_relative_l2": aggregate_relative_l2(
+                    resumable_dense.logits, dense.logits[:1]
+                ),
+            }
+            transition_sweep = []
+            for boundary in tuple(dict.fromkeys((2, 5, 16, self.model_spec.num_layers))):
+                if boundary > self.model_spec.num_layers:
+                    continue
+                observed = self._reuse_generate(
+                    fixture,
+                    ratio=1.0,
+                    token_count=1,
+                    probe_layer=1,
+                    boundary_by_segment={0: boundary},
+                )
+                transition_sweep.append(
+                    {
+                        "boundary": boundary,
+                        "first_token_id_equal": (
+                            observed.token_ids[0] == dense.token_ids[0]
+                        ),
+                        "first_position_logit_relative_l2": (
+                            aggregate_relative_l2(
+                                observed.logits, dense.logits[:1]
+                            )
+                        ),
+                    }
+                )
+            result["r1_transition_boundary_sweep"] = transition_sweep
             raise R1DenseEquivalenceError(result)
         if not reuse.source_digests_unchanged or not reuse.absolute_union_mask_verified:
             raise RuntimeError("r=1 A800 sentinel failed Source/mask integrity")
