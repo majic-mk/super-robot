@@ -43,7 +43,9 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    python = Path(args.python).resolve()
+    # Keep the virtual-environment entry path. Resolving its symlink would make
+    # Python use the base interpreter's site-packages instead of the venv.
+    python = Path(args.python).absolute()
     source = Path(args.from_cacheblend).resolve()
     target = Path(args.to_cacheblend).resolve()
     audit = json.loads(Path(args.patch_audit).read_text(encoding="utf-8"))
