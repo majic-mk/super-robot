@@ -433,8 +433,26 @@ class RealCacheBlendA800Executor:
         exact_prefix_layers: List[Tuple[Any, Any]] = []
         try:
             for variant in range(stored_variants):
+                # The qualification process builds several fixtures in one
+                # vLLM engine with native Prefix Cache enabled.  Give every
+                # canonical Source construction a distinct first block so a
+                # prior fixture cannot turn this required full-prefill into a
+                # cached-prefix partial prefill.  Production Source identity
+                # still comes from real request provenance; this nonce is only
+                # part of the deterministic qualification context.
+                canonical_fixture_nonce = (
+                    "ProbeKV canonical full prefill fixture "
+                    "segments %d variants %d prefix %d source %d. "
+                    % (
+                        segment_count,
+                        stored_variants,
+                        int(exact_prefix_tokens),
+                        variant,
+                    )
+                )
                 historical = list(encode(
-                    "Historical variant %d has %d distinct lead tokens. %s"
+                    canonical_fixture_nonce
+                    + "Historical variant %d has %d distinct lead tokens. %s"
                     % (variant, variant + 1, "context " * (variant + 1)),
                     add_special_tokens=True,
                 ))
@@ -460,9 +478,24 @@ class RealCacheBlendA800Executor:
                     key, value = layer.self_attn.hack_kv
                     for index, positions in enumerate(historical_positions):
                         start, end = positions[0], positions[-1] + 1
+                        if end > key.shape[0] or end > value.shape[0]:
+                            raise RuntimeError(
+                                "canonical Source requires a complete full-prefill "
+                                "KV hook; a native Prefix Cache partial prefill was "
+                                "observed"
+                            )
+                        source_key = key[start:end]
+                        source_value = value[start:end]
+                        if (
+                            source_key.shape[0] != len(positions)
+                            or source_value.shape[0] != len(positions)
+                        ):
+                            raise RuntimeError(
+                                "canonical Source KV rows differ from Segment tokens"
+                            )
                         variant_layers[index].append((
-                            key[start:end].detach().cpu(),
-                            value[start:end].detach().cpu(),
+                            source_key.detach().cpu(),
+                            source_value.detach().cpu(),
                         ))
                 for index, layers in enumerate(variant_layers):
                     per_segment[index].append(tuple(layers))

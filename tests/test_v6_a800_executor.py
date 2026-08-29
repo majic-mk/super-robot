@@ -121,6 +121,18 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         )
         self.assertNotIn("self.inner_model.old_kvs = []", text)
 
+    def test_canonical_source_fixture_forces_and_validates_full_prefill(self):
+        text = Path("src/probekv/v6_a800_executor.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("canonical_fixture_nonce", text)
+        self.assertIn(
+            "canonical Source requires a complete full-prefill", text
+        )
+        self.assertIn(
+            "canonical Source KV rows differ from Segment tokens", text
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
