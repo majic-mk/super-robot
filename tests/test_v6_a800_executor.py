@@ -131,6 +131,15 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("same native Prefix Cache hit", native_prefix)
         self.assertIn("exact_prefix_layers=prefix_layers", native_prefix)
 
+    def test_cfo_sentinel_cannot_reuse_native_prefix_prompt(self):
+        import inspect
+
+        source = inspect.getsource(
+            RealCacheBlendA800Executor.run_cfo_eager_streaming_sentinel
+        )
+        self.assertIn("[PKV-CFO-FULL-%d]", source)
+        self.assertNotIn("self._exact_prefix_ids", source)
+
     def test_dense_path_restores_one_cacheblend_slot_per_layer(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(
             encoding="utf-8"

@@ -286,7 +286,25 @@ class RealCacheBlendA800Executor:
         metadata = self.inner_model.cache_fuse_metadata
         if "probekv_cfo_collector" not in metadata:
             raise RuntimeError("the imported CacheBlend tree lacks the schema-v6 CFO hook")
-        prompt_ids = self._exact_prefix_ids(token_count)
+        # Do not reuse the native-Prefix sentinel prompt here.  CFO metadata
+        # is defined only for a canonical full-prefill; a fully cached prompt
+        # executes no attention layers and therefore cannot produce post-RoPE
+        # Q/K evidence.  Keep the distinguishing nonce in the first physical
+        # block, then deterministically extend to the requested length.
+        prompt_ids = list(self.tokenizer.encode(
+            "[PKV-CFO-FULL-%d] canonical CFO attention evidence. "
+            % token_count,
+            add_special_tokens=True,
+        ))
+        continuation = list(self.tokenizer.encode(
+            "Distinct full-prefill CFO context. ",
+            add_special_tokens=False,
+        ))
+        if not prompt_ids or not continuation:
+            raise RuntimeError("tokenizer could not build the CFO sentinel prompt")
+        while len(prompt_ids) < token_count:
+            prompt_ids.extend(continuation)
+        prompt_ids = prompt_ids[:token_count]
         first_end = token_count // 4
         second_end = token_count // 2
         prefix = (
