@@ -128,6 +128,9 @@ for patch_name in "${patches[@]}"; do
 done
 
 git -C "$target" diff --check
+"$python_bin" -m py_compile \
+  "$target/vllm_blend/vllm/model_executor/models/llama.py" \
+  "$target/vllm_blend/vllm/model_executor/models/qwen2.py"
 git -C "$target" add -u
 patched_tree="$(git -C "$target" write-tree)"
 patch_sha256="$(

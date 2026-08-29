@@ -8,8 +8,10 @@ diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/mo
 +                q=q, k=k, positions=positions, scale=self.scaling,
 +                q_heads=self.num_heads, kv_heads=self.num_kv_heads,
 +                head_dim=self.head_dim)
-@@ -328,0 +336 @@ class LlamaModel(nn.Module):
-+                                    "probekv_cfo_collector": None,
+@@ -328 +336,2 @@ class LlamaModel(nn.Module):
+-                                    "collect": False}
++                                    "collect": False,
++                                    "probekv_cfo_collector": None}
 diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
 --- a/vllm_blend/vllm/model_executor/models/qwen2.py
 +++ b/vllm_blend/vllm/model_executor/models/qwen2.py

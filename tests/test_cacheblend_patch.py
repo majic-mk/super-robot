@@ -195,6 +195,17 @@ class CacheBlendPatchTests(unittest.TestCase):
             paths[:3],
         )
 
+    def test_schema6_patch_keeps_llama_metadata_dictionary_valid(self):
+        patch = patch_files_for_mode(
+            MANIFEST, "probekv_v8_schema6_joint_cfo"
+        )[-1].read_text(encoding="utf-8")
+        self.assertIn('-                                    "collect": False}', patch)
+        self.assertIn('+                                    "collect": False,', patch)
+        prepare = (ROOT / "scripts/server/prepare_cacheblend.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"$python_bin" -m py_compile', prepare)
+
 
 if __name__ == "__main__":
     unittest.main()
