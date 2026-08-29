@@ -75,6 +75,24 @@ def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> 
     return math.sqrt(numerator / max(denominator, 1e-30))
 
 
+def infer_canonical_kv_geometry(
+    key: Any, *, configured_kv_heads: int
+) -> Tuple[int, int]:
+    """Accept CacheBlend's flattened K and the explicit [T,H,D] form."""
+
+    shape = tuple(int(value) for value in key.shape)
+    if len(shape) == 2:
+        width = shape[1]
+        if configured_kv_heads <= 0 or width % configured_kv_heads:
+            raise ValueError("flattened canonical K width is incompatible with KV heads")
+        return configured_kv_heads, width // configured_kv_heads
+    if len(shape) == 3:
+        if shape[1] != configured_kv_heads:
+            raise ValueError("canonical K head count differs from the model contract")
+        return shape[1], shape[2]
+    raise ValueError("canonical K must have shape [tokens,width] or [tokens,heads,dim]")
+
+
 class RealCacheBlendA800Executor:
     """Real A800 executor for the frozen v6 qualification matrix.
 
@@ -704,6 +722,10 @@ class RealCacheBlendA800Executor:
                     engine.freeze_source("c%d" % index, source_id)
                 if self.protocol_version in {7, 8}:
                     first_key = canonical_layers[0][0]
+                    num_kv_heads, head_dim = infer_canonical_kv_geometry(
+                        first_key,
+                        configured_kv_heads=self.model_spec.num_kv_heads,
+                    )
                     artifact = CanonicalKVArtifact(
                         artifact_id="artifact-%s" % source_id,
                         source_variant_id=source_id,
@@ -712,8 +734,8 @@ class RealCacheBlendA800Executor:
                         artifact_logical_digest=logical,
                         artifact_bytes_digest=logical,
                         num_layers=len(canonical_layers),
-                        num_kv_heads=int(first_key.shape[1]),
-                        head_dim=int(first_key.shape[2]),
+                        num_kv_heads=num_kv_heads,
+                        head_dim=head_dim,
                     )
                     replica = PhysicalReplica(
                         replica_id="replica-%s-cpu" % source_id,

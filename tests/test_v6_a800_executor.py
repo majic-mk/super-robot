@@ -1,7 +1,10 @@
 import unittest
 from pathlib import Path
 
-from probekv.v6_a800_executor import aggregate_relative_l2
+from probekv.v6_a800_executor import (
+    aggregate_relative_l2,
+    infer_canonical_kv_geometry,
+)
 from probekv.v6_qualification_worker import (
     QualificationJobResult,
     validate_qualification_results,
@@ -10,6 +13,31 @@ from probekv.v6_a800_jobs import build_v6_a800_jobs
 
 
 class V6A800ExecutorContractTests(unittest.TestCase):
+    def test_canonical_kv_geometry_accepts_flattened_cacheblend_k(self):
+        class TensorShape:
+            shape = (512, 1024)
+
+        self.assertEqual(
+            infer_canonical_kv_geometry(TensorShape(), configured_kv_heads=8),
+            (8, 128),
+        )
+
+    def test_canonical_kv_geometry_accepts_explicit_heads(self):
+        class TensorShape:
+            shape = (512, 8, 128)
+
+        self.assertEqual(
+            infer_canonical_kv_geometry(TensorShape(), configured_kv_heads=8),
+            (8, 128),
+        )
+
+    def test_canonical_kv_geometry_rejects_incompatible_width(self):
+        class TensorShape:
+            shape = (512, 1025)
+
+        with self.assertRaises(ValueError):
+            infer_canonical_kv_geometry(TensorShape(), configured_kv_heads=8)
+
     def test_aggregate_relative_l2(self):
         try:
             import torch
