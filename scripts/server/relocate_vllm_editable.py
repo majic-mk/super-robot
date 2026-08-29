@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -85,9 +86,21 @@ def main() -> int:
     old_root = str((source / "vllm_blend").resolve())
     new_root = str((target / "vllm_blend").resolve())
     contents = finder.read_text(encoding="utf-8")
-    if old_root not in contents:
+    if old_root in contents:
+        atomic_write(finder, contents.replace(old_root, new_root))
+    elif new_root not in contents:
         raise RuntimeError("editable finder does not point to --from-cacheblend")
-    atomic_write(finder, contents.replace(old_root, new_root))
+
+    rewritten_pth: list[str] = []
+    for pth in sorted(purelib.glob("*.pth")):
+        pth_contents = pth.read_text(encoding="utf-8")
+        updated = pth_contents
+        for value in re.findall(r"['\"]([^'\"]*CacheBlend[^'\"]*/vllm_blend)['\"]", pth_contents):
+            if value != new_root:
+                updated = updated.replace(value, new_root)
+        if updated != pth_contents:
+            atomic_write(pth, updated)
+            rewritten_pth.append(pth.name)
 
     resolved = subprocess.check_output(
         [
@@ -107,6 +120,7 @@ def main() -> int:
         "cacheblend_tree": audit["cacheblend_tree"],
         "runtime_vllm_origin": expected_origin,
         "compiled_extension_sha256": copied,
+        "rewritten_pth": rewritten_pth,
         "rebuilt": False,
         "paper_evidence": False,
     }
