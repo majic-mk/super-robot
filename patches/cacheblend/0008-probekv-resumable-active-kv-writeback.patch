@@ -1,8 +1,50 @@
 diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
-index c1ff274..7a46f77 100644
+index 6a85dbe..c926155 100644
 --- a/vllm_blend/vllm/attention/backends/xformers.py
 +++ b/vllm_blend/vllm/attention/backends/xformers.py
-@@ -247,0 +248,15 @@ class XFormersImpl(AttentionImpl):
+@@ -203,6 +203,7 @@ class XFormersImpl(AttentionImpl):
+         
+         repair_regions = cache_fuse_metadata.get("repair_regions")
+         resumable_mode = bool(cache_fuse_metadata.get("probekv_resumable"))
++        dense_equivalent_full_repair = False
+         if status in [1] and resumable_mode:
+             active_positions = cache_fuse_metadata["active_positions"].to(
+                 device=query.device, dtype=torch.long
+@@ -221,29 +222,52 @@ class XFormersImpl(AttentionImpl):
+             key_old[target_positions] = key[local_indices]
+             value_old[target_positions] = value[local_indices]
+             query = query[local_indices]
+-            key = key_old
+-            value = value_old
+             cache_fuse_metadata["local_imp_indices"] = local_indices
+             cache_fuse_metadata["imp_indices"] = target_positions
+             if (
+                 torch.equal(active_positions, target_positions)
+                 and not cache_fuse_metadata.get("exact_prefix_tokens", 0)
+             ):
+-                # r=1 keeps every query row. Use the identical dense causal
+-                # bias object so full repair is numerically dense-equivalent.
+-                cache_fuse_metadata["attn_bias"] = (
+-                    BlockDiagonalCausalMask.from_seqlens(
+-                        attn_metadata.prefill_metadata.prompt_lens
+-                    )
+-                )
++                # r=1 has no historical attention rows left. Keep Source
++                # writeback/audit semantics, but execute the exact native
++                # dense attention path instead of the partial-reuse kernel.
++                dense_equivalent_full_repair = True
+             else:
++                key = key_old
++                value = value_old
+                 cache_fuse_metadata["attn_bias"] = _make_partial_bias_gqa(
+                     cache_fuse_metadata,
+                     query.device,
+                     self.num_kv_heads,
+                     self.num_queries_per_kv,
+                 )
+-            attn_metadata.prefill_metadata.attn_bias = None
++                attn_metadata.prefill_metadata.attn_bias = None
++
 +        if status in [2] and resumable_mode:
 +            # Every still-active query row is recomputed at every later layer.
 +            # Preserve historical KV only for inactive reuse rows; otherwise
@@ -16,8 +58,55 @@ index c1ff274..7a46f77 100644
 +                raise ValueError("active positions must be strictly increasing")
 +            key_old[active_positions] = key
 +            value_old[active_positions] = value
-+            key = key_old
-+            value = value_old
-@@ -426 +441 @@ class XFormersImpl(AttentionImpl):
++            full_prompt_positions = torch.arange(
++                int(cache_fuse_metadata["org_seq_len"]),
++                device=query.device,
++                dtype=torch.long,
++            )
++            dense_equivalent_full_repair = (
++                not cache_fuse_metadata.get("exact_prefix_tokens", 0)
++                and torch.equal(active_positions, full_prompt_positions)
++            )
++            if not dense_equivalent_full_repair:
++                key = key_old
++                value = value_old
+ 
+         if status in [1] and repair_regions is not None and not resumable_mode:
+             last_len = int(cache_fuse_metadata["suffix_len"])
+@@ -404,6 +428,7 @@ class XFormersImpl(AttentionImpl):
+         if (
+             status == 2
+             and resumable_mode
++            and not dense_equivalent_full_repair
+             and cache_fuse_metadata.get("attn_bias") is None
+         ):
+             cache_fuse_metadata["attn_bias"] = _make_partial_bias_gqa(
+@@ -423,7 +448,7 @@ class XFormersImpl(AttentionImpl):
+             #value = value_old
+             
+         
 -        if status in [2]:
 +        if status in [2] and not resumable_mode:
+             imp_indices = cache_fuse_metadata["imp_indices"]
+             key_old[imp_indices] = key 
+             value_old[imp_indices] = value
+@@ -459,7 +484,8 @@ class XFormersImpl(AttentionImpl):
+         
+         
+         # TODO(Jiayi): need to change num prefill tokens accordingly
+-        if status in [1,2]:
++        attention_status = 0 if dense_equivalent_full_repair else status
++        if attention_status in [1,2]:
+             num_prefill_tokens = attn_metadata.num_prefill_tokens
+             num_decode_tokens = attn_metadata.num_decode_tokens
+             output = torch.empty_like(query)
+@@ -495,7 +521,8 @@ class XFormersImpl(AttentionImpl):
+                 # prefix.
+                 
+                 out = self._run_memory_efficient_xformers_forward(
+-                    query, key, value, prefill_meta, status, cache_fuse_metadata)
++                    query, key, value, prefill_meta, attention_status,
++                    cache_fuse_metadata)
+                 
+                 #assert out.shape == output[:num_prefill_tokens].shape
+                 #output[:num_prefill_tokens] = out

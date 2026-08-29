@@ -211,6 +211,20 @@ class CacheBlendPatchTests(unittest.TestCase):
         )
         self.assertIn('"$python_bin" -m py_compile', prepare)
 
+    def test_schema6_r1_endpoint_uses_exact_dense_attention_path(self):
+        patch = patch_files_for_mode(
+            MANIFEST, "probekv_v8_schema6_joint_cfo"
+        )[-1].read_text(encoding="utf-8")
+        self.assertIn("dense_equivalent_full_repair = True", patch)
+        self.assertIn(
+            "attention_status = 0 if dense_equivalent_full_repair else status",
+            patch,
+        )
+        self.assertIn("and not dense_equivalent_full_repair", patch)
+        self.assertIn("if status in [2] and not resumable_mode", patch)
+        self.assertIn("key_old[active_positions] = key", patch)
+        self.assertIn("value_old[active_positions] = value", patch)
+
 
 if __name__ == "__main__":
     unittest.main()
