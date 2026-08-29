@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from probekv.v6_a800_executor import (
+    RealCacheBlendA800Executor,
     aggregate_relative_l2,
     infer_canonical_kv_geometry,
     per_position_relative_l2,
@@ -117,6 +118,18 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn(
             "native_prefix_kernel_vs_monolithic_logit_relative_l2", text
         )
+
+    def test_prefix_matched_reference_is_scoped_only_to_prefix_sentinel(self):
+        import inspect
+
+        ordinary = inspect.getsource(RealCacheBlendA800Executor._run_sentinel)
+        native_prefix = inspect.getsource(
+            RealCacheBlendA800Executor.run_native_prefix_cache_sentinel
+        )
+        self.assertNotIn("cached_tokens", ordinary)
+        self.assertNotIn("prefix_layers", ordinary)
+        self.assertIn("same native Prefix Cache hit", native_prefix)
+        self.assertIn("exact_prefix_layers=prefix_layers", native_prefix)
 
     def test_dense_path_restores_one_cacheblend_slot_per_layer(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(

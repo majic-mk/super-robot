@@ -1055,21 +1055,7 @@ class RealCacheBlendA800Executor:
         if token_count != 32:
             raise ValueError("qualification sentinel is frozen at 32 tokens")
         fixture = self._fixture(1)
-        monolithic_dense = self._dense_generate(fixture, token_count)
-        prefix_layers = tuple(
-            (key[:cached_tokens], value[:cached_tokens])
-            for key, value in shadows
-        )
-        # The system dense reference has the same native Prefix Cache hit,
-        # request arrival scope and first-token endpoint as ProbeKV.  Comparing
-        # against the no-prefix monolithic kernel would incorrectly attribute
-        # normal BF16 kernel-path differences to non-prefix Source reuse.
-        dense = self._resumable_dense_generate(
-            fixture,
-            token_count,
-            exact_prefix_tokens=cached_tokens,
-            exact_prefix_layers=prefix_layers,
-        )
+        dense = self._dense_generate(fixture, token_count)
         reuse = self._reuse_generate(
             fixture,
             ratio=1.0,
@@ -1240,7 +1226,21 @@ class RealCacheBlendA800Executor:
             and value[0].numel() == expected_row_values
             for key, value in shadows
         )
-        dense = self._dense_generate(fixture, token_count)
+        monolithic_dense = self._dense_generate(fixture, token_count)
+        prefix_layers = tuple(
+            (key[:cached_tokens], value[:cached_tokens])
+            for key, value in shadows
+        )
+        # The system dense reference has the same native Prefix Cache hit,
+        # request arrival scope and first-token endpoint as ProbeKV.  Comparing
+        # against the no-prefix monolithic kernel would incorrectly attribute
+        # normal BF16 kernel-path differences to non-prefix Source reuse.
+        dense = self._resumable_dense_generate(
+            fixture,
+            token_count,
+            exact_prefix_tokens=cached_tokens,
+            exact_prefix_layers=prefix_layers,
+        )
         reuse = self._reuse_generate(
             fixture,
             ratio=1.0,
