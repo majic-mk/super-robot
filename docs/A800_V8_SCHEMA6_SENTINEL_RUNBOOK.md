@@ -25,6 +25,9 @@ Server code must be a detached checkout of that SHA with a clean worktree.
 ```bash
 scripts/server/prepare_cacheblend.sh \
   "$STAGE/src/cacheblend-schema6" probekv_v8_schema6_joint_cfo
+MAX_JOBS=8 PIP_NO_CACHE_DIR=1 \
+  "$STAGE/envs/cacheblend-cu121/bin/python" -m pip install \
+  --no-deps --no-build-isolation -e "$STAGE/src/cacheblend-schema6/vllm_blend"
 python scripts/server/verify_cacheblend_patch.py \
   --cacheblend "$STAGE/src/cacheblend-schema6" \
   --mode probekv_v8_schema6_joint_cfo \
@@ -53,9 +56,14 @@ python scripts/server/run_v8_schema6_mistral_sentinel.py \
   --manifest "$STAGE/artifacts/schema6/manifest.json" \
   --model-audit "$STAGE/artifacts/model_audit_mistral.json" \
   --patch-audit "$STAGE/artifacts/schema6/patch_audit.json" \
+  --cacheblend "$STAGE/src/cacheblend-schema6" \
   --output "$STAGE/artifacts/schema6/a800-run-001" \
   --hourly-price-cny 5.98
 ```
+
+The runner resolves `vllm` before model loading and rejects an editable install
+that still points at an older CacheBlend worktree, even when the standalone
+patch audit is otherwise valid.
 
 Any token mismatch, logit threshold failure, Source digest mutation, illegal
 lease/transfer, stale Planner decision or incorrect CFO accumulator stops the

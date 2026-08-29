@@ -59,6 +59,9 @@ class Schema6ConfigAndJobTests(unittest.TestCase):
             root / "scripts/server/run_v8_schema6_mistral_sentinel.py"
         ).read_text(encoding="utf-8")
         self.assertIn("--hourly-price-cny", runner)
+        self.assertIn("--cacheblend", runner)
+        self.assertIn("require_cacheblend_runtime_source", runner)
+        self.assertIn("installed vLLM does not resolve", runner)
         sentinel = json.loads(
             (root / "configs/v8_schema6_a800_sentinel.json").read_text(
                 encoding="utf-8"

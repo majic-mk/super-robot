@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -44,6 +45,33 @@ def digest_payload(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def require_cacheblend_runtime_source(
+    cacheblend_root: Path, patch_audit: Mapping[str, Any]
+) -> str:
+    """Prove that the Python runtime resolves vLLM from the audited patch tree."""
+
+    root = cacheblend_root.resolve()
+    package_root = (root / "vllm_blend" / "vllm").resolve()
+    if not (root / ".git").is_dir() or not package_root.is_dir():
+        raise ValueError("--cacheblend must name the prepared CacheBlend repository")
+    if command(root, "git", "rev-parse", "HEAD") != patch_audit.get(
+        "cacheblend_commit"
+    ):
+        raise ValueError("CacheBlend runtime source has the wrong base commit")
+    if command(root, "git", "write-tree") != patch_audit.get("cacheblend_tree"):
+        raise ValueError("CacheBlend runtime source tree differs from the patch audit")
+    spec = importlib.util.find_spec("vllm")
+    if spec is None or spec.origin is None:
+        raise RuntimeError("vLLM is not installed in the frozen Python environment")
+    origin = Path(spec.origin).resolve()
+    if origin != package_root / "__init__.py":
+        raise RuntimeError(
+            "installed vLLM does not resolve to the audited CacheBlend tree; "
+            "install its vllm_blend directory in editable mode before renting GPU"
+        )
+    return str(origin)
 
 
 def _qualification_job(
@@ -129,6 +157,7 @@ def main() -> int:
     parser.add_argument("--lock", default="configs/a800_server_lock_v8_schema6.json")
     parser.add_argument("--model-audit", required=True)
     parser.add_argument("--patch-audit", required=True)
+    parser.add_argument("--cacheblend", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--hourly-price-cny", required=True, type=float)
     parser.add_argument("--resume", action="store_true")
@@ -169,6 +198,9 @@ def main() -> int:
         or patch_audit.get("cacheblend_tree") != manifest["cacheblend"]["tree"]
     ):
         raise ValueError("CacheBlend patch audit differs from schema-v6 provenance")
+    runtime_vllm_origin = require_cacheblend_runtime_source(
+        Path(args.cacheblend), patch_audit
+    )
 
     import torch
 
@@ -383,6 +415,7 @@ def main() -> int:
         "gpu_runtime_qualified": False,
         "h1_h2_execution_allowed": False,
         "paper_evidence": False, "locked_test_accessed": False,
+        "runtime_vllm_origin": runtime_vllm_origin,
         "full_kv_transfer_audit": transfer_authorizer.audit(),
     }
     atomic_write_json(output / "sentinel_gate.json", gate)
