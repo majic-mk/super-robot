@@ -6,7 +6,7 @@ import math
 import statistics
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
@@ -59,6 +59,15 @@ class GenerationTrace:
     prefix_active_positions_valid: bool = True
     artifact_digests_unchanged: bool = True
     completed_depth_hook_verified: bool = False
+    runtime_audit: Mapping[str, Any] = field(default_factory=dict)
+
+
+class R1DenseEquivalenceError(RuntimeError):
+    """Hard-gate failure that retains the complete non-paper r=1 audit."""
+
+    def __init__(self, audit: Mapping[str, Any]) -> None:
+        super().__init__("r=1 A800 sentinel differs from dense reference")
+        self.audit = dict(audit)
 
 
 def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> float:
@@ -73,6 +82,22 @@ def aggregate_relative_l2(observed: Sequence[Any], reference: Sequence[Any]) -> 
         numerator += float((delta * delta).sum().item())
         denominator += float((right.float() * right.float()).sum().item())
     return math.sqrt(numerator / max(denominator, 1e-30))
+
+
+def per_position_relative_l2(
+    observed: Sequence[Any], reference: Sequence[Any]
+) -> Tuple[float, ...]:
+    if not observed or len(observed) != len(reference):
+        raise ValueError("logit traces must be non-empty and equally long")
+    values: List[float] = []
+    for left, right in zip(observed, reference):
+        if tuple(left.shape) != tuple(right.shape):
+            raise ValueError("logit trace shapes differ")
+        delta = left.float() - right.float()
+        numerator = float((delta * delta).sum().item())
+        denominator = float((right.float() * right.float()).sum().item())
+        values.append(math.sqrt(numerator / max(denominator, 1e-30)))
+    return tuple(values)
 
 
 def infer_canonical_kv_geometry(
@@ -864,6 +889,29 @@ class RealCacheBlendA800Executor:
             for key in ("active_before", "active_after")
             for position in row[key]
         )
+        runtime_audit = {
+            "probe_completed_depth": first_probe,
+            "boundary_by_segment": {
+                "c%d" % index: int(boundary)
+                for index, boundary in boundaries.items()
+            },
+            "segment_positions": {
+                "c%d" % index: list(positions)
+                for index, positions in enumerate(fixture.segment_positions)
+            },
+            "repair_positions": {
+                segment_id: list(commit.repair_positions)
+                for segment_id, commit in engine.session.commits.items()
+            },
+            "final_active_positions": list(engine.session.active_positions),
+            "layer_audit": [
+                {
+                    key: list(value) if isinstance(value, tuple) else value
+                    for key, value in row.items()
+                }
+                for row in engine.session.layer_audit
+            ],
+        }
         return GenerationTrace(
             token_ids,
             logits,
@@ -896,6 +944,7 @@ class RealCacheBlendA800Executor:
                     and first_probe >= 1
                 )
             ),
+            runtime_audit=runtime_audit,
         )
 
     def _run_sentinel(self, token_count: int) -> Dict[str, Any]:
@@ -911,11 +960,26 @@ class RealCacheBlendA800Executor:
             teacher_tokens=dense.token_ids,
         )
         relative = aggregate_relative_l2(reuse.logits, dense.logits)
+        position_relative = per_position_relative_l2(reuse.logits, dense.logits)
+        mismatch_positions = [
+            index
+            for index, (left, right) in enumerate(
+                zip(reuse.token_ids, dense.token_ids)
+            )
+            if left != right
+        ]
         result = {
             "paper_evidence": False,
             "locked_test_accessed": False,
             "r1_dense_token_ids_equal": reuse.token_ids == dense.token_ids,
             "max_teacher_forced_logit_relative_l2": relative,
+            "aggregate_teacher_forced_logit_relative_l2": relative,
+            "maximum_position_logit_relative_l2": max(position_relative),
+            "per_position_logit_relative_l2": list(position_relative),
+            "first_token_mismatch_index": (
+                mismatch_positions[0] if mismatch_positions else None
+            ),
+            "token_mismatch_count": len(mismatch_positions),
             "canonical_source_digests_unchanged": reuse.source_digests_unchanged,
             "absolute_union_mask_verified": reuse.absolute_union_mask_verified,
             "artifact_digests_unchanged": reuse.artifact_digests_unchanged,
@@ -931,9 +995,14 @@ class RealCacheBlendA800Executor:
             "reuse_token_ids": list(reuse.token_ids),
             "dense_gpu_ms": dense.gpu_ms,
             "reuse_gpu_ms": reuse.gpu_ms,
+            "prompt_token_count": len(fixture.prompt_ids),
+            "segment_positions": [
+                list(positions) for positions in fixture.segment_positions
+            ],
+            "reuse_runtime_audit": dict(reuse.runtime_audit),
         }
         if not result["r1_dense_token_ids_equal"] or relative > 1e-4:
-            raise RuntimeError("r=1 A800 sentinel differs from dense reference")
+            raise R1DenseEquivalenceError(result)
         if not reuse.source_digests_unchanged or not reuse.absolute_union_mask_verified:
             raise RuntimeError("r=1 A800 sentinel failed Source/mask integrity")
         if self.protocol_version == 8 and not reuse.completed_depth_hook_verified:

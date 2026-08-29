@@ -4,6 +4,7 @@ from pathlib import Path
 from probekv.v6_a800_executor import (
     aggregate_relative_l2,
     infer_canonical_kv_geometry,
+    per_position_relative_l2,
 )
 from probekv.v6_qualification_worker import (
     QualificationJobResult,
@@ -50,6 +51,23 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             aggregate_relative_l2((), ())
+
+    def test_per_position_relative_l2(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is unavailable")
+        reference = (
+            torch.tensor([[3.0, 4.0]]),
+            torch.tensor([[0.0, 2.0]]),
+        )
+        observed = (
+            torch.tensor([[0.0, 4.0]]),
+            torch.tensor([[0.0, 1.0]]),
+        )
+        self.assertEqual(
+            per_position_relative_l2(observed, reference), (0.6, 0.5)
+        )
 
     def test_result_round_trip_and_complete_validation(self):
         import json

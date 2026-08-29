@@ -17,7 +17,10 @@ from probekv.contracts import KVLocation
 from probekv.io import append_jsonl_fsync, atomic_write_json, sha256_file
 from probekv.model_adapters import MISTRAL_SCHEMA6_SPEC
 from probekv.native_prefix_cache import evaluate_native_prefix_cache_audit
-from probekv.v6_a800_executor import RealCacheBlendA800Executor
+from probekv.v6_a800_executor import (
+    R1DenseEquivalenceError,
+    RealCacheBlendA800Executor,
+)
 from probekv.v6_a800_jobs import V6A800Job, V6A800JobKind
 from probekv.v8_leases import V8LeaseManager, V8ReplicaResource
 from probekv.v8_schema6_contracts import (
@@ -210,6 +213,12 @@ def main() -> int:
         Path(args.cacheblend), patch_audit
     )
 
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = output / "r1_diagnostic.json"
+    if diagnostic_path.exists() and not args.resume:
+        raise FileExistsError("r=1 diagnostic exists; use a new output directory")
+
     import torch
 
     holder: dict[str, UnifiedHBMReservationManager] = {}
@@ -239,16 +248,36 @@ def main() -> int:
         hbm_manager_provider=hbm_manager
     )
 
-    executor = RealCacheBlendA800Executor(
-        model_path=str(model_audit["snapshot_path"]),
-        model_spec=MISTRAL_SCHEMA6_SPEC,
-        expected_cacheblend_tree=str(patch_audit["cacheblend_tree"]),
-        engine_class=CacheBlendV8OnlineEngine,
-        protocol_version=8,
-        runtime_schema_version=6,
-        selection_workspace_capacity_provider=workspace_capacity,
-        full_kv_transfer_authorizer=transfer_authorizer,
-    )
+    try:
+        executor = RealCacheBlendA800Executor(
+            model_path=str(model_audit["snapshot_path"]),
+            model_spec=MISTRAL_SCHEMA6_SPEC,
+            expected_cacheblend_tree=str(patch_audit["cacheblend_tree"]),
+            engine_class=CacheBlendV8OnlineEngine,
+            protocol_version=8,
+            runtime_schema_version=6,
+            selection_workspace_capacity_provider=workspace_capacity,
+            full_kv_transfer_authorizer=transfer_authorizer,
+        )
+    except R1DenseEquivalenceError as error:
+        audit = dict(error.audit)
+        audit.update(
+            {
+                "protocol_version": 8,
+                "schema_version": 6,
+                "stage": "r1_dense_equivalence_diagnostic",
+                "code_commit": code_commit,
+                "cacheblend_patch_sha256": patch_audit.get(
+                    "cacheblend_patch_sha256"
+                ),
+                "cacheblend_tree": patch_audit.get("cacheblend_tree"),
+                "paper_evidence": False,
+                "locked_test_accessed": False,
+                "passed": False,
+            }
+        )
+        atomic_write_json(diagnostic_path, audit)
+        raise
     hbm_manager()
     provenance = dict(executor.runtime_provenance)
     if not re.match(lock["gpu"]["name_regex"], provenance["gpu_name"]):
@@ -263,8 +292,6 @@ def main() -> int:
     if missing:
         raise RuntimeError("schema-v6 runtime capabilities are missing: %s" % missing)
 
-    output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
     results_path = output / "results.jsonl"
     existing = []
     if results_path.exists():
