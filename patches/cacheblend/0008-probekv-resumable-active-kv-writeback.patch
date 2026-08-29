@@ -163,6 +163,50 @@ index 81be9d2..ec2d7a3 100644
          self.cache_fuse_metadata["exact_prefix_tokens"] = 0
          return hidden_states
  
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+index ec2d7a3..b5f23cc 100644
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -424,6 +424,17 @@ class LlamaModel(nn.Module):
+             "host_ms": 0.0,
+             "union_mask_digest": str(metadata.get(
+                 "current_union_mask_digest", "")),
++            "runtime_debug": {
++                "status": int(status),
++                "transition": transition,
++                "prefix_active": prefix_active,
++                "reuse_active_after": bool(metadata["reuse_active"]),
++                "active_equals_target": bool(torch.equal(active, target)),
++                "active_equals_full_prompt": bool(
++                    torch.equal(active, full_prompt_positions)
++                ),
++                "dense_full_repair": bool(dense_full_repair),
++            },
+         }
+ 
+     def probekv_finish_prefill(self, hidden_states, residual,
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+index 23cbc10..a03bb35 100644
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -372,6 +372,17 @@ class Qwen2Model(nn.Module):
+             "gpu_ms": float(start.elapsed_time(end)), "host_ms": 0.0,
+             "union_mask_digest": str(metadata.get(
+                 "current_union_mask_digest", "")),
++            "runtime_debug": {
++                "status": int(status),
++                "transition": transition,
++                "prefix_active": prefix_active,
++                "reuse_active_after": bool(metadata["reuse_active"]),
++                "active_equals_target": bool(torch.equal(active, target)),
++                "active_equals_full_prompt": bool(
++                    torch.equal(active, full_prompt_positions)
++                ),
++                "dense_full_repair": bool(dense_full_repair),
++            },
+         }
+ 
+     def probekv_finish_prefill(self, hidden_states, residual,
 diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
 index 790f27a..23cbc10 100644
 --- a/vllm_blend/vllm/model_executor/models/qwen2.py

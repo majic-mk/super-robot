@@ -14,6 +14,7 @@ class LayerAdvanceResult:
     gpu_ms: float = 0.0
     host_ms: float = 0.0
     union_mask_digest: str = ""
+    runtime_debug: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.gpu_ms < 0 or self.host_ms < 0:
@@ -278,6 +279,7 @@ class ProbeKVResumablePrefillSession:
                     "gpu_ms": result.gpu_ms,
                     "host_ms": result.host_ms,
                     "union_mask_digest": result.union_mask_digest,
+                    "runtime_debug": dict(result.runtime_debug),
                 }
             )
             self._pending_target_positions = None
