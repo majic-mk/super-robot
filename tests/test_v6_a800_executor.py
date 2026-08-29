@@ -111,6 +111,12 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("row.computed_block_nums", text)
         self.assertIn('"timing_inference_used": False', text)
         self.assertIn("enable_prefix_caching=True", text)
+        self.assertIn(
+            '"dense_reference_scope": "same_native_prefix_cache_hit"', text
+        )
+        self.assertIn(
+            "native_prefix_kernel_vs_monolithic_logit_relative_l2", text
+        )
 
     def test_dense_path_restores_one_cacheblend_slot_per_layer(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(

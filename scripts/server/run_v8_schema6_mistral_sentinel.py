@@ -324,7 +324,9 @@ def main() -> int:
             elif kind == "native_prefix_cache_sentinel":
                 observed = executor.run_native_prefix_cache_sentinel()
                 audit = evaluate_native_prefix_cache_audit(
-                    observed, expected_layers=MISTRAL_SCHEMA6_SPEC.num_layers
+                    observed,
+                    expected_layers=MISTRAL_SCHEMA6_SPEC.num_layers,
+                    require_matched_dense_reference=True,
                 )
                 if audit.get("passed") is not True:
                     raise RuntimeError("native Prefix Cache sentinel failed")

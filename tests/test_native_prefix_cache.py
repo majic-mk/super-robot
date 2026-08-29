@@ -31,7 +31,8 @@ def valid_prefix():
         "prefix_rows_excluded_from_repair": 192,
         "prefix_rows_in_repair_mask": 0,
         "prefix_rows_in_source_comparison": 0,
-        "combined_prefix_r1_reuse_exercised": True,
+            "combined_prefix_r1_reuse_exercised": True,
+            "dense_reference_scope": "same_native_prefix_cache_hit",
         "dense_token_ids_equal": True,
         "logit_relative_l2": 1e-5,
         "cuda_event_timing": True,
@@ -70,6 +71,22 @@ class NativePrefixAuditTests(unittest.TestCase):
         self.assertTrue(
             evaluate_native_prefix_cache_audit(
                 valid_prefix(), expected_layers=32
+            )["passed"]
+        )
+
+    def test_schema6_requires_prefix_matched_dense_reference(self):
+        legacy = dict(valid_prefix())
+        legacy.pop("dense_reference_scope")
+        self.assertTrue(
+            evaluate_native_prefix_cache_audit(
+                legacy, expected_layers=32
+            )["passed"]
+        )
+        self.assertFalse(
+            evaluate_native_prefix_cache_audit(
+                legacy,
+                expected_layers=32,
+                require_matched_dense_reference=True,
             )["passed"]
         )
 

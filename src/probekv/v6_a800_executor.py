@@ -690,6 +690,9 @@ class RealCacheBlendA800Executor:
         self,
         fixture: RuntimeFixture,
         token_count: int,
+        *,
+        exact_prefix_tokens: int = 0,
+        exact_prefix_layers: Sequence[Tuple[Any, Any]] = (),
     ) -> GenerationTrace:
         """Run the layer-resumable hook without installing or committing a Source.
 
@@ -698,9 +701,20 @@ class RealCacheBlendA800Executor:
         not itself the first source of numerical divergence.
         """
 
+        prefix_tokens = int(exact_prefix_tokens)
+        prefix_layers = tuple(exact_prefix_layers)
+        if not 0 <= prefix_tokens <= len(fixture.prompt_ids):
+            raise ValueError("invalid resumable dense Prefix Cache length")
+        if bool(prefix_tokens) != bool(prefix_layers):
+            raise ValueError("resumable dense prefix rows and length must agree")
+        if prefix_layers and len(prefix_layers) != self.model_spec.num_layers:
+            raise ValueError("resumable dense prefix shadow is incomplete")
         tensors = self._prepare(
             fixture, (), is_prompt=True, reuse=True,
-            request_id="resumable-dense-prefill",
+            request_id=(
+                "resumable-prefix-dense-prefill"
+                if prefix_tokens else "resumable-dense-prefill"
+            ),
         )
         attention, sampling = tensors[2], tensors[3]
         engine = self.engine_class(
@@ -716,8 +730,12 @@ class RealCacheBlendA800Executor:
         with self.torch.inference_mode():
             engine.begin_prefill(
                 model_signature="a800-r1-resumable-dense-control",
-                token_ids=fixture.prompt_ids,
-                absolute_positions=tuple(range(len(fixture.prompt_ids))),
+                token_ids=fixture.prompt_ids[prefix_tokens:],
+                absolute_positions=tuple(
+                    range(prefix_tokens, len(fixture.prompt_ids))
+                ),
+                exact_prefix_tokens=prefix_tokens,
+                exact_prefix_layers=prefix_layers,
                 attention_metadata=attention,
                 working_kv=self.kv_caches,
             )
@@ -1037,7 +1055,21 @@ class RealCacheBlendA800Executor:
         if token_count != 32:
             raise ValueError("qualification sentinel is frozen at 32 tokens")
         fixture = self._fixture(1)
-        dense = self._dense_generate(fixture, token_count)
+        monolithic_dense = self._dense_generate(fixture, token_count)
+        prefix_layers = tuple(
+            (key[:cached_tokens], value[:cached_tokens])
+            for key, value in shadows
+        )
+        # The system dense reference has the same native Prefix Cache hit,
+        # request arrival scope and first-token endpoint as ProbeKV.  Comparing
+        # against the no-prefix monolithic kernel would incorrectly attribute
+        # normal BF16 kernel-path differences to non-prefix Source reuse.
+        dense = self._resumable_dense_generate(
+            fixture,
+            token_count,
+            exact_prefix_tokens=cached_tokens,
+            exact_prefix_layers=prefix_layers,
+        )
         reuse = self._reuse_generate(
             fixture,
             ratio=1.0,
@@ -1216,12 +1248,12 @@ class RealCacheBlendA800Executor:
             probe_layer=1,
             teacher_tokens=dense.token_ids,
             exact_prefix_tokens=cached_tokens,
-            exact_prefix_layers=tuple(
-                (key[:cached_tokens], value[:cached_tokens])
-                for key, value in shadows
-            ),
+            exact_prefix_layers=prefix_layers,
         )
         relative_l2 = aggregate_relative_l2(reuse.logits, dense.logits)
+        prefix_kernel_relative_l2 = aggregate_relative_l2(
+            dense.logits, monolithic_dense.logits
+        )
         return {
             "paper_evidence": False,
             "locked_test_accessed": False,
@@ -1264,6 +1296,13 @@ class RealCacheBlendA800Executor:
             "combined_prefix_r1_reuse_exercised": True,
             "dense_token_ids_equal": reuse.token_ids == dense.token_ids,
             "logit_relative_l2": relative_l2,
+            "dense_reference_scope": "same_native_prefix_cache_hit",
+            "monolithic_no_prefix_token_ids_equal": (
+                reuse.token_ids == monolithic_dense.token_ids
+            ),
+            "native_prefix_kernel_vs_monolithic_logit_relative_l2": (
+                prefix_kernel_relative_l2
+            ),
             "dense_token_ids": list(dense.token_ids),
             "reuse_token_ids": list(reuse.token_ids),
             "dense_gpu_ms": dense.gpu_ms,

@@ -14,6 +14,7 @@ def evaluate_native_prefix_cache_audit(
     observed: Mapping[str, Any],
     *,
     expected_layers: int,
+    require_matched_dense_reference: bool = False,
 ) -> Dict[str, Any]:
     """Validate a real native-prefix plus ProbeKV r=1 sentinel.
 
@@ -76,6 +77,12 @@ def evaluate_native_prefix_cache_audit(
         failures.append("cached prefix rows entered Source comparison")
     if observed.get("combined_prefix_r1_reuse_exercised") is not True:
         failures.append("native Prefix Cache and ProbeKV r=1 were not exercised together")
+    if (
+        require_matched_dense_reference
+        and observed.get("dense_reference_scope")
+        != "same_native_prefix_cache_hit"
+    ):
+        failures.append("dense reference does not use the same Prefix Cache hit")
     if observed.get("dense_token_ids_equal") is not True:
         failures.append("Prefix Cache plus r=1 token IDs differ from dense")
     try:
@@ -100,4 +107,3 @@ def evaluate_native_prefix_cache_audit(
         }
     )
     return result
-
