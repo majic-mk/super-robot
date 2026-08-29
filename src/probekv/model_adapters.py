@@ -245,7 +245,15 @@ class PinnedCacheBlendResumableAdapter:
         if not 0 <= completed_depth < self.total_layers:
             raise ValueError("completed depth has no following Transformer block")
         layer = self.inner_model.layers[completed_depth]
-        normalized = layer.input_layernorm(hidden_states, residual)
+        # vLLM's fused RMSNorm may update both ``hidden_states`` and
+        # ``residual`` in place.  A Source-selection observation is read-only:
+        # mutating the live prefill state here changes the input to the next
+        # Transformer block and breaks the r=1 dense-equivalence endpoint.
+        # Isolate the projection on private tensors rather than relying on a
+        # particular RMSNorm implementation being out-of-place.
+        observed_hidden = hidden_states.clone()
+        observed_residual = None if residual is None else residual.clone()
+        normalized = layer.input_layernorm(observed_hidden, observed_residual)
         if isinstance(normalized, tuple):
             normalized = normalized[0]
         projected = layer.self_attn.qkv_proj(normalized)

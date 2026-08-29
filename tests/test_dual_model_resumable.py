@@ -7,6 +7,7 @@ from probekv.model_adapters import (
     MISTRAL_SPEC,
     QWEN_SPEC,
     PinnedCacheBlendResumableAdapter,
+    ResumableModelSpec,
     runtime_model_signature,
 )
 from probekv.resumable_prefill import (
@@ -127,6 +128,74 @@ class ResumableSessionTests(unittest.TestCase):
 
 
 class DualModelContractTests(unittest.TestCase):
+    def test_pre_rope_k_observation_cannot_mutate_live_prefill_state(self):
+        import torch
+
+        class MutatingNorm:
+            def __call__(self, hidden, residual):
+                hidden.add_(100)
+                residual.add_(200)
+                return hidden, residual
+
+        class Projection:
+            def __call__(self, normalized):
+                return torch.cat((normalized, normalized, normalized), dim=-1)
+
+        class Attention:
+            head_dim = 2
+            q_size = 2
+            kv_size = 2
+            qkv_proj = Projection()
+
+        class Layer:
+            input_layernorm = MutatingNorm()
+            self_attn = Attention()
+
+        class InnerModel:
+            layers = [Layer()]
+
+            def probekv_begin_prefill(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def probekv_advance_prefill(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def probekv_finish_prefill(self, *args, **kwargs):
+                raise NotImplementedError
+
+        spec = ResumableModelSpec(
+            adapter_name="mutation-test",
+            model_id="mutation-test",
+            revision="r",
+            architecture="TestModel",
+            num_layers=1,
+            num_attention_heads=1,
+            num_kv_heads=1,
+            rope_theta=1.0,
+            rope_scaling=None,
+            sliding_window=None,
+            use_sliding_window=False,
+            qkv_bias=False,
+            checkpoints=(0,),
+            max_context_tokens=8,
+        )
+        adapter = PinnedCacheBlendResumableAdapter(InnerModel(), spec)
+        hidden = torch.tensor([[1.0, 2.0]])
+        residual = torch.tensor([[3.0, 4.0]])
+        hidden_before = hidden.clone()
+        residual_before = residual.clone()
+
+        observed = adapter.observe_pre_rope_k(
+            completed_depth=0,
+            hidden_states=hidden,
+            residual=residual,
+            active_positions=(0,),
+        )
+
+        self.assertTrue(torch.equal(hidden, hidden_before))
+        self.assertTrue(torch.equal(residual, residual_before))
+        self.assertEqual(tuple(observed.shape), (1, 1, 2))
+
     def test_frozen_adapter_geometry(self):
         self.assertEqual(MISTRAL_SPEC.checkpoints, (1, 2, 4, 6, 8))
         self.assertEqual(MISTRAL_SPEC.num_layers, 32)
