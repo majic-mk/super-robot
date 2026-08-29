@@ -126,6 +126,7 @@ class V6A800ExecutorContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("canonical_fixture_nonce", text)
+        self.assertIn('"[PKV-P%d-S%d-K%d-V%d] "', text)
         self.assertIn(
             "canonical Source requires a complete full-prefill", text
         )
