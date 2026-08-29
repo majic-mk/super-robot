@@ -49,7 +49,7 @@ def digest_payload(value: Any) -> str:
 
 def require_cacheblend_runtime_source(
     cacheblend_root: Path, patch_audit: Mapping[str, Any]
-) -> str:
+) -> dict[str, Any]:
     """Prove that the Python runtime resolves vLLM from the audited patch tree."""
 
     root = cacheblend_root.resolve()
@@ -71,7 +71,15 @@ def require_cacheblend_runtime_source(
             "installed vLLM does not resolve to the audited CacheBlend tree; "
             "install its vllm_blend directory in editable mode before renting GPU"
         )
-    return str(origin)
+    extensions = sorted(package_root.glob("*.so"))
+    if not extensions:
+        raise RuntimeError("audited CacheBlend runtime has no compiled vLLM extensions")
+    return {
+        "vllm_origin": str(origin),
+        "compiled_extension_sha256": {
+            path.name: sha256_file(path) for path in extensions
+        },
+    }
 
 
 def _qualification_job(
@@ -198,7 +206,7 @@ def main() -> int:
         or patch_audit.get("cacheblend_tree") != manifest["cacheblend"]["tree"]
     ):
         raise ValueError("CacheBlend patch audit differs from schema-v6 provenance")
-    runtime_vllm_origin = require_cacheblend_runtime_source(
+    runtime_source_audit = require_cacheblend_runtime_source(
         Path(args.cacheblend), patch_audit
     )
 
@@ -415,7 +423,7 @@ def main() -> int:
         "gpu_runtime_qualified": False,
         "h1_h2_execution_allowed": False,
         "paper_evidence": False, "locked_test_accessed": False,
-        "runtime_vllm_origin": runtime_vllm_origin,
+        "runtime_source_audit": runtime_source_audit,
         "full_kv_transfer_audit": transfer_authorizer.audit(),
     }
     atomic_write_json(output / "sentinel_gate.json", gate)

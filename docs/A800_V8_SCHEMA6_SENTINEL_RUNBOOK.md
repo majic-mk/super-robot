@@ -25,7 +25,7 @@ Server code must be a detached checkout of that SHA with a clean worktree.
 ```bash
 scripts/server/prepare_cacheblend.sh \
   "$STAGE/src/cacheblend-schema6" probekv_v8_schema6_joint_cfo
-MAX_JOBS=8 PIP_NO_CACHE_DIR=1 \
+TORCH_CUDA_ARCH_LIST=8.0 MAX_JOBS=8 PIP_NO_CACHE_DIR=1 \
   "$STAGE/envs/cacheblend-cu121/bin/python" -m pip install \
   --no-deps --no-build-isolation -e "$STAGE/src/cacheblend-schema6/vllm_blend"
 python scripts/server/verify_cacheblend_patch.py \
@@ -37,6 +37,23 @@ python scripts/server/build_v8_schema6_sentinel_handoff.py \
   --patch-audit "$STAGE/artifacts/schema6/patch_audit.json" \
   --output "$STAGE/artifacts/schema6/manifest.json"
 ```
+
+The 2 GB no-GPU service mode cannot rebuild vLLM.  When the transferred
+environment already contains extensions built from the same frozen CacheBlend
+commit, relocate that editable install without recompiling:
+
+```bash
+python scripts/server/relocate_vllm_editable.py \
+  --python "$STAGE/envs/cacheblend-cu121/bin/python" \
+  --from-cacheblend "$STAGE/src/cacheblend-previous" \
+  --to-cacheblend "$STAGE/src/cacheblend-schema6" \
+  --patch-audit "$STAGE/artifacts/schema6/patch_audit.json" \
+  --output "$STAGE/artifacts/schema6/runtime_source_audit.json"
+```
+
+This path is rejected if the base commits differ.  It copies and hashes only
+the already-built CUDA extensions; all Python runtime code resolves from the
+new audited tree.
 
 ## GPU order and hard stops
 

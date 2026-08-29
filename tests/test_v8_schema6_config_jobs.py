@@ -62,6 +62,11 @@ class Schema6ConfigAndJobTests(unittest.TestCase):
         self.assertIn("--cacheblend", runner)
         self.assertIn("require_cacheblend_runtime_source", runner)
         self.assertIn("installed vLLM does not resolve", runner)
+        relocator = (
+            root / "scripts/server/relocate_vllm_editable.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("compiled_extension_sha256", relocator)
+        self.assertIn("cacheblend_tree", relocator)
         sentinel = json.loads(
             (root / "configs/v8_schema6_a800_sentinel.json").read_text(
                 encoding="utf-8"
