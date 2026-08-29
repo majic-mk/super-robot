@@ -48,9 +48,13 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertEqual(prefix_hardened[:4], staggered)
         self.assertEqual(len(v7), 6)
         self.assertEqual(v7[:5], prefix_hardened)
-        self.assertEqual(len(schema6), 7)
+        self.assertEqual(len(schema6), 8)
         self.assertEqual(schema6[:6], v7)
-        self.assertIn("probekv_cfo_collector", schema6[-1].read_text(encoding="utf-8"))
+        self.assertIn("probekv_cfo_collector", schema6[-2].read_text(encoding="utf-8"))
+        writeback = schema6[-1].read_text(encoding="utf-8")
+        self.assertIn("status in [2] and resumable_mode", writeback)
+        self.assertIn("key_old[active_positions] = key", writeback)
+        self.assertIn("value_old[active_positions] = value", writeback)
         self.assertNotEqual(
             combined_patch_sha256(cb0),
             combined_patch_sha256(probekv),
@@ -198,7 +202,7 @@ class CacheBlendPatchTests(unittest.TestCase):
     def test_schema6_patch_keeps_llama_metadata_dictionary_valid(self):
         patch = patch_files_for_mode(
             MANIFEST, "probekv_v8_schema6_joint_cfo"
-        )[-1].read_text(encoding="utf-8")
+        )[-2].read_text(encoding="utf-8")
         self.assertIn('-                                    "collect": False}', patch)
         self.assertIn('+                                    "collect": False,', patch)
         prepare = (ROOT / "scripts/server/prepare_cacheblend.sh").read_text(

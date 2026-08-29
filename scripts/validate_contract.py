@@ -162,8 +162,8 @@ def main() -> int:
             != "probekv_v8_schema6_joint_cfo"
         ):
             errors.append("schema-v6 server lock uses another runtime/patch mode")
-        if len(schema6_patches) != 7:
-            errors.append("schema-v6 CacheBlend patchset must contain seven patches")
+        if len(schema6_patches) != 8:
+            errors.append("schema-v6 CacheBlend patchset must contain eight patches")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:

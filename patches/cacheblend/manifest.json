@@ -54,7 +54,8 @@
       "0004-probekv-staggered-resumable-dual-model.patch",
       "0005-probekv-native-prefix-shadow.patch",
       "0006-probekv-v7-conservative-repair-rounding.patch",
-      "0007-probekv-schema6-cfo-post-rope-hook.patch"
+      "0007-probekv-schema6-cfo-post-rope-hook.patch",
+      "0008-probekv-resumable-active-kv-writeback.patch"
     ]
   },
   "runtime_modes": {
@@ -148,6 +149,7 @@
       "post_rope_cfo_hook": true,
       "streaming_attention_aggregation": true,
       "joint_timeline_gate2_gate3": true,
+      "active_repair_row_writeback_each_layer": true,
       "status": "requires_mistral_a800_sparse_sentinel",
       "paper_evidence": false,
       "purpose": "schema-v6 CFO and joint-runtime sentinel only"

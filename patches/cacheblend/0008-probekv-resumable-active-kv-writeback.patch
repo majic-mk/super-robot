@@ -1,0 +1,20 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+index c1ff274..7a46f77 100644
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -247,0 +248,15 @@ class XFormersImpl(AttentionImpl):
++        if status in [2] and resumable_mode:
++            # Every still-active query row is recomputed at every later layer.
++            # Preserve historical KV only for inactive reuse rows; otherwise
++            # r=1 would silently reinstall Source KV after its boundary layer.
++            active_positions = cache_fuse_metadata["active_positions"].to(
++                device=query.device, dtype=torch.long
++            )
++            if active_positions.numel() != query.shape[0]:
++                raise ValueError("active positions do not match query rows")
++            if not torch.all(active_positions[1:] > active_positions[:-1]):
++                raise ValueError("active positions must be strictly increasing")
++            key_old[active_positions] = key
++            value_old[active_positions] = value
++            key = key_old
++            value = value_old

@@ -191,6 +191,7 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "post_rope_cfo_hook",
         "streaming_attention_aggregation",
         "joint_timeline_gate2_gate3",
+        "active_repair_row_writeback_each_layer",
     ):
         if schema6.get(key) is not True:
             raise ValueError("schema-v6 runtime must require %s" % key)

@@ -73,6 +73,7 @@ case "$mode" in
       "0005-probekv-native-prefix-shadow.patch"
       "0006-probekv-v7-conservative-repair-rounding.patch"
       "0007-probekv-schema6-cfo-post-rope-hook.patch"
+      "0008-probekv-resumable-active-kv-writeback.patch"
     )
     ;;
   *)
