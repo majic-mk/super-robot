@@ -110,3 +110,111 @@ index 6a85dbe..c926155 100644
                  
                  #assert out.shape == output[:num_prefill_tokens].shape
                  #output[:num_prefill_tokens] = out
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+index 81be9d2..ec2d7a3 100644
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -362,6 +362,7 @@ class LlamaModel(nn.Module):
+             "model_signature": str(model_signature),
+             "attn_bias": None,
+             "fake_q": None,
++            "dense_full_repair_endpoint": False,
+             "reuse_active": bool(
+                 self.cache_fuse_metadata.get("exact_prefix_tokens", 0)
+             ),
+@@ -388,8 +389,21 @@ class LlamaModel(nn.Module):
+         shrinking = not torch.equal(active, target)
+         transition = bool(reuse_commit)
+         prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
+-        status = 1 if transition else (
+-            2 if metadata["reuse_active"] or prefix_active else 0
++        full_prompt_positions = torch.arange(
++            metadata["org_seq_len"], dtype=torch.long,
++            device=hidden_states.device)
++        dense_full_repair = (
++            transition
++            and not prefix_active
++            and not metadata["reuse_active"]
++            and torch.equal(active, target)
++            and torch.equal(active, full_prompt_positions)
++        )
++        metadata["dense_full_repair_endpoint"] = dense_full_repair
++        status = 0 if dense_full_repair else (
++            1 if transition else (
++                2 if metadata["reuse_active"] or prefix_active else 0
++            )
+         )
+         start = torch.cuda.Event(enable_timing=True)
+         end = torch.cuda.Event(enable_timing=True)
+@@ -400,7 +414,7 @@ class LlamaModel(nn.Module):
+             self.old_kvs[int(layer) - 1])
+         end.record()
+         end.synchronize()
+-        if transition:
++        if transition and not dense_full_repair:
+             metadata["reuse_active"] = True
+         return {
+             "hidden_states": hidden_states,
+@@ -420,6 +434,7 @@ class LlamaModel(nn.Module):
+         self.cache_fuse_metadata["probekv_resumable"] = False
+         self.cache_fuse_metadata["check"] = False
+         self.cache_fuse_metadata["reuse_active"] = False
++        self.cache_fuse_metadata["dense_full_repair_endpoint"] = False
+         self.cache_fuse_metadata["exact_prefix_tokens"] = 0
+         return hidden_states
+ 
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+index 790f27a..23cbc10 100644
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -312,7 +312,8 @@ class Qwen2Model(nn.Module):
+             "target_active_positions": absolute,
+             "imp_indices": absolute, "local_imp_indices": None,
+             "model_signature": str(model_signature), "attn_bias": None,
+-            "fake_q": None, "reuse_active": bool(
++            "fake_q": None, "dense_full_repair_endpoint": False,
++            "reuse_active": bool(
+                 self.cache_fuse_metadata.get("exact_prefix_tokens", 0)
+             ),
+         })
+@@ -338,8 +339,21 @@ class Qwen2Model(nn.Module):
+         shrinking = not torch.equal(active, target)
+         transition = bool(reuse_commit)
+         prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
+-        status = 1 if transition else (
+-            2 if metadata["reuse_active"] or prefix_active else 0
++        full_prompt_positions = torch.arange(
++            metadata["org_seq_len"], dtype=torch.long,
++            device=hidden_states.device)
++        dense_full_repair = (
++            transition
++            and not prefix_active
++            and not metadata["reuse_active"]
++            and torch.equal(active, target)
++            and torch.equal(active, full_prompt_positions)
++        )
++        metadata["dense_full_repair_endpoint"] = dense_full_repair
++        status = 0 if dense_full_repair else (
++            1 if transition else (
++                2 if metadata["reuse_active"] or prefix_active else 0
++            )
+         )
+         start = torch.cuda.Event(enable_timing=True)
+         end = torch.cuda.Event(enable_timing=True)
+@@ -350,7 +364,7 @@ class Qwen2Model(nn.Module):
+             self.old_kvs[int(layer) - 1])
+         end.record()
+         end.synchronize()
+-        if transition:
++        if transition and not dense_full_repair:
+             metadata["reuse_active"] = True
+         return {
+             "hidden_states": hidden_states, "residual": residual,
+@@ -368,6 +382,7 @@ class Qwen2Model(nn.Module):
+         self.cache_fuse_metadata["probekv_resumable"] = False
+         self.cache_fuse_metadata["check"] = False
+         self.cache_fuse_metadata["reuse_active"] = False
++        self.cache_fuse_metadata["dense_full_repair_endpoint"] = False
+         self.cache_fuse_metadata["exact_prefix_tokens"] = 0
+         return hidden_states
+ 

@@ -224,6 +224,16 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertIn("if status in [2] and not resumable_mode", patch)
         self.assertIn("key_old[active_positions] = key", patch)
         self.assertIn("value_old[active_positions] = value", patch)
+        self.assertEqual(
+            patch.count('metadata["dense_full_repair_endpoint"] = dense_full_repair'),
+            2,
+        )
+        self.assertEqual(
+            patch.count("status = 0 if dense_full_repair else ("), 2
+        )
+        self.assertEqual(
+            patch.count("if transition and not dense_full_repair:"), 2
+        )
 
 
 if __name__ == "__main__":
