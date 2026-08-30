@@ -164,6 +164,23 @@ def main() -> int:
             errors.append("schema-v6 server lock uses another runtime/patch mode")
         if len(schema6_patches) != 8:
             errors.append("schema-v6 CacheBlend patchset must contain eight patches")
+        try:
+            schema6_profile_lock = json.loads(
+                Path("configs/a800_server_lock_v8_schema6_profile.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append("schema-v6 Profile lock is invalid: %s" % error)
+        else:
+            runtime = schema6_profile_lock.get("runtime", {})
+            if (
+                schema6_profile_lock.get("schema_version") != 6
+                or runtime.get("freeze_runtime_cost_profile") is not True
+                or runtime.get("run_140_job_qualification") is not False
+                or runtime.get("run_h1") is not False
+            ):
+                errors.append("schema-v6 Profile lock crosses its frozen stop boundary")
     try:
         local_v6 = load_config("configs/local_system_v6.json")
     except (OSError, ValueError) as error:

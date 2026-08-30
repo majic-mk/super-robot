@@ -62,6 +62,15 @@ the real `SSD -> pinned CPU -> GPU` path.
 The first Mistral A800 session is a four-hour sparse sentinel only.  It cannot
 freeze a RuntimeCostProfile, run 140-job qualification or start H1.
 
+After that sentinel passes at the same immutable code SHA, the next session
+may run `run_v8_schema6_mistral_runtime_profile.py`.  Its 155-cell matrix uses
+20 warmups and 100 retained measurements per cell, covers all eight Profile
+categories, and freezes one RuntimeCostProfile for exactly one A/C policy.
+The SSD cells measure the complete `SSD -> pinned CPU -> GPU` path.  This
+session still cannot run the development selector sweep, 140-job qualification
+or H1.  A new code SHA invalidates the earlier sentinel and requires it to be
+rerun before Profile measurement.
+
 ## CFO provenance
 
 `CFO_raw = alpha * CCI * (1 - beta_prime)` reproduces Cache-Craft Equation 12.

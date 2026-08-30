@@ -105,6 +105,17 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("run_native_prefix_cache_sentinel", text)
         self.assertNotIn("FakeQualification", text)
 
+    def test_schema6_profile_keeps_raw_samples_out_of_legacy_result_schema(self):
+        text = Path("src/probekv/v6_a800_executor.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def execute_with_samples", text)
+        self.assertIn("gpu_measurements_ms", text)
+        fields = set(QualificationJobResult.__dataclass_fields__)
+        self.assertNotIn("gpu_measurements_ms", fields)
+        self.assertIn("measure_schema6_ssd_staged_transfer", text)
+        self.assertIn("ssd_to_pinned_cpu_to_gpu", text)
+
     def test_prefix_hit_uses_scheduler_metadata_not_timing(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(
             encoding="utf-8"

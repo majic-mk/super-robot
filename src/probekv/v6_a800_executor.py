@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import math
+import os
 import statistics
 import subprocess
 import time
@@ -210,7 +211,7 @@ class RealCacheBlendA800Executor:
         if len(self.kv_caches) != model_spec.num_layers:
             raise RuntimeError("vLLM KV cache layer count differs from adapter")
         self.source_loader = TorchLayerwiseSourceLoader(torch)
-        self.fixtures: Dict[Tuple[int, int, int], RuntimeFixture] = {}
+        self.fixtures: Dict[Tuple[int, int, int, int], RuntimeFixture] = {}
         self.sentinel = self._run_sentinel(int(sentinel_tokens))
 
     def _runtime_provenance(self) -> Dict[str, Any]:
@@ -386,9 +387,11 @@ class RealCacheBlendA800Executor:
         segment_count: int,
         stored_variants: int = 1,
         exact_prefix_tokens: int = 0,
+        segment_token_count: int = 0,
     ) -> RuntimeFixture:
         cache_key = (
-            int(segment_count), int(stored_variants), int(exact_prefix_tokens)
+            int(segment_count), int(stored_variants), int(exact_prefix_tokens),
+            int(segment_token_count),
         )
         cached = self.fixtures.get(cache_key)
         if cached is not None:
@@ -421,6 +424,18 @@ class RealCacheBlendA800Executor:
                 " Exact reusable segment %d contains a stable fact." % index,
                 add_special_tokens=False,
             ))
+            if segment_token_count:
+                if segment_token_count < 2:
+                    raise ValueError("profile Segment token count must be at least two")
+                continuation = list(encode(
+                    " Stable canonical evidence for deterministic profile measurement.",
+                    add_special_tokens=False,
+                ))
+                if not continuation:
+                    raise RuntimeError("tokenizer could not extend a profile Segment")
+                while len(segment) < segment_token_count:
+                    segment.extend(continuation)
+                segment = segment[:segment_token_count]
             current.extend(bridge)
             current_start = len(current)
             current.extend(segment)
@@ -1512,7 +1527,370 @@ class RealCacheBlendA800Executor:
             "cuda_event_timing": True,
         }
 
-    def execute(self, job: V6A800Job) -> QualificationJobResult:
+    def measure_schema6_ssd_staged_transfer(
+        self,
+        *,
+        bytes_count: int,
+        staging_directory: str,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure the real SSD -> pinned CPU -> GPU critical path.
+
+        CUDA Events cover the H2D leg while ``measurements_ms`` records the
+        end-to-end wall clock.  The file is materialized and fsynced before
+        warmup; where supported, POSIX_FADV_DONTNEED is used between samples
+        so the SSD category cannot silently become a page-cache benchmark.
+        """
+
+        if self.runtime_schema_version != 6 or bytes_count <= 0:
+            raise ValueError("invalid schema-v6 SSD transfer cell")
+        directory = Path(staging_directory).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / ("schema6-ssd-transfer-%d.bin" % int(bytes_count))
+        if not path.exists() or path.stat().st_size != int(bytes_count):
+            block = b"\xa5" * min(1024 * 1024, int(bytes_count))
+            with path.open("wb") as handle:
+                remaining = int(bytes_count)
+                while remaining:
+                    chunk = block[: min(len(block), remaining)]
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        source = self.torch.empty(bytes_count, dtype=self.torch.uint8, pin_memory=True)
+        target = self.torch.empty(bytes_count, dtype=self.torch.uint8, device="cuda")
+        stream = self.torch.cuda.Stream()
+        host_view = memoryview(source.numpy())
+
+        def operation() -> Tuple[float, float]:
+            with path.open("rb", buffering=0) as handle:
+                if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+                    os.posix_fadvise(
+                        handle.fileno(), 0, int(bytes_count), os.POSIX_FADV_DONTNEED
+                    )
+                started = time.perf_counter()
+                offset = 0
+                while offset < int(bytes_count):
+                    count = handle.readinto(host_view[offset:])
+                    if not count:
+                        raise IOError("short SSD read during schema-v6 measurement")
+                    offset += int(count)
+                begin = self.torch.cuda.Event(enable_timing=True)
+                end = self.torch.cuda.Event(enable_timing=True)
+                with self.torch.cuda.stream(stream):
+                    begin.record(stream)
+                    target.copy_(source, non_blocking=True)
+                    end.record(stream)
+                end.synchronize()
+                return (
+                    (time.perf_counter() - started) * 1000.0,
+                    float(begin.elapsed_time(end)),
+                )
+
+        for _ in range(warmups):
+            operation()
+        wall_rows = []
+        cuda_rows = []
+        for _ in range(repeats):
+            wall_ms, cuda_ms = operation()
+            wall_rows.append(float(wall_ms))
+            cuda_rows.append(float(cuda_ms))
+        return {
+            "measurements_ms": wall_rows,
+            "cuda_measurements_ms": cuda_rows,
+            "bytes": int(bytes_count),
+            "path": "ssd_to_pinned_cpu_to_gpu",
+            "timing_basis": "end_to_end_wall_clock",
+            "cuda_event_timing": True,
+            "page_cache_drop_requested": bool(
+                hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED")
+            ),
+        }
+
+    def measure_schema6_full_kv_load(
+        self,
+        *,
+        token_count: int,
+        layer_range: Tuple[int, int],
+        source_tier: str,
+        staging_directory: str,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure the actual layer-wise Source loader at the requested size."""
+
+        if self.runtime_schema_version != 6 or token_count < 1:
+            raise ValueError("invalid schema-v6 full-KV load cell")
+        first, last = (int(layer_range[0]), int(layer_range[1]))
+        if first < 1 or last > self.model_spec.num_layers or first > last:
+            raise ValueError("full-KV layer range is outside the model")
+        if source_tier not in {"pinned_cpu", "ssd"}:
+            raise ValueError("unsupported full-KV source tier")
+        width = (
+            int(self.model_spec.num_kv_heads)
+            * int(self.inner_model.layers[0].self_attn.head_dim)
+        )
+        layers = tuple(
+            (
+                self.torch.zeros(
+                    (token_count, width), dtype=self.torch.bfloat16,
+                    device="cpu", pin_memory=True,
+                ),
+                self.torch.zeros(
+                    (token_count, width), dtype=self.torch.bfloat16,
+                    device="cpu", pin_memory=True,
+                ),
+            )
+            for _ in range(first, last + 1)
+        )
+        requested_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for pair in layers for tensor in pair
+        )
+        positions = tuple(range(token_count))
+        artifact_path: Path | None = None
+        if source_tier == "ssd":
+            directory = Path(staging_directory).resolve()
+            directory.mkdir(parents=True, exist_ok=True)
+            artifact_path = directory / (
+                "schema6-full-kv-%d-%d-%d.bin" % (token_count, first, last)
+            )
+            if not artifact_path.exists() or artifact_path.stat().st_size != requested_bytes:
+                block = b"\0" * min(1024 * 1024, requested_bytes)
+                with artifact_path.open("wb") as handle:
+                    remaining = requested_bytes
+                    while remaining:
+                        chunk = block[: min(len(block), remaining)]
+                        handle.write(chunk)
+                        remaining -= len(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+
+        views = tuple(
+            memoryview(tensor.view(self.torch.uint8).numpy()).cast("B")
+            for pair in layers for tensor in pair
+        )
+
+        def operation() -> Tuple[float, float]:
+            started = time.perf_counter()
+            if artifact_path is not None:
+                with artifact_path.open("rb", buffering=0) as handle:
+                    if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+                        os.posix_fadvise(
+                            handle.fileno(), 0, requested_bytes, os.POSIX_FADV_DONTNEED
+                        )
+                    for view in views:
+                        offset = 0
+                        while offset < len(view):
+                            count = handle.readinto(view[offset:])
+                            if not count:
+                                raise IOError("short SSD full-KV artifact read")
+                            offset += int(count)
+            ticket = self.source_loader.begin(
+                segment_id="schema6-profile-load",
+                source_id="schema6-profile-source",
+                canonical_layers=layers,
+                segment_positions=positions,
+            )
+            ticket.layer_events[len(layers)].synchronize()
+            wall_ms = (time.perf_counter() - started) * 1000.0
+            gpu_ms = ticket.layer_ready_gpu_ms(len(layers))
+            return float(wall_ms), float(gpu_ms)
+
+        for _ in range(warmups):
+            operation()
+        wall_rows = []
+        gpu_rows = []
+        for _ in range(repeats):
+            wall_ms, gpu_ms = operation()
+            wall_rows.append(wall_ms)
+            gpu_rows.append(gpu_ms)
+        return {
+            "measurements_ms": wall_rows,
+            "cuda_measurements_ms": gpu_rows,
+            "bytes": int(requested_bytes),
+            "source_tier": source_tier,
+            "layer_range": [first, last],
+            "path": (
+                "pinned_cpu_to_gpu_layerwise"
+                if source_tier == "pinned_cpu"
+                else "ssd_to_pinned_cpu_to_gpu_layerwise"
+            ),
+            "timing_basis": "end_to_end_wall_clock",
+            "cuda_event_timing": True,
+        }
+
+    def measure_schema6_joint_operation(
+        self,
+        *,
+        segment_count: int,
+        segment_token_count: int,
+        boundary: int,
+        repair_ratio: float,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure one real multi-Segment resumable request critical path."""
+
+        if self.runtime_schema_version != 6:
+            raise RuntimeError("joint measurement requires schema-v6 runtime")
+        if boundary not in self.model_spec.checkpoints:
+            raise ValueError("joint boundary differs from model checkpoints")
+        if not 0 <= repair_ratio <= 1:
+            raise ValueError("joint repair ratio is outside [0,1]")
+        fixture = self._fixture(
+            int(segment_count), 1, segment_token_count=int(segment_token_count)
+        )
+
+        def operation() -> GenerationTrace:
+            return self._reuse_generate(
+                fixture,
+                ratio=float(repair_ratio),
+                token_count=1,
+                probe_layer=int(boundary),
+                winner_variant=0,
+            )
+
+        for _ in range(warmups):
+            operation()
+        gpu_rows = []
+        host_rows = []
+        integrity = None
+        for _ in range(repeats):
+            integrity = operation()
+            gpu_rows.append(float(integrity.gpu_ms))
+            host_rows.append(float(integrity.host_ms))
+        if integrity is None:
+            raise RuntimeError("joint measurement produced no trace")
+        if (
+            not integrity.source_digests_unchanged
+            or not integrity.artifact_digests_unchanged
+            or not integrity.absolute_union_mask_verified
+        ):
+            raise RuntimeError("joint measurement violated Source/mask integrity")
+        return {
+            "measurements_ms": gpu_rows,
+            "host_measurements_ms": host_rows,
+            "timing_basis": "request_gpu_critical_path",
+            "cuda_event_timing": True,
+            "prompt_token_count": len(fixture.prompt_ids),
+            "actual_segment_token_counts": [
+                len(positions) for positions in fixture.segment_positions
+            ],
+            "canonical_source_digests_unchanged": True,
+            "artifact_digests_unchanged": True,
+            "absolute_union_mask_verified": True,
+        }
+
+    def measure_schema6_copy_interference(
+        self,
+        *,
+        copy_bytes: int,
+        overlap: bool,
+        concurrency: int,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure a real H2D copy workload with/without concurrent GPU work."""
+
+        if self.runtime_schema_version != 6 or copy_bytes <= 0 or concurrency < 1:
+            raise ValueError("invalid schema-v6 interference cell")
+        sources = [
+            self.torch.empty(copy_bytes, dtype=self.torch.uint8, pin_memory=True)
+            for _ in range(concurrency)
+        ]
+        targets = [
+            self.torch.empty(copy_bytes, dtype=self.torch.uint8, device="cuda")
+            for _ in range(concurrency)
+        ]
+        streams = [self.torch.cuda.Stream() for _ in range(concurrency)]
+        compute = self.torch.randn((512, 512), device="cuda", dtype=self.torch.bfloat16)
+
+        def operation() -> None:
+            if overlap:
+                for source, target, stream in zip(sources, targets, streams):
+                    with self.torch.cuda.stream(stream):
+                        target.copy_(source, non_blocking=True)
+                self.torch.mm(compute, compute)
+                for stream in streams:
+                    stream.synchronize()
+            else:
+                for source, target, stream in zip(sources, targets, streams):
+                    with self.torch.cuda.stream(stream):
+                        target.copy_(source, non_blocking=True)
+                    stream.synchronize()
+                self.torch.mm(compute, compute)
+
+        for _ in range(warmups):
+            operation()
+        rows = [self._timed_operation(operation)[1] for _ in range(repeats)]
+        return {
+            "measurements_ms": rows,
+            "timing_basis": "end_to_end_wall_clock",
+            "cuda_event_timing": True,
+            "copy_bytes": int(copy_bytes),
+            "overlap": bool(overlap),
+            "concurrency": int(concurrency),
+        }
+
+    def measure_schema6_scheduler_blocking(
+        self,
+        *,
+        policy: str,
+        concurrency: int,
+        ready_resume_state: str,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure CUDA-event polling and ready/resume synchronization overhead."""
+
+        if policy not in {"causal_commit_wait", "immediate_staggered_closed_loop"}:
+            raise ValueError("invalid scheduler policy")
+        if concurrency < 1 or ready_resume_state not in {"prefetching", "ready"}:
+            raise ValueError("invalid scheduler blocking cell")
+        streams = [self.torch.cuda.Stream() for _ in range(concurrency)]
+        payload = self.torch.randn((256, 256), device="cuda", dtype=self.torch.bfloat16)
+
+        def operation() -> None:
+            events = []
+            for stream in streams:
+                with self.torch.cuda.stream(stream):
+                    if ready_resume_state == "prefetching":
+                        self.torch.mm(payload, payload)
+                    event = self.torch.cuda.Event(enable_timing=True)
+                    event.record(stream)
+                    events.append(event)
+            if policy == "causal_commit_wait":
+                for event in events:
+                    event.synchronize()
+            else:
+                pending = list(events)
+                while pending:
+                    pending = [event for event in pending if not event.query()]
+
+        for _ in range(warmups):
+            operation()
+        rows = [self._timed_operation(operation)[1] for _ in range(repeats)]
+        return {
+            "measurements_ms": rows,
+            "timing_basis": "scheduler_host_critical_path",
+            "cuda_event_timing": True,
+            "policy": policy,
+            "concurrency": int(concurrency),
+            "ready_resume_state": ready_resume_state,
+        }
+
+    def execute_with_samples(
+        self, job: V6A800Job
+    ) -> Tuple[QualificationJobResult, Mapping[str, Tuple[float, ...]]]:
+        """Execute one job and retain every timing sample for Profile freeze.
+
+        The historical qualification API intentionally exposes only medians.
+        Schema-v6 RuntimeCostProfile construction additionally needs the raw,
+        warmup-excluded CUDA Event samples.  Keeping that data in a separate
+        method avoids silently changing v6/v7 JSON result schemas.
+        """
         needs_model = True
         fixture = self._fixture(
             job.segment_count,
@@ -1625,7 +2003,7 @@ class RealCacheBlendA800Executor:
                 gpu_ms, host_ms = self._timed_operation(operation)
             gpu_rows.append(gpu_ms)
             host_rows.append(host_ms)
-        return QualificationJobResult(
+        result = QualificationJobResult(
             job_id=job.job_id,
             passed=True,
             cuda_event_timing=True,
@@ -1649,3 +2027,10 @@ class RealCacheBlendA800Executor:
                 bool(self.sentinel["absolute_union_mask_verified"])
             ),
         )
+        return result, {
+            "gpu_measurements_ms": tuple(float(value) for value in gpu_rows),
+            "host_measurements_ms": tuple(float(value) for value in host_rows),
+        }
+
+    def execute(self, job: V6A800Job) -> QualificationJobResult:
+        return self.execute_with_samples(job)[0]

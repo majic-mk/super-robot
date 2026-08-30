@@ -137,6 +137,49 @@ class Schema6RuntimeProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_schema6_runtime_cost_profile(profile, require_frozen=True)
 
+    def test_all_category_profile_can_be_frozen(self):
+        axes = {
+            "comparison_batch": {
+                "k": 1, "token_count": 128, "completed_depth": 1,
+                "backing_tier": "pinned_cpu",
+            },
+            "selection_state_transfer": {
+                "bytes": 1024, "tier": "pinned_cpu", "batch_k": 1,
+            },
+            "full_kv_tier_load": {
+                "bytes": 2048, "source_tier": "pinned_cpu",
+                "layer_range": [1, 32],
+            },
+            "dense_remaining_joint": {
+                "boundary_vector": [2], "active_rows": 128,
+                "segment_count": 1,
+            },
+            "repair": {"boundary": 2, "token_count": 128, "repair_count": 20},
+            "union_mask_remaining": {
+                "boundary_vector": [2], "layer_active_rows": [128] * 31,
+            },
+            "interference": {"copy_bytes": 1024, "overlap": True, "concurrency": 1},
+            "scheduler_blocking": {
+                "policy": "causal_commit_wait", "concurrency": 1,
+                "ready_resume_state": "ready",
+            },
+        }
+        cells = tuple(
+            make_measurement_cell(
+                category, axes=value, measurements_ms=[1.0, 1.1],
+                warmups=20, resamples=20,
+            )
+            for category, value in axes.items()
+        )
+        profile = build_schema6_runtime_cost_profile(
+            model_key="mistral", policy="causal_commit_wait",
+            code_commit="sha", cacheblend_patch_sha256="patch",
+            gpu_uuid="gpu", hardware_compatibility_signature="hardware",
+            measurement_cells=cells, measurement_sha256="measurement",
+            frozen=True,
+        )
+        validate_schema6_runtime_cost_profile(profile, require_frozen=True)
+
 
 if __name__ == "__main__":
     unittest.main()

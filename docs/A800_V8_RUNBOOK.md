@@ -32,6 +32,21 @@ The frozen 90-case development partition must be sampled only from the
 pre-isolated `calibration`/development role. The builder rejects train,
 H1-pilot and test rows so Profile freeze cannot overlap later H1 evidence.
 
+## Schema-v6 Mistral Runtime Profile session
+
+Schema-v6 does not reuse the schema-v5 comparison-only Profile freezer.  After
+the 54/54 sparse sentinel passes at the current code SHA, build a policy-bound
+handoff with `build_v8_schema6_runtime_profile_handoff.py`, then run
+`run_v8_schema6_mistral_runtime_profile.py` in a new immutable output
+directory.  The runner executes 155 cells with 20 warmups and 100 retained
+samples, freezes all eight RuntimeCostProfile categories, and binds the
+Profile to the actual GPU UUID.  Run A and C independently.  It does not run
+the 90-case development selector sweep, 140-job qualification or H1.
+
+If the code changes after the sentinel, rerun the sentinel first.  Failed
+Profile output is never resumed; successful prefixes may resume with
+`--resume`.  SSD cells must use a staging directory on the data disk.
+
 ## A800 order for each Model x A/C Profile
 
 1. Verify A800 80GB, CC 8.0, stack, block size 16, exact SHA and clean tree.
@@ -63,7 +78,9 @@ profile cannot unlock schema-v5 H1.
   or CUDA timing failure: stop.
 - Any qualification job failure: retain evidence and do not run H1.
 - Full-KV prefetch before Source freeze or non-winner transfer: stop.
-- Selection scratch above 256 MiB: profile smaller microbatches; do not silently raise it.
+- Selection workspace is leased from the unified HBM manager with a fixed 4 GiB
+  reserve. Use one vectorized comparison when it fits, otherwise use the
+  largest deterministic microbatch; do not impose the old 256 MiB schema-v5 cap.
 - Stale Replica: at most two same-Source replans; never change Variant.
 - Resume only an immutable successful result prefix; never overwrite failure.
 
