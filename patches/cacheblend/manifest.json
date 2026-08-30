@@ -66,6 +66,16 @@
       "0006-probekv-v7-conservative-repair-rounding.patch",
       "0007-probekv-schema6-cfo-post-rope-hook.patch",
       "0008-probekv-resumable-active-kv-writeback.patch"
+    ],
+    "probekv_v8_gradual_barrier_tiered_lru": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch",
+      "0007-probekv-schema6-cfo-post-rope-hook.patch",
+      "0008-probekv-resumable-active-kv-writeback.patch"
     ]
   },
   "runtime_modes": {
@@ -177,6 +187,20 @@
       "status": "no_gpu_complete_requires_schema7_a800_sentinel",
       "paper_evidence": false,
       "purpose": "schema-v7 CacheBlend-aligned winner repair and gradual streaming"
+    },
+    "gradual_barrier_tiered_lru_runtime_v8": {
+      "patch_mode": "probekv_v8_gradual_barrier_tiered_lru",
+      "inherits": "winner_gradual_streaming_runtime_v8",
+      "dense_d1_d2_selection_barrier": true,
+      "gate1_same_origin_positive_saving": true,
+      "final_commit_request_joint_timeline": true,
+      "cpu_preferred_single_backing": true,
+      "cpu_and_ssd_lru": true,
+      "repair_ratio_scope_explicit": true,
+      "legacy_ac_policy_removed_from_main": true,
+      "status": "no_gpu_complete_requires_schema8_a800_sentinel",
+      "paper_evidence": false,
+      "purpose": "schema-v8 d1/d2 dense barrier, tiered LRU, and explicit repair-ratio scope"
     }
   },
   "innovation_claim": false,
@@ -187,5 +211,6 @@
   "source_k_representation": "pre-RoPE; rotate at current org_pos",
   "v7_full_kv_artifact_policy": "one lossless BF16 Artifact per Source Variant",
   "v8_source_selection_policy": "training-free residual K with K-only SelectionState",
-  "v8_schema7_repair_policy": "winner-specific fixed15 fallback plus profiled gradual no-reentry candidates"
+  "v8_schema7_repair_policy": "winner-specific fixed15 fallback plus profiled gradual no-reentry candidates",
+  "v8_schema8_main_policy": "dense d1/d2 selection barrier, CPU-preferred single backing, tier LRU, and explicit ratio scope"
 }

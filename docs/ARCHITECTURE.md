@@ -195,6 +195,9 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v8 schema-v7 repair | `v8_schema7_repair.py`, `v8_schema7_contracts.py` | winner-only K/V/KV repair metrics, dense repair-check boundary, immutable gradual no-reentry support |
 | v8 schema-v7 admission | `v8_schema7_planner.py`, `v8_schema7_runtime.py` | PreparationAdmission plus refined ready-subset FinalCommitAdmission without Source reselection |
 | v8 schema-v7 transfer | `v8_schema7_transfer.py`, `cacheblend_v6_online_engine.py` | pinned staging/GDS fallback and split qualification/online integrity modes without online full SHA256 |
+| v8 schema-v8 selection barrier | `v8_schema8_barrier.py`, `v8_schema8_planner.py` | all Segments resolve in dense state at d=1/d=2; Gate1 uses same-origin positive-saving critical path and final admission retains request gamma 0.8 |
+| v8 schema-v8 backing policy | `v8_schema8_storage.py` | one CPU-preferred backing; CPU LRU demotes to SSD and SSD LRU deletes an idle Source while busy entries remain protected |
+| v8 schema-v8 ratio scope | `v8_schema8_repair.py` | fixed ratios are uniform, static gradual ratios share a repair-age schedule, and per-Segment ratios require a frozen adaptive Profile |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |
@@ -216,6 +219,36 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | Repair integration | `backend.py`, `cacheblend_backend.py` | stable runtime shim; canonical input remains immutable |
 | Statistics/gates | `statistics.py`, `gates.py` | paired grouped inference |
 | Audit trail | `io.py` | JSONL, optional Parquet, environment manifest |
+
+## Schema-v8 d1/d2 barrier and revised costs
+
+Schema-v8 preserves schema-v7 as a legacy A/C reproduction path.  Its online
+main path executes every unresolved non-prefix Segment densely through d=1 and
+performs one d=2 rescue pass when any Segment remains unresolved.  Therefore
+the first selective layer is exactly 2 when every Segment resolves at d=1, and
+exactly 3 otherwise.  No global A/C commit policy participates in this main
+selection phase.
+
+Gate1 compares one frozen winner against the dense path from the same current
+boundary.  It includes the dense repair-check, support construction, and each
+layer's `max(load, repair) + non-overlap` critical-path cost.  Its threshold is
+`gamma1=1.0`: it rejects only a Source with no predicted positive saving.  It
+does not replace final admission.  Immediately before the first irreversible
+selective layer, FinalCommitAdmission uses actual sunk time and the complete
+request joint future critical path and still requires
+`T_reuse <= 0.8 * T_dense-reference`.
+
+The backing policy does not keep permanent SSD, CPU, and GPU triples.  Each
+Artifact has one healthy backing in pinned CPU or SSD; a used SSD backing is
+promoted to CPU when possible, CPU pressure demotes the least-recently-used
+idle backing to SSD, and SSD pressure deletes the least-recently-used idle
+Source.  GPU remains a transient winner-only hot Replica.
+
+Repair ratio equality is policy-specific.  `fixed_15` uses 0.15 for every
+Segment and layer.  `static_gradual` uses one schedule indexed by relative
+repair age, so Segments with different reuse boundaries may legitimately have
+different ratios at the same absolute layer.  `load_recompute_aware_gradual`
+may choose different per-Segment ratios only from a frozen certified Profile.
 
 ## Meaning of the bandwidth inequality
 

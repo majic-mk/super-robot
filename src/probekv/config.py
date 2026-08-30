@@ -114,6 +114,11 @@ class ExperimentConfig:
     integrity_sample_layers: int = 4
     integrity_sample_rows_per_layer: int = 16
     pinned_staging_pool_bytes: int = 2 * 1024 ** 3
+    gate1_gamma: float = 0.8
+    backing_tier_policy: str = "legacy"
+    cpu_eviction_policy: str = "legacy"
+    ssd_eviction_policy: str = "legacy"
+    repair_ratio_scope: str = "legacy"
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -358,6 +363,11 @@ class ExperimentConfig:
             pinned_staging_pool_bytes=int(
                 raw.get("pinned_staging_pool_bytes", 2 * 1024 ** 3)
             ),
+            gate1_gamma=float(raw.get("gate1_gamma", 0.8)),
+            backing_tier_policy=str(raw.get("backing_tier_policy", "legacy")),
+            cpu_eviction_policy=str(raw.get("cpu_eviction_policy", "legacy")),
+            ssd_eviction_policy=str(raw.get("ssd_eviction_policy", "legacy")),
+            repair_ratio_scope=str(raw.get("repair_ratio_scope", "legacy")),
         )
         result.validate()
         return result
@@ -439,6 +449,7 @@ class ExperimentConfig:
             "cacheblend_v8_training_free",
             "cacheblend_v8_schema6_joint",
             "cacheblend_v8_schema7_gradual_streaming",
+            "cacheblend_v8_schema8_gradual_barrier",
         }:
             raise ValueError("unsupported runtime_backend")
         if self.runtime_backend in {
@@ -448,6 +459,7 @@ class ExperimentConfig:
             "cacheblend_v8_training_free",
             "cacheblend_v8_schema6_joint",
             "cacheblend_v8_schema7_gradual_streaming",
+            "cacheblend_v8_schema8_gradual_barrier",
         }:
             if (
                 self.closed_loop_policy
@@ -630,8 +642,8 @@ class ExperimentConfig:
             raise ValueError("v7 server runs require the explicit v7 runtime")
 
     def _validate_v8(self) -> None:
-        if self.v8_schema_version not in {5, 6, 7}:
-            raise ValueError("v8 runtime schema must be 5, 6 or 7")
+        if self.v8_schema_version not in {5, 6, 7, 8}:
+            raise ValueError("v8 runtime schema must be 5, 6, 7 or 8")
         if self.legacy_online_kmax_present:
             raise ValueError("v8 forbids legacy online_kmax")
         if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
@@ -679,11 +691,16 @@ class ExperimentConfig:
             raise ValueError("v8 cannot impose a detected-Segment cap")
         if self.boundary_policy != "per_segment_staggered":
             raise ValueError("v8 requires per-Segment staggered boundaries")
-        if self.selection_execution_policy not in {
+        allowed_execution_policies = {
             SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
             SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
-        }:
-            raise ValueError("v8 supports only the frozen A/C policies")
+        }
+        if self.v8_schema_version == 8:
+            allowed_execution_policies.add(
+                SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
+            )
+        if self.selection_execution_policy not in allowed_execution_policies:
+            raise ValueError("unsupported v8 selection-execution policy")
         if self.calibration_policy_match_required:
             raise ValueError("v8 has no online calibration eligibility")
         if self.joint_quality_policy != "fixed_repair_offline_audit":
@@ -728,14 +745,20 @@ class ExperimentConfig:
             raise ValueError("a frozen v8 profile requires a SHA256")
         if self.v8_schema_version == 7:
             self._validate_v8_schema7()
+        if self.v8_schema_version == 8:
+            self._validate_v8_schema8()
         if self.evidence_class != "local_simulation":
             required_backend = (
                 "cacheblend_v8_schema7_gradual_streaming"
                 if self.v8_schema_version == 7
                 else (
-                    "cacheblend_v8_schema6_joint"
-                    if self.v8_schema_version == 6
-                    else "cacheblend_v8_training_free"
+                    "cacheblend_v8_schema8_gradual_barrier"
+                    if self.v8_schema_version == 8
+                    else (
+                        "cacheblend_v8_schema6_joint"
+                        if self.v8_schema_version == 6
+                        else "cacheblend_v8_training_free"
+                    )
                 )
             )
             if self.runtime_backend != required_backend:
@@ -801,6 +824,53 @@ class ExperimentConfig:
             self.pinned_staging_pool_bytes,
         ) <= 0:
             raise ValueError("schema-v7 integrity/staging settings must be positive")
+
+    def _validate_v8_schema8(self) -> None:
+        if self.runtime_patch_mode != "probekv_v8_gradual_barrier_tiered_lru":
+            raise ValueError("schema-v8 requires its explicit runtime patch mode")
+        if self.source_selection_metric != "residual_k_pre_rope":
+            raise ValueError("schema-v8 Source selection must use pre-RoPE Residual-K")
+        if self.source_selection_depth_policy not in {"d1_only", "d1_d2_rescue"}:
+            raise ValueError("schema-v8 online main path is limited to d1/d2")
+        expected = (
+            (1,)
+            if self.source_selection_depth_policy == "d1_only"
+            else (1, 2)
+        )
+        if self.probe_checkpoints != expected:
+            raise ValueError("schema-v8 checkpoints differ from its d1/d2 policy")
+        if (
+            self.selection_execution_policy
+            is not SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
+        ):
+            raise ValueError("schema-v8 requires one dense selection barrier")
+        if self.gate1_gamma != 1.0:
+            raise ValueError("schema-v8 Gate1 must reject only non-positive savings")
+        if self.gamma != 0.8:
+            raise ValueError("schema-v8 FinalCommitAdmission freezes gamma at 0.8")
+        if self.backing_tier_policy != "cpu_preferred_single_backing":
+            raise ValueError("schema-v8 requires CPU-preferred single backing")
+        if self.cpu_eviction_policy != "per_replica_lru":
+            raise ValueError("schema-v8 CPU eviction must use per-Replica LRU")
+        if self.ssd_eviction_policy != "per_replica_lru":
+            raise ValueError("schema-v8 SSD eviction must use per-Replica LRU")
+        expected_scope = {
+            "fixed_15": "uniform_fixed",
+            "static_gradual": "shared_relative_schedule",
+            "load_recompute_aware_gradual": "per_segment_load_aware",
+        }.get(self.repair_policy)
+        if expected_scope is None or self.repair_ratio_scope != expected_scope:
+            raise ValueError("schema-v8 repair policy and ratio scope disagree")
+        if self.initial_repair_cap != 0.15:
+            raise ValueError("schema-v8 initial repair cap must remain 0.15")
+        if self.repair_reentry_policy != "none":
+            raise ValueError("schema-v8 forbids repair-support re-entry")
+        if self.integrity_verification_mode not in {
+            "qualification_full", "online_immutable", "online_sampled"
+        }:
+            raise ValueError("schema-v8 integrity mode is invalid")
+        if self.pinned_staging_pool_bytes <= 0:
+            raise ValueError("schema-v8 pinned staging pool must be positive")
 
 
 def load_config(path: str) -> ExperimentConfig:

@@ -1,0 +1,74 @@
+protocol_version: 8
+schema_version: 8
+stage: v8_schema8_no_gpu_implementation
+runtime_patch_mode: probekv_v8_gradual_barrier_tiered_lru
+
+source_selection:
+  metric: residual_k_pre_rope
+  checkpoints: [1, 2]
+  max_completed_depth: 2
+  execution_policy: dense_selection_barrier
+  source_freeze_is_final: true
+  first_reuse_layer_if_all_d1: 2
+  first_reuse_layer_if_any_d2: 3
+
+gate1:
+  scope: source_local_same_origin
+  gamma: 1.0
+  includes:
+    - dense_repair_check
+    - repair_support_build
+    - layerwise_max_load_repair
+    - layerwise_nonoverlap
+  excludes:
+    - multi_segment_policy_wait
+    - final_request_admission
+
+preparation_admission:
+  economic_gate: false
+  winner_only: true
+  requires_logical_source_lease: true
+  requires_physical_replica_lease: true
+  requires_hbm_reservation: true
+
+final_commit_admission:
+  accounting: request_joint_critical_path
+  gamma: 0.8
+  actual_sunk_cost_required: true
+  unresolved_segments: dense_fallback
+  commit_irreversible: true
+
+storage:
+  artifact_policy: single_canonical_lossless
+  backing_policy: cpu_preferred_single_backing
+  cpu_eviction: per_replica_lru_demote_to_ssd
+  ssd_eviction: per_replica_lru_delete_source
+  busy_replica_eviction_forbidden: true
+  gpu_replica: transient_hot
+  physical_transition_requires_verified_copy: true
+
+repair_ratios:
+  fixed_15: uniform_fixed
+  static_gradual: shared_relative_schedule
+  load_recompute_aware_gradual: per_segment_load_aware
+  adaptive_requires_frozen_profile: true
+  initial_cap: 0.15
+  reentry: none
+
+compatibility:
+  schema7_profiles_unlock_schema8: false
+  schema7_gates_unlock_schema8: false
+  legacy_a_c_configs_unchanged: true
+
+no_gpu_gate:
+  schema8_local_implementation_complete: true
+  artifact_preparation_ready: true
+  gpu_rental_ready_for_schema8_sentinel: true
+  selector_depth_profile_frozen: false
+  repair_policy_profile_frozen: false
+  runtime_cost_profile_frozen: false
+  gpu_runtime_qualified: false
+  h1_h2_execution_allowed: false
+  paper_evidence: false
+  locked_test_accessed: false
+  failures: []

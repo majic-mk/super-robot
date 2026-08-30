@@ -1,0 +1,37 @@
+{
+  "schema_version": 8,
+  "protocol_version": 8,
+  "purpose": "non-paper dual-model schema-v8 dense-barrier and tiered-LRU sentinel",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "transformers": "4.40.2",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v8_gradual_barrier_tiered_lru"
+  },
+  "runtime": {
+    "backend": "cacheblend_v8_schema8_gradual_barrier",
+    "source_selection_completed_depths": [1, 2],
+    "selection_execution_policy": "dense_selection_barrier",
+    "gate1_gamma": 1.0,
+    "final_commit_gamma": 0.8,
+    "backing_tier_policy": "cpu_preferred_single_backing",
+    "cpu_eviction_policy": "per_replica_lru",
+    "ssd_eviction_policy": "per_replica_lru",
+    "selector_depth_profile_frozen": false,
+    "repair_policy_profile_frozen": false,
+    "runtime_cost_profile_frozen": false,
+    "run_140_job_qualification": false,
+    "run_h1": false
+  }
+}

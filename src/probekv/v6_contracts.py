@@ -46,6 +46,7 @@ class SelectionExecutionPolicy(str, Enum):
     LEGACY_COMMON_AFTER_SELECTION = "legacy_common_after_selection"
     CAUSAL_COMMIT_WAIT = "causal_commit_wait"
     IMMEDIATE_STAGGERED_CLOSED_LOOP = "immediate_staggered_closed_loop"
+    DENSE_SELECTION_BARRIER = "dense_selection_barrier"
 
 
 @dataclass(frozen=True)

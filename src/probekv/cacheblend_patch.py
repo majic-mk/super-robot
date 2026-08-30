@@ -213,6 +213,22 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
             raise ValueError("schema-v7 runtime must require %s" % key)
     if schema7.get("formal_online_full_digest") is not False:
         raise ValueError("schema-v7 online path must not perform full digest")
+    schema8 = runtime_modes.get("gradual_barrier_tiered_lru_runtime_v8")
+    if not isinstance(schema8, dict):
+        raise ValueError("patch manifest must define schema-v8 barrier runtime")
+    if schema8.get("patch_mode") != "probekv_v8_gradual_barrier_tiered_lru":
+        raise ValueError("schema-v8 runtime must use its explicit patch mode")
+    for key in (
+        "dense_d1_d2_selection_barrier",
+        "gate1_same_origin_positive_saving",
+        "final_commit_request_joint_timeline",
+        "cpu_preferred_single_backing",
+        "cpu_and_ssd_lru",
+        "repair_ratio_scope_explicit",
+        "legacy_ac_policy_removed_from_main",
+    ):
+        if schema8.get(key) is not True:
+            raise ValueError("schema-v8 runtime must require %s" % key)
     return manifest
 
 
