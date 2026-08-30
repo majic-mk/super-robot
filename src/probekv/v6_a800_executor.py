@@ -474,12 +474,13 @@ class RealCacheBlendA800Executor:
                 # still comes from real request provenance; this nonce is only
                 # part of the deterministic qualification context.
                 canonical_fixture_nonce = (
-                    "[PKV-P%d-S%d-K%d-V%d] "
+                    "[PKV-P%d-S%d-K%d-T%d-V%d] "
                     "ProbeKV canonical full prefill fixture. "
                     % (
                         int(exact_prefix_tokens),
                         segment_count,
                         stored_variants,
+                        int(segment_token_count),
                         variant,
                     )
                 )
