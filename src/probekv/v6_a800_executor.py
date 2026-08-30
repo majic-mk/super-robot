@@ -25,6 +25,21 @@ from .v7_contracts import CanonicalKVArtifact, PhysicalReplica, ReplicaLocator
 from .v7_planner import repair_token_count
 
 
+def query_single_visible_gpu_uuid() -> str:
+    """Return the one GPU UUID required by the frozen single-GPU contract."""
+
+    output = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+        text=True,
+    )
+    uuids = tuple(line.strip() for line in output.splitlines() if line.strip())
+    if len(uuids) != 1 or not uuids[0].startswith("GPU-"):
+        raise RuntimeError(
+            "schema-v6 runtime requires exactly one auditable visible GPU UUID"
+        )
+    return uuids[0]
+
+
 @dataclass(frozen=True)
 class RuntimeFixture:
     prompt_ids: Tuple[int, ...]
@@ -240,6 +255,7 @@ class RealCacheBlendA800Executor:
             "xformers": version("xformers"),
             "torch_cuda": self.torch.version.cuda,
             "gpu_name": self.torch.cuda.get_device_name(device),
+            "gpu_uuid": query_single_visible_gpu_uuid(),
             "compute_capability": list(
                 self.torch.cuda.get_device_capability(device)
             ),

@@ -1,11 +1,13 @@
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from probekv.v6_a800_executor import (
     RealCacheBlendA800Executor,
     aggregate_relative_l2,
     infer_canonical_kv_geometry,
     per_position_relative_l2,
+    query_single_visible_gpu_uuid,
 )
 from probekv.v6_qualification_worker import (
     QualificationJobResult,
@@ -15,6 +17,14 @@ from probekv.v6_a800_jobs import build_v6_a800_jobs
 
 
 class V6A800ExecutorContractTests(unittest.TestCase):
+    @mock.patch("probekv.v6_a800_executor.subprocess.check_output")
+    def test_runtime_provenance_requires_one_visible_gpu_uuid(self, check_output):
+        check_output.return_value = "GPU-audit-uuid\n"
+        self.assertEqual(query_single_visible_gpu_uuid(), "GPU-audit-uuid")
+        check_output.return_value = "GPU-one\nGPU-two\n"
+        with self.assertRaisesRegex(RuntimeError, "exactly one"):
+            query_single_visible_gpu_uuid()
+
     def test_canonical_kv_geometry_accepts_flattened_cacheblend_k(self):
         class TensorShape:
             shape = (512, 1024)

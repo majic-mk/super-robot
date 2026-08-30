@@ -389,14 +389,12 @@ def main() -> int:
             provenance.get("hardware_compatibility_signature")
             or digest_payload(
                 {
-                    key: provenance.get(key)
-                    for key in (
-                        "gpu_name",
-                        "compute_capability",
-                        "torch_version",
-                        "cuda_version",
-                        "vllm_version",
-                    )
+                    "gpu_name": provenance.get("gpu_name"),
+                    "compute_capability": provenance.get("compute_capability"),
+                    "torch_version": provenance.get("torch"),
+                    "cuda_version": provenance.get("torch_cuda"),
+                    "vllm_version": provenance.get("vllm"),
+                    "xformers_version": provenance.get("xformers"),
                 }
             )
         )
