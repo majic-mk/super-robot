@@ -50,6 +50,7 @@ def main() -> int:
             "probekv_v7_single_artifact_runtime",
             "probekv_v8_training_free_residual_k",
             "probekv_v8_schema6_joint_cfo",
+            "probekv_v8_winner_gradual_streaming",
         ),
     )
     parser.add_argument("--manifest")

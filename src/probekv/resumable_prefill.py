@@ -74,6 +74,16 @@ class ResumablePrefillAdapter(Protocol):
     ) -> Any:
         ...
 
+    def observe_pre_rope_kv(
+        self,
+        *,
+        completed_depth: int,
+        hidden_states: Any,
+        residual: Any,
+        active_positions: Tuple[int, ...],
+    ) -> Tuple[Any, Any]:
+        ...
+
 
 @dataclass(frozen=True)
 class SegmentReuseCommit:
@@ -115,6 +125,9 @@ class ProbeKVResumablePrefillSession:
     active_positions: Tuple[int, ...] = ()
     source_handles: Dict[str, Any] = field(default_factory=dict)
     commits: Dict[str, SegmentReuseCommit] = field(default_factory=dict)
+    current_repair_positions_by_segment: Dict[str, Tuple[int, ...]] = field(
+        default_factory=dict
+    )
     layer_audit: list[Dict[str, Any]] = field(default_factory=list)
     _pending_target_positions: Optional[Tuple[int, ...]] = None
     _pending_reuse_commit: bool = False
@@ -204,6 +217,40 @@ class ProbeKVResumablePrefillSession:
         )
         return observed
 
+    def observe_repair_check_pre_rope_kv(
+        self, completed_depth: Optional[int] = None
+    ) -> Tuple[Any, Any]:
+        """Observe dense current K/V entering the next layer for winner repair.
+
+        This is separate from K-only Source selection.  It is legal only after
+        at least one causal self-attention block has completed and the returned
+        rows must be used by the next selective layer, never the check layer.
+        """
+        if not self._started or self._finished:
+            raise RuntimeError("repair check requires an active prefill session")
+        depth = self.current_layer if completed_depth is None else int(completed_depth)
+        if depth != self.current_layer:
+            raise ValueError("repair check must use the actual completed depth")
+        if not 1 <= depth < self.adapter.total_layers:
+            raise ValueError("repair check requires a completed layer and a consumer")
+        observed = self.adapter.observe_pre_rope_kv(
+            completed_depth=depth,
+            hidden_states=self.hidden_states,
+            residual=self.residual,
+            active_positions=self.active_positions,
+        )
+        if not isinstance(observed, tuple) or len(observed) != 2:
+            raise RuntimeError("repair-check adapter must return current K and V")
+        self.layer_audit.append(
+            {
+                "event": "winner_repair_check_kv_observation",
+                "repair_check_completed_depth": depth,
+                "first_selective_reuse_layer": depth + 1,
+                "active_positions": self.active_positions,
+            }
+        )
+        return observed
+
     def commit_segment_reuse(
         self,
         *,
@@ -241,8 +288,55 @@ class ProbeKVResumablePrefillSession:
             raise RuntimeError("active query set may only shrink")
         commit = SegmentReuseCommit(segment_id, boundary, repair, source_id)
         self.commits[segment_id] = commit
+        self.current_repair_positions_by_segment[segment_id] = repair
         self._pending_target_positions = target
         self._pending_reuse_commit = True
+
+    def shrink_segment_repair_support(
+        self,
+        *,
+        segment_id: str,
+        consumer_layer: int,
+        repair_positions: Sequence[int],
+    ) -> None:
+        """Shrink a committed Segment's active repair rows for a later layer.
+
+        Schema-v7 gradual repair is deliberately no-reentry: a row removed from
+        the active query set has no current hidden state and therefore cannot be
+        reintroduced at a deeper layer.  The change is staged immediately before
+        ``consumer_layer`` and is applied by the normal layer advance path.
+        """
+        if not self._started or self._finished:
+            raise RuntimeError("repair support update requires an active session")
+        if consumer_layer != self.current_layer + 1:
+            raise ValueError("repair support must update immediately before its consumer")
+        commit = self.commits.get(segment_id)
+        if commit is None:
+            raise RuntimeError("gradual repair requires an existing reuse commit")
+        previous = self.current_repair_positions_by_segment[segment_id]
+        updated = tuple(sorted(set(int(value) for value in repair_positions)))
+        if not set(updated).issubset(previous):
+            raise RuntimeError("gradual repair support may only shrink")
+        if not set(updated).issubset(self.active_positions):
+            raise RuntimeError("repair support cannot reintroduce inactive rows")
+        removed = set(previous) - set(updated)
+        target = tuple(value for value in self.active_positions if value not in removed)
+        if self._pending_target_positions is not None:
+            target = tuple(
+                value for value in target if value in set(self._pending_target_positions)
+            )
+        self.current_repair_positions_by_segment[segment_id] = updated
+        self._pending_target_positions = target
+        self._pending_reuse_commit = True
+        self.layer_audit.append(
+            {
+                "event": "gradual_repair_support_shrink",
+                "segment_id": segment_id,
+                "consumer_layer_1based": consumer_layer,
+                "previous_repair_positions": previous,
+                "repair_positions": updated,
+            }
+        )
 
     def advance_to_layer(self, target_layer: int) -> None:
         if not self._started or self._finished:

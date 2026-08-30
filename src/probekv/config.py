@@ -97,6 +97,23 @@ class ExperimentConfig:
     selector_profile_sha256: str = ""
     v8_execution_phase: str = "online_main"
     v8_schema_version: int = 5
+    runtime_patch_mode: str = ""
+    source_selection_metric: str = "residual_k_pre_rope"
+    source_selection_depth_policy: str = "legacy_multicheckpoint"
+    source_score_trim_ratio: float = 0.15
+    source_score_trim_ratio_candidates: Tuple[float, ...] = (0.10, 0.15)
+    repair_metric: str = "winner_v_only"
+    repair_policy: str = "fixed_15"
+    initial_repair_cap: float = 0.15
+    repair_floor: float = 0.15
+    repair_floor_candidates: Tuple[float, ...] = (0.10, 0.12, 0.15)
+    repair_reentry_policy: str = "none"
+    integrity_verification_mode: str = "online_immutable"
+    integrity_sampling_rate: float = 0.001
+    integrity_sampling_seed: int = 20260726
+    integrity_sample_layers: int = 4
+    integrity_sample_rows_per_layer: int = 16
+    pinned_staging_pool_bytes: int = 2 * 1024 ** 3
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -304,6 +321,43 @@ class ExperimentConfig:
             ),
             v8_execution_phase=str(raw.get("v8_execution_phase", "online_main")),
             v8_schema_version=int(raw.get("v8_schema_version", 5)),
+            runtime_patch_mode=str(raw.get("runtime_patch_mode", "")),
+            source_selection_metric=str(
+                raw.get("source_selection_metric", "residual_k_pre_rope")
+            ),
+            source_selection_depth_policy=str(
+                raw.get("source_selection_depth_policy", "legacy_multicheckpoint")
+            ),
+            source_score_trim_ratio=float(raw.get("source_score_trim_ratio", 0.15)),
+            source_score_trim_ratio_candidates=tuple(
+                float(value)
+                for value in raw.get(
+                    "source_score_trim_ratio_candidates", [0.10, 0.15]
+                )
+            ),
+            repair_metric=str(raw.get("repair_metric", "winner_v_only")),
+            repair_policy=str(raw.get("repair_policy", "fixed_15")),
+            initial_repair_cap=float(raw.get("initial_repair_cap", 0.15)),
+            repair_floor=float(raw.get("repair_floor", 0.15)),
+            repair_floor_candidates=tuple(
+                float(value)
+                for value in raw.get(
+                    "repair_floor_candidates", [0.10, 0.12, 0.15]
+                )
+            ),
+            repair_reentry_policy=str(raw.get("repair_reentry_policy", "none")),
+            integrity_verification_mode=str(
+                raw.get("integrity_verification_mode", "online_immutable")
+            ),
+            integrity_sampling_rate=float(raw.get("integrity_sampling_rate", 0.001)),
+            integrity_sampling_seed=int(raw.get("integrity_sampling_seed", 20260726)),
+            integrity_sample_layers=int(raw.get("integrity_sample_layers", 4)),
+            integrity_sample_rows_per_layer=int(
+                raw.get("integrity_sample_rows_per_layer", 16)
+            ),
+            pinned_staging_pool_bytes=int(
+                raw.get("pinned_staging_pool_bytes", 2 * 1024 ** 3)
+            ),
         )
         result.validate()
         return result
@@ -383,6 +437,8 @@ class ExperimentConfig:
             "cacheblend_multisegment_closed_loop",
             "cacheblend_v7_closed_loop",
             "cacheblend_v8_training_free",
+            "cacheblend_v8_schema6_joint",
+            "cacheblend_v8_schema7_gradual_streaming",
         }:
             raise ValueError("unsupported runtime_backend")
         if self.runtime_backend in {
@@ -390,6 +446,8 @@ class ExperimentConfig:
             "cacheblend_multisegment_closed_loop",
             "cacheblend_v7_closed_loop",
             "cacheblend_v8_training_free",
+            "cacheblend_v8_schema6_joint",
+            "cacheblend_v8_schema7_gradual_streaming",
         }:
             if (
                 self.closed_loop_policy
@@ -572,8 +630,8 @@ class ExperimentConfig:
             raise ValueError("v7 server runs require the explicit v7 runtime")
 
     def _validate_v8(self) -> None:
-        if self.v8_schema_version not in {5, 6}:
-            raise ValueError("v8 runtime schema must be 5 or 6")
+        if self.v8_schema_version not in {5, 6, 7}:
+            raise ValueError("v8 runtime schema must be 5, 6 or 7")
         if self.legacy_online_kmax_present:
             raise ValueError("v8 forbids legacy online_kmax")
         if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
@@ -668,16 +726,81 @@ class ExperimentConfig:
             raise ValueError("invalid v8 selector profile status")
         if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
             raise ValueError("a frozen v8 profile requires a SHA256")
+        if self.v8_schema_version == 7:
+            self._validate_v8_schema7()
         if self.evidence_class != "local_simulation":
             required_backend = (
-                "cacheblend_v8_schema6_joint"
-                if self.v8_schema_version == 6
-                else "cacheblend_v8_training_free"
+                "cacheblend_v8_schema7_gradual_streaming"
+                if self.v8_schema_version == 7
+                else (
+                    "cacheblend_v8_schema6_joint"
+                    if self.v8_schema_version == 6
+                    else "cacheblend_v8_training_free"
+                )
             )
             if self.runtime_backend != required_backend:
                 raise ValueError(
                     "v8 server runs require the explicit schema-selected runtime"
                 )
+
+    def _validate_v8_schema7(self) -> None:
+        if self.runtime_patch_mode != "probekv_v8_winner_gradual_streaming":
+            raise ValueError("schema-v7 requires its explicit runtime patch mode")
+        if self.source_selection_metric != "residual_k_pre_rope":
+            raise ValueError("schema-v7 Source selection must use pre-RoPE Residual-K")
+        depth_policies = {
+            "d1_only",
+            "d1_d2_rescue",
+            "legacy_multicheckpoint",
+            "deep_full_candidate_oracle",
+        }
+        if self.source_selection_depth_policy not in depth_policies:
+            raise ValueError("unsupported schema-v7 Source-depth policy")
+        expected_checkpoints = {
+            "d1_only": (1,),
+            "d1_d2_rescue": (1, 2),
+            "legacy_multicheckpoint": (
+                (1, 2, 4, 5, 8) if self.total_layers == 32 else (1, 2, 4, 5, 7)
+            ),
+        }
+        expected = expected_checkpoints.get(self.source_selection_depth_policy)
+        if expected is not None and self.probe_checkpoints != expected:
+            raise ValueError("schema-v7 checkpoints differ from the selected depth policy")
+        if tuple(self.source_score_trim_ratio_candidates) != (0.10, 0.15):
+            raise ValueError("schema-v7 Source-score trim candidates changed")
+        if self.source_score_trim_ratio not in self.source_score_trim_ratio_candidates:
+            raise ValueError("Source-score trim ratio is outside its candidate set")
+        if self.repair_metric not in {
+            "winner_k_only", "winner_v_only", "winner_kv_normalized"
+        }:
+            raise ValueError("unsupported schema-v7 winner repair metric")
+        if self.repair_policy not in {
+            "fixed_15", "static_gradual", "load_recompute_aware_gradual"
+        }:
+            raise ValueError("unsupported schema-v7 repair policy")
+        if self.initial_repair_cap != 0.15:
+            raise ValueError("schema-v7 initial repair cap must remain 0.15")
+        if tuple(self.repair_floor_candidates) != (0.10, 0.12, 0.15):
+            raise ValueError("schema-v7 repair-floor candidates changed")
+        if self.repair_floor not in self.repair_floor_candidates:
+            raise ValueError("schema-v7 repair floor is outside its candidate set")
+        if not self.repair_floor <= self.initial_repair_cap:
+            raise ValueError("repair floor exceeds the initial cap")
+        if self.repair_reentry_policy != "none":
+            raise ValueError("schema-v7 main candidates forbid repair-support re-entry")
+        if self.integrity_verification_mode not in {
+            "qualification_full", "online_immutable", "online_sampled"
+        }:
+            raise ValueError("unsupported schema-v7 integrity mode")
+        if not 0 <= self.integrity_sampling_rate <= 1:
+            raise ValueError("integrity sampling rate must be in [0, 1]")
+        if min(
+            self.integrity_sampling_seed,
+            self.integrity_sample_layers,
+            self.integrity_sample_rows_per_layer,
+            self.pinned_staging_pool_bytes,
+        ) <= 0:
+            raise ValueError("schema-v7 integrity/staging settings must be positive")
 
 
 def load_config(path: str) -> ExperimentConfig:

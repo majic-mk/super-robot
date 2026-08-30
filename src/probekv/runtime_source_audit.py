@@ -254,3 +254,68 @@ def audit_v8_runtime_sources(repo: Path) -> Dict[str, Any]:
         "gpu_runtime_qualified": False,
         "failures": failures,
     }
+
+
+def audit_v8_schema7_runtime_sources(repo: Path) -> Dict[str, Any]:
+    """Static no-GPU audit for the CacheBlend-aligned schema-v7 path."""
+    manifest = repo / "patches" / "cacheblend" / "manifest.json"
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            manifest, "probekv_v8_winner_gradual_streaming"
+        )
+    except (OSError, ValueError) as error:
+        return {"runtime_source_ready": False, "failures": [str(error)]}
+    checks = (
+        (
+            repo / "src" / "probekv" / "cacheblend_v6_online_engine.py",
+            (
+                "class CacheBlendV8Schema7OnlineEngine",
+                "online_immutable_no_full_digest",
+                "qualification_destination_digest",
+                "shrink_gradual_repair_support",
+                "observe_winner_repair_check",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema7_repair.py",
+            (
+                "class SourceScoreTrimIndices",
+                "class LoadRecomputeAwareRepairController",
+                "build_initial_repair_support",
+                "shrink_repair_support",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema7_planner.py",
+            ("class PreparationAdmissionPlanner", "class FinalCommitPlanner"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema7_transfer.py",
+            ("class PinnedStagingPool", "SSD_GDS_TO_GPU"),
+        ),
+        (
+            repo / "scripts" / "server" / "build_v8_schema7_no_gpu_handoff.py",
+            ("build_schema7_no_gpu_handoff",),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing schema-v7 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "protocol_version": 8,
+        "schema_version": 7,
+        "patch_mode": "probekv_v8_winner_gradual_streaming",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "source_selection_repair_separated": True,
+        "fixed15_fallback": True,
+        "formal_online_full_digest": False,
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }

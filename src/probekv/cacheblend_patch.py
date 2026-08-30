@@ -77,6 +77,7 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_v7_single_artifact_runtime",
         "probekv_v8_training_free_residual_k",
         "probekv_v8_schema6_joint_cfo",
+        "probekv_v8_winner_gradual_streaming",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
@@ -195,6 +196,23 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
     ):
         if schema6.get(key) is not True:
             raise ValueError("schema-v6 runtime must require %s" % key)
+    schema7 = runtime_modes.get("winner_gradual_streaming_runtime_v8")
+    if not isinstance(schema7, dict):
+        raise ValueError("patch manifest must define schema-v7 gradual runtime")
+    if schema7.get("patch_mode") != "probekv_v8_winner_gradual_streaming":
+        raise ValueError("schema-v7 runtime must use its explicit patch mode")
+    for key in (
+        "source_score_repair_support_separated",
+        "winner_specific_repair_metric",
+        "gradual_no_reentry_support",
+        "load_recompute_overlap_controller",
+        "final_commit_admission",
+        "integrity_modes_split",
+    ):
+        if schema7.get(key) is not True:
+            raise ValueError("schema-v7 runtime must require %s" % key)
+    if schema7.get("formal_online_full_digest") is not False:
+        raise ValueError("schema-v7 online path must not perform full digest")
     return manifest
 
 

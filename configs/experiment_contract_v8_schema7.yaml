@@ -1,0 +1,78 @@
+protocol_version: 8
+schema_version: 7
+stage: v8_schema7_no_gpu_implementation
+runtime_patch_mode: probekv_v8_winner_gradual_streaming
+paper_evidence: false
+locked_test_accessed: false
+
+source_selection:
+  method: training_free_current_state_residual_k
+  representation: exact_bf16_pre_rope_k
+  score_trim_ratio_candidates: [0.10, 0.15]
+  repair_support_from_score_trim_forbidden: true
+  policies: [d1_only, d1_d2_rescue, legacy_multicheckpoint, deep_full_candidate_oracle]
+  legacy_checkpoints:
+    mistral: [1, 2, 4, 5, 8]
+    qwen: [1, 2, 4, 5, 7]
+  cfo_role: budget_shortlist_only
+
+winner_repair:
+  metric_candidates: [winner_k_only, winner_v_only, winner_kv_normalized]
+  compatibility_default: winner_v_only
+  repair_check_dense: true
+  first_selective_reuse_layer: repair_check_completed_depth_plus_one
+  initial_repair_cap: 0.15
+  floor_candidates: [0.10, 0.12, 0.15]
+  fallback: fixed_15
+  policy_candidates: [fixed_15, static_gradual, load_recompute_aware_gradual]
+  support_monotonic: true
+  repair_reentry: none
+
+admission:
+  gate1:
+    scope: source_local
+    boundary: selection_completed_depth_plus_one
+    gamma: 0.8
+  preparation_admission:
+    economic_gate: false
+    requires_physical_replica_lease: true
+    requires_hbm_reservation: true
+    winner_only: true
+  final_commit_admission:
+    accounting: request_joint_timeline
+    unresolved_policy: dense_fallback
+    decision: ready_subset
+    partial_accept_reject: true
+    stale_snapshot_rejected: true
+    gamma: 0.8
+    committed_reuse_irreversible: true
+
+transfer:
+  paths: [gpu_resident, cpu_pinned_to_gpu, ssd_staged_to_gpu, ssd_gds_to_gpu]
+  gds_is_optional: true
+  staged_fallback_required: true
+  pinned_staging_pool_bytes: 2147483648
+  source_freeze_before_full_kv_transfer: true
+
+integrity:
+  modes: [qualification_full, online_immutable, online_sampled]
+  qualification_destination_digest_required: true
+  online_per_request_full_digest_forbidden: true
+  online_sampling_rate: 0.001
+  online_sampling_seed: 20260726
+  sample_layers: 4
+  sample_rows_per_layer: 16
+
+profiles:
+  selection_depth_profile_frozen: false
+  repair_policy_profile_frozen: false
+  runtime_cost_profile_frozen: false
+  fake_gpu_timing_forbidden: true
+  old_schema_profiles_rejected: true
+
+no_gpu_stop:
+  schema7_local_implementation_complete: true
+  artifact_preparation_ready: true
+  gpu_rental_ready_for_schema7_sentinel: true
+  gpu_runtime_qualified: false
+  h1_h2_execution_allowed: false

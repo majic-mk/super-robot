@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -8,6 +9,14 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from .model_adapters import PinnedCacheBlendResumableAdapter, ResumableModelSpec
 from .resumable_prefill import ProbeKVResumablePrefillSession
 from .v7_contracts import CanonicalKVArtifact, PhysicalReplica
+from .v8_schema7_contracts import IntegrityVerificationMode, RepairMetric
+
+
+def integrity_mode_performs_full_digest(mode: str) -> bool:
+    return mode in {
+        "legacy_source_full",
+        IntegrityVerificationMode.QUALIFICATION_FULL.value,
+    }
 
 
 @dataclass
@@ -22,6 +31,15 @@ class LayerwiseLoadTicket:
     source_digest_before: str
     source_digest_after: str
     segment_positions: Tuple[int, ...]
+    integrity_mode: str = "legacy_source_full"
+    expected_artifact_digest: str = ""
+    destination_digest: str = ""
+    hash_host_ms: float = 0.0
+    d2h_hash_host_ms: float = 0.0
+    per_request_full_digest_verified: bool = False
+    sampled_digest_verified: bool = False
+    pinning_copy_bytes: int = 0
+    pinning_host_ms: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.segment_id or not self.source_id:
@@ -30,8 +48,40 @@ class LayerwiseLoadTicket:
             raise ValueError("invalid load ticket timing or size")
         if set(self.layer_tensors) != set(self.layer_events):
             raise ValueError("every loaded layer requires one ready event")
+        if self.hash_host_ms < 0 or self.d2h_hash_host_ms < 0:
+            raise ValueError("digest timings must be non-negative")
+        if self.pinning_copy_bytes < 0 or self.pinning_host_ms < 0:
+            raise ValueError("pinning accounting must be non-negative")
         if self.source_digest_before != self.source_digest_after:
             raise RuntimeError("async staging mutated a canonical Source")
+        if self.integrity_mode == IntegrityVerificationMode.QUALIFICATION_FULL.value:
+            if not self.expected_artifact_digest:
+                raise RuntimeError("qualification requires the Artifact digest")
+            if not self.per_request_full_digest_verified:
+                raise RuntimeError("qualification mode requires a full destination digest")
+            if not (
+                self.source_digest_before
+                == self.destination_digest
+                == self.source_digest_after
+            ):
+                raise RuntimeError("qualification Source/destination digests differ")
+            if (
+                self.expected_artifact_digest
+                and self.source_digest_before != self.expected_artifact_digest
+            ):
+                raise RuntimeError("qualification digest differs from Artifact identity")
+        if self.integrity_mode == IntegrityVerificationMode.ONLINE_IMMUTABLE.value:
+            if self.per_request_full_digest_verified:
+                raise RuntimeError("online immutable mode forbids per-request full hashing")
+            if any((self.source_digest_before, self.source_digest_after, self.destination_digest)):
+                raise RuntimeError("online immutable mode fabricated runtime digests")
+            if not self.expected_artifact_digest:
+                raise RuntimeError("online immutable mode requires the creation-time digest")
+        if self.integrity_mode == IntegrityVerificationMode.ONLINE_SAMPLED.value:
+            if not self.expected_artifact_digest:
+                raise RuntimeError("online sampled mode requires the Artifact digest")
+            if not self.sampled_digest_verified or self.per_request_full_digest_verified:
+                raise RuntimeError("online sampled mode requires sample-only verification")
         if tuple(sorted(set(self.segment_positions))) != self.segment_positions:
             raise ValueError("ticket Segment positions must be sorted and unique")
 
@@ -46,15 +96,58 @@ class LayerwiseLoadTicket:
         return float(self.start_event.elapsed_time(event))
 
 
+@dataclass(frozen=True)
+class WinnerRepairCheckMeasurement:
+    segment_id: str
+    source_variant_id: str
+    metric: RepairMetric
+    repair_check_completed_depth: int
+    first_selective_reuse_layer: int
+    absolute_positions: Tuple[int, ...]
+    drift_scores: Tuple[float, ...]
+    gpu_ms: float
+    host_ms: float
+
+    def __post_init__(self) -> None:
+        if self.first_selective_reuse_layer != self.repair_check_completed_depth + 1:
+            raise ValueError("repair-check consumer layer is off by one")
+        if len(self.absolute_positions) != len(self.drift_scores):
+            raise ValueError("repair-check drift rows do not cover the Segment")
+        if min(self.gpu_ms, self.host_ms, *self.drift_scores) < 0:
+            raise ValueError("repair-check timings/drifts must be non-negative")
+
+
 class TorchLayerwiseSourceLoader:
     """Pinned-CPU to GPU, winner-only, layer-wise asynchronous loader."""
 
-    def __init__(self, torch_module: Any, device: Any = "cuda") -> None:
+    def __init__(
+        self,
+        torch_module: Any,
+        device: Any = "cuda",
+        *,
+        integrity_mode: str = "legacy_source_full",
+        require_pre_pinned: bool = False,
+        sampling_seed: int = 20260726,
+        sample_layers: int = 4,
+        sample_rows_per_layer: int = 16,
+    ) -> None:
         self.torch = torch_module
         self.device = device
         if not self.torch.cuda.is_available():
             raise RuntimeError("real Source loader requires CUDA")
         self.stream = self.torch.cuda.Stream(device=device)
+        self.integrity_mode = integrity_mode
+        self.require_pre_pinned = bool(require_pre_pinned)
+        self.sampling_seed = int(sampling_seed)
+        self.sample_layers = int(sample_layers)
+        self.sample_rows_per_layer = int(sample_rows_per_layer)
+        if integrity_mode not in {
+            "legacy_source_full",
+            *(mode.value for mode in IntegrityVerificationMode),
+        }:
+            raise ValueError("unsupported Source integrity mode")
+        if min(self.sample_layers, self.sample_rows_per_layer) < 1:
+            raise ValueError("integrity sample dimensions must be positive")
 
     @staticmethod
     def _digest(torch_module: Any, layers: Sequence[Tuple[Any, Any]]) -> str:
@@ -69,6 +162,40 @@ class TorchLayerwiseSourceLoader:
                 )
         return digest.hexdigest()
 
+    def _sample_digest(
+        self,
+        layers: Sequence[Tuple[Any, Any]],
+        *,
+        sample_key: str,
+    ) -> str:
+        seed = int.from_bytes(
+            hashlib.sha256(
+                f"{self.sampling_seed}:{sample_key}".encode("utf-8")
+            ).digest()[:8],
+            "big",
+        )
+        rng = random.Random(seed)
+        selected_layers = sorted(
+            rng.sample(range(len(layers)), min(self.sample_layers, len(layers)))
+        )
+        digest = hashlib.sha256()
+        for layer_index in selected_layers:
+            for tensor in layers[layer_index]:
+                rows = int(tensor.shape[0])
+                selected_rows = sorted(
+                    rng.sample(
+                        range(rows), min(self.sample_rows_per_layer, rows)
+                    )
+                )
+                sampled = tensor.detach()[selected_rows].contiguous()
+                digest.update(str(layer_index).encode("ascii"))
+                digest.update(str(tuple(sampled.shape)).encode("ascii"))
+                digest.update(str(sampled.dtype).encode("ascii"))
+                digest.update(
+                    sampled.view(self.torch.uint8).cpu().numpy().tobytes()
+                )
+        return digest.hexdigest()
+
     def begin(
         self,
         *,
@@ -76,10 +203,17 @@ class TorchLayerwiseSourceLoader:
         source_id: str,
         canonical_layers: Sequence[Tuple[Any, Any]],
         segment_positions: Sequence[int],
+        expected_artifact_digest: str = "",
+        request_id: str = "",
+        replica_id: str = "",
     ) -> LayerwiseLoadTicket:
         if not canonical_layers:
             raise ValueError("canonical Source has no KV layers")
-        before = self._digest(self.torch, canonical_layers)
+        mode = self.integrity_mode
+        full_verify = integrity_mode_performs_full_digest(mode)
+        hash_started = time.perf_counter()
+        before = self._digest(self.torch, canonical_layers) if full_verify else ""
+        hash_host_ms = (time.perf_counter() - hash_started) * 1000.0 if full_verify else 0.0
         positions = tuple(int(value) for value in segment_positions)
         if tuple(sorted(set(positions))) != positions:
             raise ValueError("Segment positions must be sorted and unique")
@@ -87,6 +221,8 @@ class TorchLayerwiseSourceLoader:
         layer_tensors: Dict[int, Tuple[Any, Any]] = {}
         layer_events: Dict[int, Any] = {}
         requested_bytes = 0
+        pinning_copy_bytes = 0
+        pinning_host_ms = 0.0
         with self.torch.cuda.stream(self.stream):
             start_event = self.torch.cuda.Event(enable_timing=True)
             start_event.record(self.stream)
@@ -95,15 +231,51 @@ class TorchLayerwiseSourceLoader:
                     raise ValueError("canonical staging input must be CPU KV")
                 requested_bytes += key.numel() * key.element_size()
                 requested_bytes += value.numel() * value.element_size()
+                if self.require_pre_pinned and (not key.is_pinned() or not value.is_pinned()):
+                    raise RuntimeError(
+                        "schema-v7 formal CPU path requires pre-pinned backing/staging"
+                    )
+                pin_started = time.perf_counter()
                 host_key = key if key.is_pinned() else key.pin_memory()
                 host_value = value if value.is_pinned() else value.pin_memory()
+                if host_key is not key:
+                    pinning_copy_bytes += key.numel() * key.element_size()
+                if host_value is not value:
+                    pinning_copy_bytes += value.numel() * value.element_size()
+                pinning_host_ms += (time.perf_counter() - pin_started) * 1000.0
                 gpu_key = host_key.to(self.device, non_blocking=True)
                 gpu_value = host_value.to(self.device, non_blocking=True)
                 event = self.torch.cuda.Event(enable_timing=True)
                 event.record(self.stream)
                 layer_tensors[layer] = (gpu_key, gpu_value)
                 layer_events[layer] = event
-        after = self._digest(self.torch, canonical_layers)
+        destination_digest = ""
+        sampled_verified = False
+        d2h_hash_host_ms = 0.0
+        if mode == IntegrityVerificationMode.QUALIFICATION_FULL.value:
+            for event in layer_events.values():
+                event.synchronize()
+            destination_started = time.perf_counter()
+            destination_digest = self._digest(
+                self.torch, tuple(layer_tensors[layer] for layer in sorted(layer_tensors))
+            )
+            d2h_hash_host_ms = (time.perf_counter() - destination_started) * 1000.0
+        elif mode == IntegrityVerificationMode.ONLINE_SAMPLED.value:
+            for event in layer_events.values():
+                event.synchronize()
+            key = f"{request_id}:{replica_id}:{source_id}"
+            source_sample = self._sample_digest(canonical_layers, sample_key=key)
+            destination_sample = self._sample_digest(
+                tuple(layer_tensors[layer] for layer in sorted(layer_tensors)),
+                sample_key=key,
+            )
+            sampled_verified = source_sample == destination_sample
+            if not sampled_verified:
+                raise RuntimeError("sampled destination KV integrity mismatch")
+        hash_started = time.perf_counter()
+        after = self._digest(self.torch, canonical_layers) if full_verify else ""
+        if full_verify:
+            hash_host_ms += (time.perf_counter() - hash_started) * 1000.0
         return LayerwiseLoadTicket(
             segment_id=segment_id,
             source_id=source_id,
@@ -115,6 +287,17 @@ class TorchLayerwiseSourceLoader:
             source_digest_before=before,
             source_digest_after=after,
             segment_positions=positions,
+            integrity_mode=mode,
+            expected_artifact_digest=expected_artifact_digest,
+            destination_digest=destination_digest,
+            hash_host_ms=hash_host_ms,
+            d2h_hash_host_ms=d2h_hash_host_ms,
+            per_request_full_digest_verified=(
+                mode == IntegrityVerificationMode.QUALIFICATION_FULL.value
+            ),
+            sampled_digest_verified=sampled_verified,
+            pinning_copy_bytes=pinning_copy_bytes,
+            pinning_host_ms=pinning_host_ms,
         )
 
 
@@ -143,6 +326,14 @@ class OnlineRequestAudit:
         default_factory=dict
     )
     repair_rounding_policy: str = "floor"
+    integrity_mode_by_segment: Dict[str, str] = field(default_factory=dict)
+    per_request_full_digest_verified_by_segment: Dict[str, bool] = field(
+        default_factory=dict
+    )
+    hash_host_ms_by_segment: Dict[str, float] = field(default_factory=dict)
+    d2h_hash_host_ms_by_segment: Dict[str, float] = field(default_factory=dict)
+    pinning_copy_bytes_by_segment: Dict[str, int] = field(default_factory=dict)
+    pinning_host_ms_by_segment: Dict[str, float] = field(default_factory=dict)
 
 
 class CacheBlendV6OnlineEngine:
@@ -252,6 +443,9 @@ class CacheBlendV6OnlineEngine:
         source_id: str,
         canonical_layers: Sequence[Tuple[Any, Any]],
         segment_positions: Sequence[int],
+        expected_artifact_digest: str = "",
+        request_id: str = "",
+        replica_id: str = "",
     ) -> LayerwiseLoadTicket:
         if self.session is None:
             raise RuntimeError("prefetch requires an active request")
@@ -262,6 +456,9 @@ class CacheBlendV6OnlineEngine:
             source_id=source_id,
             canonical_layers=canonical_layers,
             segment_positions=segment_positions,
+            expected_artifact_digest=expected_artifact_digest,
+            request_id=request_id,
+            replica_id=replica_id,
         )
         if len(ticket.layer_tensors) != self.model_spec.num_layers:
             raise ValueError("canonical Source layer count differs from model")
@@ -310,6 +507,14 @@ class CacheBlendV6OnlineEngine:
         self.tickets[segment_id] = ticket
         self.session.register_source_handle(segment_id, source_id, ticket)
         self.audit.transferred_bytes_by_segment[segment_id] = ticket.requested_bytes
+        self.audit.integrity_mode_by_segment[segment_id] = ticket.integrity_mode
+        self.audit.per_request_full_digest_verified_by_segment[segment_id] = (
+            ticket.per_request_full_digest_verified
+        )
+        self.audit.hash_host_ms_by_segment[segment_id] = ticket.hash_host_ms
+        self.audit.d2h_hash_host_ms_by_segment[segment_id] = ticket.d2h_hash_host_ms
+        self.audit.pinning_copy_bytes_by_segment[segment_id] = ticket.pinning_copy_bytes
+        self.audit.pinning_host_ms_by_segment[segment_id] = ticket.pinning_host_ms
         return ticket
 
     def _install_ready_source_rows(self, layer: int) -> None:
@@ -562,3 +767,198 @@ class CacheBlendV8OnlineEngine(CacheBlendV7OnlineEngine):
             )
         ):
             raise RuntimeError("v8 Source selection triggered forbidden full-KV transfer")
+
+
+class CacheBlendV8Schema7OnlineEngine(CacheBlendV8OnlineEngine):
+    """Winner-specific gradual-repair data plane for schema-v7.
+
+    Source selection still reads K-only SelectionState objects.  This class is
+    entered only after Source freeze and uses the configured integrity mode for
+    the winner's single canonical Artifact.
+    """
+
+    patch_mode = "probekv_v8_winner_gradual_streaming"
+    implementation_status = "no_gpu_complete_requires_schema7_a800_sentinel"
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if (
+            self.source_loader.integrity_mode
+            in {
+                IntegrityVerificationMode.ONLINE_IMMUTABLE.value,
+                IntegrityVerificationMode.ONLINE_SAMPLED.value,
+            }
+            and not self.source_loader.require_pre_pinned
+        ):
+            raise RuntimeError(
+                "schema-v7 online CPU transfer requires pre-pinned backing/staging"
+            )
+
+    @staticmethod
+    def capabilities() -> Mapping[str, bool]:
+        result = dict(CacheBlendV8OnlineEngine.capabilities())
+        result.update(
+            {
+                "winner_specific_k_v_kv_repair_metrics": True,
+                "gradual_no_reentry_support": True,
+                "load_recompute_aware_repair_candidates": True,
+                "final_commit_admission": True,
+                "qualification_destination_digest": True,
+                "online_immutable_no_full_digest": True,
+                "online_sampled_integrity": True,
+                "layerwise_transfer_paths": True,
+            }
+        )
+        return result
+
+    def start_artifact_replica_prefetch(
+        self,
+        *,
+        segment_id: str,
+        source_variant_id: str,
+        artifact: CanonicalKVArtifact,
+        replica: PhysicalReplica,
+        canonical_layers: Sequence[Tuple[Any, Any]],
+        segment_positions: Sequence[int],
+        request_id: str = "",
+    ) -> LayerwiseLoadTicket:
+        frozen = self.frozen_source_by_segment.get(segment_id)
+        if frozen != source_variant_id:
+            self.request_attributed_full_kv_prefetch_before_source_freeze += 1
+            if frozen is not None:
+                self.request_attributed_nonwinner_full_kv_bytes_transferred += int(
+                    replica.size_bytes
+                )
+            raise RuntimeError("schema-v7 prefetch requires the frozen winner")
+        if artifact.source_variant_id != source_variant_id:
+            raise ValueError("Artifact belongs to another Source Variant")
+        if replica.artifact_id != artifact.artifact_id:
+            raise ValueError("Replica belongs to another Artifact")
+        if (
+            artifact.dtype != "bfloat16"
+            or artifact.k_semantics != "pre_rope"
+            or artifact.v_semantics != "raw"
+            or replica.logical_digest != artifact.artifact_logical_digest
+        ):
+            raise RuntimeError("schema-v7 requires one compatible lossless BF16 Artifact")
+        ticket = CacheBlendV6OnlineEngine.start_winner_prefetch(
+            self,
+            segment_id=segment_id,
+            source_id=source_variant_id,
+            canonical_layers=canonical_layers,
+            segment_positions=segment_positions,
+            expected_artifact_digest=artifact.artifact_logical_digest,
+            request_id=request_id,
+            replica_id=replica.replica_id,
+        )
+        self.audit.artifact_id_by_segment[segment_id] = artifact.artifact_id
+        self.audit.replica_id_by_segment[segment_id] = replica.replica_id
+        self.audit.artifact_digest_unchanged_by_segment[segment_id] = (
+            ticket.integrity_mode == IntegrityVerificationMode.ONLINE_IMMUTABLE.value
+            or ticket.sampled_digest_verified
+            or ticket.per_request_full_digest_verified
+        )
+        return ticket
+
+    def shrink_gradual_repair_support(
+        self,
+        *,
+        segment_id: str,
+        consumer_layer: int,
+        repair_positions: Sequence[int],
+    ) -> None:
+        if self.session is None:
+            raise RuntimeError("gradual repair requires an active request")
+        self.session.shrink_segment_repair_support(
+            segment_id=segment_id,
+            consumer_layer=consumer_layer,
+            repair_positions=repair_positions,
+        )
+
+    def observe_winner_repair_check(
+        self,
+        *,
+        segment_id: str,
+        metric: RepairMetric,
+        repair_check_completed_depth: Optional[int] = None,
+        support_positions: Optional[Sequence[int]] = None,
+        epsilon: float = 1e-12,
+    ) -> WinnerRepairCheckMeasurement:
+        if self.session is None:
+            raise RuntimeError("winner repair check requires an active request")
+        ticket = self.tickets.get(segment_id)
+        if ticket is None:
+            raise RuntimeError("winner repair check requires a prepared frozen Source")
+        depth = (
+            self.session.current_layer
+            if repair_check_completed_depth is None
+            else int(repair_check_completed_depth)
+        )
+        consumer = depth + 1
+        if not ticket.layer_ready(consumer):
+            raise RuntimeError("winner Source is not ready for the repair-check consumer")
+        started_host = time.perf_counter()
+        start_event = self.source_loader.torch.cuda.Event(enable_timing=True)
+        end_event = self.source_loader.torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        current_k, current_v = self.session.observe_repair_check_pre_rope_kv(depth)
+        selected_positions = tuple(
+            ticket.segment_positions
+            if support_positions is None
+            else sorted(set(int(value) for value in support_positions))
+        )
+        if not selected_positions or not set(selected_positions).issubset(
+            ticket.segment_positions
+        ):
+            raise ValueError("repair-check support must lie inside the Segment")
+        active_row = {
+            position: index for index, position in enumerate(self.session.active_positions)
+        }
+        try:
+            current_rows = [active_row[position] for position in selected_positions]
+        except KeyError as error:
+            raise RuntimeError("repair-check Segment contains an inactive row") from error
+        source_row = {
+            position: index for index, position in enumerate(ticket.segment_positions)
+        }
+        source_rows = [source_row[position] for position in selected_positions]
+        current_k = current_k[current_rows]
+        current_v = current_v[current_rows]
+        source_k, source_v = ticket.layer_tensors[consumer]
+        source_k = source_k[source_rows]
+        source_v = source_v[source_rows]
+
+        def normalized(current: Any, source: Any) -> Any:
+            rows = current.shape[0]
+            left = current.float().reshape(rows, -1)
+            right = source.float().reshape(rows, -1)
+            numerator = self.source_loader.torch.linalg.vector_norm(left - right, dim=1)
+            denominator = self.source_loader.torch.clamp(
+                self.source_loader.torch.linalg.vector_norm(left, dim=1),
+                min=epsilon,
+            )
+            return numerator / denominator
+
+        k_drift = normalized(current_k, source_k)
+        v_drift = normalized(current_v, source_v)
+        metric = RepairMetric(metric)
+        if metric is RepairMetric.WINNER_K_ONLY:
+            drift = k_drift
+        elif metric is RepairMetric.WINNER_V_ONLY:
+            drift = v_drift
+        else:
+            drift = self.source_loader.torch.sqrt(k_drift * k_drift + v_drift * v_drift)
+        end_event.record()
+        end_event.synchronize()
+        values = tuple(float(value) for value in drift.detach().cpu().tolist())
+        return WinnerRepairCheckMeasurement(
+            segment_id,
+            ticket.source_id,
+            metric,
+            depth,
+            consumer,
+            selected_positions,
+            values,
+            float(start_event.elapsed_time(end_event)),
+            (time.perf_counter() - started_host) * 1000.0,
+        )

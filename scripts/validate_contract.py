@@ -29,6 +29,10 @@ def main() -> int:
         "--v8-schema6-contract",
         default="configs/experiment_contract_v8_schema6.yaml",
     )
+    parser.add_argument(
+        "--v8-schema7-contract",
+        default="configs/experiment_contract_v8_schema7.yaml",
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
@@ -36,6 +40,8 @@ def main() -> int:
     v8_contract = yaml.safe_load(v8_contract_path.read_text(encoding="utf-8"))
     v8_schema6_path = Path(args.v8_schema6_contract)
     v8_schema6 = yaml.safe_load(v8_schema6_path.read_text(encoding="utf-8"))
+    v8_schema7_path = Path(args.v8_schema7_contract)
+    v8_schema7 = yaml.safe_load(v8_schema7_path.read_text(encoding="utf-8"))
     errors = []
     if contract.get("schema_version") != 7:
         errors.append("current experiment contract must use schema version 7")
@@ -142,6 +148,30 @@ def main() -> int:
         errors.append("schema-v6 speculative preparation requires lease and HBM reservation")
     if v8_schema6.get("selector", {}).get("checkpoints", {}).get("mistral") != [1, 2, 4, 5, 8]:
         errors.append("schema-v6 Mistral checkpoints must be 1,2,4,5,8")
+    if (v8_schema7.get("protocol_version"), v8_schema7.get("schema_version")) != (8, 7):
+        errors.append("new v8 gradual-repair contract must use schema-v7")
+    if v8_schema7.get("runtime_patch_mode") != "probekv_v8_winner_gradual_streaming":
+        errors.append("schema-v7 contract uses another runtime patch mode")
+    selection7 = v8_schema7.get("source_selection", {})
+    if selection7.get("repair_support_from_score_trim_forbidden") is not True:
+        errors.append("schema-v7 must separate Source score trimming from repair")
+    repair7 = v8_schema7.get("winner_repair", {})
+    if (
+        repair7.get("fallback") != "fixed_15"
+        or repair7.get("initial_repair_cap") != 0.15
+        or repair7.get("support_monotonic") is not True
+        or repair7.get("repair_reentry") != "none"
+    ):
+        errors.append("schema-v7 gradual repair safety contract is invalid")
+    integrity7 = v8_schema7.get("integrity", {})
+    if (
+        integrity7.get("qualification_destination_digest_required") is not True
+        or integrity7.get("online_per_request_full_digest_forbidden") is not True
+    ):
+        errors.append("schema-v7 integrity split is invalid")
+    final7 = v8_schema7.get("admission", {}).get("final_commit_admission", {})
+    if final7.get("accounting") != "request_joint_timeline" or final7.get("decision") != "ready_subset":
+        errors.append("schema-v7 FinalCommitAdmission must preserve joint subset planning")
     try:
         schema6_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema6.json").read_text(
@@ -225,6 +255,50 @@ def main() -> int:
         else:
             if local_v8_schema6.v8_schema_version != 6:
                 errors.append("v8 schema-v6 config did not select schema-v6: %s" % name)
+    for name in (
+        "configs/local_system_v8_schema7_legacy_fixed15.json",
+        "configs/local_system_v8_schema7_qwen_legacy_fixed15.json",
+        "configs/local_system_v8_schema7_d1d2_gradual_causal_wait.json",
+        "configs/local_system_v8_schema7_d1d2_gradual_immediate.json",
+    ):
+        try:
+            local_v8_schema7 = load_config(name)
+        except (OSError, ValueError) as error:
+            errors.append("v8 schema-v7 config is invalid: %s: %s" % (name, error))
+        else:
+            if local_v8_schema7.v8_schema_version != 7:
+                errors.append("v8 schema-v7 config did not select schema-v7: %s" % name)
+    try:
+        schema7_patches = patch_files_for_mode(
+            Path("patches/cacheblend/manifest.json"),
+            "probekv_v8_winner_gradual_streaming",
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors.append("schema-v7 CacheBlend patch contract is invalid: %s" % error)
+    else:
+        if len(schema7_patches) != 8:
+            errors.append("schema-v7 CacheBlend patchset must contain eight patches")
+    try:
+        schema7_lock = json.loads(
+            Path("configs/a800_server_lock_v8_schema7.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append("schema-v7 server lock is invalid: %s" % error)
+    else:
+        runtime7 = schema7_lock.get("runtime", {})
+        if (
+            schema7_lock.get("schema_version") != 7
+            or schema7_lock.get("stack", {}).get("cacheblend_patch_mode")
+            != "probekv_v8_winner_gradual_streaming"
+            or runtime7.get("selector_depth_profile_frozen") is not False
+            or runtime7.get("repair_policy_profile_frozen") is not False
+            or runtime7.get("runtime_cost_profile_frozen") is not False
+            or runtime7.get("run_140_job_qualification") is not False
+            or runtime7.get("run_h1") is not False
+        ):
+            errors.append("schema-v7 server lock crosses its no-GPU stop boundary")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")
@@ -262,6 +336,7 @@ def main() -> int:
         "contract": str(contract_path.resolve()),
         "v8_contract": str(v8_contract_path.resolve()),
         "v8_schema6_contract": str(v8_schema6_path.resolve()),
+        "v8_schema7_contract": str(v8_schema7_path.resolve()),
         "valid": not errors,
         "errors": errors,
         "matrix_counts": matrix_counts,

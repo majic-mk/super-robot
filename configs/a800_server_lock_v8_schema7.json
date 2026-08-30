@@ -1,0 +1,75 @@
+{
+  "schema_version": 7,
+  "protocol_version": 8,
+  "purpose": "non-paper dual-model schema-v7 correctness and data-plane sentinel",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "platform": {
+    "os": "Ubuntu 22.04",
+    "python_major_minor": "3.10",
+    "minimum_cpu_count": 16,
+    "minimum_host_memory_gib": 110,
+    "minimum_combined_free_gib": 70,
+    "minimum_largest_writable_free_gib": 50,
+    "minimum_system_free_gib": 15
+  },
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "numpy": "1.26.4",
+    "transformers": "4.40.2",
+    "tokenizers": "0.19.1",
+    "huggingface-hub": "0.36.2",
+    "ray": "2.10.0",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v8_winner_gradual_streaming"
+  },
+  "models": {
+    "mistral": {
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "adapter_name": "mistral_cacheblend_llama_v041_schema6",
+      "num_layers": 32,
+      "legacy_completed_depths": [1, 2, 4, 5, 8],
+      "dtype": "bfloat16"
+    },
+    "qwen": {
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "adapter_name": "qwen2_5_vllm041_schema6",
+      "num_layers": 28,
+      "legacy_completed_depths": [1, 2, 4, 5, 7],
+      "dtype": "bfloat16"
+    }
+  },
+  "runtime": {
+    "backend": "cacheblend_v8_schema7_gradual_streaming",
+    "required_capabilities": [
+      "training_free_residual_k_selection",
+      "winner_specific_k_v_kv_repair_metrics",
+      "gradual_no_reentry_support",
+      "load_recompute_aware_repair_candidates",
+      "final_commit_admission",
+      "winner_only_prefetch",
+      "layerwise_transfer_paths",
+      "qualification_destination_digest",
+      "online_immutable_no_full_digest"
+    ],
+    "initial_repair_cap": 0.15,
+    "fixed15_fallback": true,
+    "repair_floor_frozen": false,
+    "selector_depth_profile_frozen": false,
+    "repair_policy_profile_frozen": false,
+    "runtime_cost_profile_frozen": false,
+    "run_140_job_qualification": false,
+    "run_h1": false
+  }
+}

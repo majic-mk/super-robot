@@ -56,6 +56,16 @@
       "0006-probekv-v7-conservative-repair-rounding.patch",
       "0007-probekv-schema6-cfo-post-rope-hook.patch",
       "0008-probekv-resumable-active-kv-writeback.patch"
+    ],
+    "probekv_v8_winner_gradual_streaming": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch",
+      "0007-probekv-schema6-cfo-post-rope-hook.patch",
+      "0008-probekv-resumable-active-kv-writeback.patch"
     ]
   },
   "runtime_modes": {
@@ -153,6 +163,20 @@
       "status": "requires_mistral_a800_sparse_sentinel",
       "paper_evidence": false,
       "purpose": "schema-v6 CFO and joint-runtime sentinel only"
+    },
+    "winner_gradual_streaming_runtime_v8": {
+      "patch_mode": "probekv_v8_winner_gradual_streaming",
+      "inherits": "schema6_joint_cfo_runtime_v8",
+      "source_score_repair_support_separated": true,
+      "winner_specific_repair_metric": true,
+      "gradual_no_reentry_support": true,
+      "load_recompute_overlap_controller": true,
+      "final_commit_admission": true,
+      "integrity_modes_split": true,
+      "formal_online_full_digest": false,
+      "status": "no_gpu_complete_requires_schema7_a800_sentinel",
+      "paper_evidence": false,
+      "purpose": "schema-v7 CacheBlend-aligned winner repair and gradual streaming"
     }
   },
   "innovation_claim": false,
@@ -162,5 +186,6 @@
   "causal_mask_policy": "absolute rows of arbitrary selected query positions",
   "source_k_representation": "pre-RoPE; rotate at current org_pos",
   "v7_full_kv_artifact_policy": "one lossless BF16 Artifact per Source Variant",
-  "v8_source_selection_policy": "training-free residual K with K-only SelectionState"
+  "v8_source_selection_policy": "training-free residual K with K-only SelectionState",
+  "v8_schema7_repair_policy": "winner-specific fixed15 fallback plus profiled gradual no-reentry candidates"
 }

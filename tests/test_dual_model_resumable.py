@@ -54,6 +54,10 @@ class CpuLayerAdapter:
     def finish_prefill(self, *, hidden_states, **kwargs):
         return hidden_states
 
+    def observe_pre_rope_kv(self, *, hidden_states, **kwargs):
+        rows = tuple((value,) for value in hidden_states)
+        return rows, rows
+
 
 class ResumableSessionTests(unittest.TestCase):
     def session(self):
