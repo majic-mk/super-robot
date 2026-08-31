@@ -12,6 +12,7 @@ from .v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from .v8_schema8_repair import (
     JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
+    UniformIOBalanceDecision,
     choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
 )
@@ -31,9 +32,14 @@ def _ratio_rows(
                 ratio = 0.15
             elif config.repair_ratio_scope == RepairRatioScope.SHARED_RELATIVE_SCHEDULE.value:
                 ratio = 0.15 if age == 0 else max(config.repair_floor, 0.12)
-            else:
+            elif config.repair_ratio_scope == RepairRatioScope.PER_SEGMENT_LOAD_AWARE.value:
                 # A frozen Profile is required before this branch can execute.
                 ratio = (0.15, 0.12, 0.10)[min(segment_index, 2)]
+            else:
+                # The I/O-balanced policy uses one absolute-layer ratio for
+                # every active Segment.  This local row is contract-only; a
+                # real frozen Profile supplies its measured balance curve.
+                ratio = 0.15 if age == 0 else max(config.repair_floor, 0.12)
             rows.append(
                 SegmentLayerRepairRatio(
                     segment_id,
@@ -74,6 +80,38 @@ def _adaptive_decisions(
                 expected_segment_ids=tuple(segment_id for segment_id, _ in selected),
                 repair_policy_profile_sha256=config.repair_policy_profile_sha256,
                 runtime_cost_profile_sha256=config.runtime_cost_profile_sha256,
+            )
+        )
+    return tuple(decisions)
+
+
+def _uniform_io_decisions(
+    config: ExperimentConfig,
+    rows: Tuple[SegmentLayerRepairRatio, ...],
+) -> tuple:
+    if (
+        config.repair_ratio_scope
+        != RepairRatioScope.REQUEST_LAYER_UNIFORM_IO_BALANCED.value
+    ):
+        return ()
+    decisions = []
+    for layer in sorted({row.layer_1based for row in rows}):
+        layer_rows = tuple(row for row in rows if row.layer_1based == layer)
+        ratio = layer_rows[0].ratio
+        decisions.append(
+            UniformIOBalanceDecision(
+                layer,
+                tuple(sorted(row.segment_id for row in layer_rows)),
+                ratio,
+                config.repair_floor,
+                config.repair_quality_reference_ratio,
+                ratio,
+                5.0,
+                4.0,
+                1.0,
+                "0" * 64,
+                config.repair_policy_profile_sha256,
+                config.runtime_cost_profile_sha256,
             )
         )
     return tuple(decisions)
@@ -143,6 +181,7 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             certified_floor=config.repair_floor,
             profile_frozen=config.repair_policy_profile_status == "frozen",
             adaptive_joint_decisions=_adaptive_decisions(config, ratio_rows),
+            uniform_io_decisions=_uniform_io_decisions(config, ratio_rows),
         )
 
         for segment_id in segment_ids:

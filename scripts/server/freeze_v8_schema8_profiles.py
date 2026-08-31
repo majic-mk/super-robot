@@ -104,6 +104,16 @@ def main() -> int:
         timing_equivalence_relative=float(
             repair_raw.get("timing_equivalence_relative", 0.01)
         ),
+        quality_reference_ratio=float(
+            repair_raw.get("quality_reference_ratio", 0.15)
+        ),
+        io_balance_ratio_candidates=tuple(
+            float(value)
+            for value in repair_raw.get(
+                "io_balance_ratio_candidates",
+                (0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0),
+            )
+        ),
     )
     runtime = build_runtime_cost_profile_v8(
         provenance=Schema8ProfileProvenance(

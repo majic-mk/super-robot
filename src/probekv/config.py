@@ -113,6 +113,10 @@ class ExperimentConfig:
     initial_repair_cap: float = 0.15
     repair_floor: float = 0.15
     repair_floor_candidates: Tuple[float, ...] = (0.10, 0.12, 0.15)
+    repair_quality_reference_ratio: float = 0.15
+    io_balance_ratio_candidates: Tuple[float, ...] = (
+        0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0,
+    )
     repair_reentry_policy: str = "none"
     integrity_verification_mode: str = "online_immutable"
     integrity_sampling_rate: float = 0.001
@@ -372,6 +376,16 @@ class ExperimentConfig:
                 float(value)
                 for value in raw.get(
                     "repair_floor_candidates", [0.10, 0.12, 0.15]
+                )
+            ),
+            repair_quality_reference_ratio=float(
+                raw.get("repair_quality_reference_ratio", 0.15)
+            ),
+            io_balance_ratio_candidates=tuple(
+                float(value)
+                for value in raw.get(
+                    "io_balance_ratio_candidates",
+                    [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0],
                 )
             ),
             repair_reentry_policy=str(raw.get("repair_reentry_policy", "none")),
@@ -887,11 +901,30 @@ class ExperimentConfig:
             "fixed_15": "uniform_fixed",
             "static_gradual": "shared_relative_schedule",
             "load_recompute_aware_gradual": "per_segment_load_aware",
+            "load_recompute_aware_uniform": "request_layer_uniform_io_balanced",
         }.get(self.repair_policy)
         if expected_scope is None or self.repair_ratio_scope != expected_scope:
             raise ValueError("schema-v8 repair policy and ratio scope disagree")
         if self.initial_repair_cap != 0.15:
-            raise ValueError("schema-v8 initial repair cap must remain 0.15")
+            raise ValueError(
+                "schema-v8 legacy initial-cap field must remain 0.15; "
+                "the uniform I/O policy uses repair_quality_reference_ratio instead"
+            )
+        if self.repair_quality_reference_ratio != 0.15:
+            raise ValueError("schema-v8 quality reference ratio must remain 0.15")
+        io_grid = tuple(self.io_balance_ratio_candidates)
+        if (
+            not io_grid
+            or tuple(sorted(set(io_grid))) != io_grid
+            or io_grid[0] <= 0
+            or io_grid[-1] > 1.0
+        ):
+            raise ValueError("schema-v8 I/O balance ratio grid is invalid")
+        if self.repair_policy == "load_recompute_aware_uniform" and (
+            self.repair_floor not in io_grid
+            or self.repair_quality_reference_ratio not in io_grid
+        ):
+            raise ValueError("uniform I/O policy grid must contain floor/reference")
         if self.repair_reentry_policy != "none":
             raise ValueError("schema-v8 forbids repair-support re-entry")
         if self.integrity_verification_mode not in {
@@ -925,7 +958,10 @@ class ExperimentConfig:
             if status != "frozen" and sha256:
                 raise ValueError("unfrozen schema-v8 %s Profile cannot carry SHA" % name)
         if (
-            self.repair_policy == "load_recompute_aware_gradual"
+            self.repair_policy in {
+                "load_recompute_aware_gradual",
+                "load_recompute_aware_uniform",
+            }
             and self.v8_execution_phase == "online_main"
             and self.repair_policy_profile_status != "frozen"
         ):

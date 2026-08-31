@@ -88,6 +88,10 @@ class RepairPolicyProfileV8:
     adaptive_candidate_templates: Tuple[str, ...] = ()
     timing_equivalence_absolute_ms: float = 0.02
     timing_equivalence_relative: float = 0.01
+    quality_reference_ratio: float = 0.15
+    io_balance_ratio_candidates: Tuple[float, ...] = (
+        0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0,
+    )
     profile_sha256: str = ""
 
     def __post_init__(self) -> None:
@@ -97,6 +101,7 @@ class RepairPolicyProfileV8:
             "fixed_15": "uniform_fixed",
             "static_gradual": "shared_relative_schedule",
             "load_recompute_aware_gradual": "per_segment_load_aware",
+            "load_recompute_aware_uniform": "request_layer_uniform_io_balanced",
         }.get(self.policy)
         if expected_scope != self.scope:
             raise ValueError("repair policy and ratio scope disagree")
@@ -127,8 +132,25 @@ class RepairPolicyProfileV8:
             raise ValueError("repair timing-equivalence tolerances must be non-negative")
         if self.certified_floor not in {0.10, 0.12, 0.15}:
             raise ValueError("repair floor is outside the development grid")
+        io_grid = tuple(float(value) for value in self.io_balance_ratio_candidates)
+        if (
+            not io_grid
+            or tuple(sorted(set(io_grid))) != io_grid
+            or io_grid[0] <= 0
+            or io_grid[-1] > 1.0
+        ):
+            raise ValueError("I/O balance ratio grid must be sorted in (0,1]")
+        if self.policy == "load_recompute_aware_uniform" and (
+            self.certified_floor not in io_grid
+            or self.quality_reference_ratio not in io_grid
+            or self.quality_reference_ratio != 0.15
+        ):
+            raise ValueError("uniform I/O policy grid must contain floor and 0.15 reference")
         ratios = [float(self.shared_ratio_by_age[key]) for key in sorted(self.shared_ratio_by_age)]
-        if any(not self.certified_floor <= value <= 0.15 for value in ratios):
+        schedule_cap = (
+            1.0 if self.policy == "load_recompute_aware_uniform" else 0.15
+        )
+        if any(not self.certified_floor <= value <= schedule_cap for value in ratios):
             raise ValueError("repair schedule exceeds its floor/cap")
         if any(right > left + 1e-12 for left, right in zip(ratios, ratios[1:])):
             raise ValueError("repair schedule must be non-increasing")
@@ -144,7 +166,7 @@ class RepairPolicyProfileV8:
             raise ValueError("frozen RepairPolicyProfile SHA differs")
 
     def payload(self) -> Mapping[str, Any]:
-        return {
+        payload = {
             "protocol_version": 8,
             "schema_version": 8,
             "provenance": self.provenance.__dict__,
@@ -158,6 +180,16 @@ class RepairPolicyProfileV8:
             "timing_equivalence_absolute_ms": self.timing_equivalence_absolute_ms,
             "timing_equivalence_relative": self.timing_equivalence_relative,
         }
+        if self.policy == "load_recompute_aware_uniform":
+            payload.update(
+                {
+                    "quality_reference_ratio": self.quality_reference_ratio,
+                    "io_balance_ratio_candidates": list(
+                        self.io_balance_ratio_candidates
+                    ),
+                }
+            )
+        return payload
 
 
 @dataclass(frozen=True)
@@ -237,6 +269,10 @@ def build_repair_policy_profile_v8(
     adaptive_candidate_templates: Tuple[str, ...] = (),
     timing_equivalence_absolute_ms: float = 0.02,
     timing_equivalence_relative: float = 0.01,
+    quality_reference_ratio: float = 0.15,
+    io_balance_ratio_candidates: Tuple[float, ...] = (
+        0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0,
+    ),
 ) -> RepairPolicyProfileV8:
     payload = {
         "protocol_version": 8,
@@ -252,6 +288,13 @@ def build_repair_policy_profile_v8(
         "timing_equivalence_absolute_ms": timing_equivalence_absolute_ms,
         "timing_equivalence_relative": timing_equivalence_relative,
     }
+    if policy == "load_recompute_aware_uniform":
+        payload.update(
+            {
+                "quality_reference_ratio": quality_reference_ratio,
+                "io_balance_ratio_candidates": list(io_balance_ratio_candidates),
+            }
+        )
     return RepairPolicyProfileV8(
         provenance,
         policy,
@@ -263,6 +306,8 @@ def build_repair_policy_profile_v8(
         adaptive_candidate_templates,
         timing_equivalence_absolute_ms,
         timing_equivalence_relative,
+        quality_reference_ratio,
+        io_balance_ratio_candidates,
         schema8_profile_digest("schema8-repair-policy", payload)
         if provenance.frozen else "",
     )

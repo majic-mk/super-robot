@@ -50,6 +50,7 @@ def build_schema8_sentinel_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
         "uniform_fixed",
         "shared_relative_schedule",
         "per_segment_load_aware",
+        "request_layer_uniform_io_balanced",
     ):
         jobs.append(_job("repair_ratio_scope", {"scope": scope}))
     return tuple(jobs)
@@ -91,6 +92,19 @@ def build_schema8_runtime_measurement_jobs(
                 },
             )
         )
+        jobs.append(
+            _job(
+                "request_layer_uniform_io_balance",
+                {
+                    "model": model_key,
+                    "segment_count": segment_count,
+                    "repair_ratio_grid": [
+                        0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0
+                    ],
+                    "ratio_scope": "one_ratio_for_all_active_segments",
+                },
+            )
+        )
     for source_tier in ("gpu", "pinned_cpu", "ssd_staged"):
         jobs.append(
             _job(
@@ -121,7 +135,8 @@ def build_schema8_qualification_jobs(
     if any(len(value) != 64 for value in profile_shas):
         raise ValueError("schema-v8 qualification requires three frozen Profile SHAs")
     if selected_repair_policy not in {
-        "fixed_15", "static_gradual", "load_recompute_aware_gradual"
+        "fixed_15", "static_gradual", "load_recompute_aware_gradual",
+        "load_recompute_aware_uniform",
     }:
         raise ValueError("qualification repair policy is not schema-v8")
     qualification_repair_policies = (

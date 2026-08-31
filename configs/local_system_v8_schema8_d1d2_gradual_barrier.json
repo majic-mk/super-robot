@@ -26,6 +26,8 @@
   "initial_repair_cap": 0.15,
   "repair_floor": 0.12,
   "repair_floor_candidates": [0.10, 0.12, 0.15],
+  "repair_quality_reference_ratio": 0.15,
+  "io_balance_ratio_candidates": [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0],
   "repair_reentry_policy": "none",
   "integrity_verification_mode": "online_immutable",
   "integrity_sampling_rate": 0.001,

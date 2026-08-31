@@ -33,6 +33,7 @@ from probekv.v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from probekv.v8_schema8_repair import (
     JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
+    UniformIOBalanceDecision,
     choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
 )
@@ -175,6 +176,10 @@ def _contract_sentinel_evidence() -> dict[str, bool]:
             SegmentLayerRepairRatio("c1", 3, 3, 0.15),
             SegmentLayerRepairRatio("c2", 3, 3, 0.12),
         ),
+        "request_layer_uniform_io_balanced": (
+            SegmentLayerRepairRatio("c1", 3, 3, 0.30),
+            SegmentLayerRepairRatio("c2", 3, 3, 0.30),
+        ),
     }
     scope_pass = {}
     for name, rows in scope_rows.items():
@@ -197,11 +202,24 @@ def _contract_sentinel_evidence() -> dict[str, bool]:
                     runtime_cost_profile_sha256="0" * 64,
                 ),
             )
+        uniform_decisions = ()
+        if name == "request_layer_uniform_io_balanced":
+            uniform_decisions = (
+                UniformIOBalanceDecision(
+                    3, ("c1", "c2"), 0.30, 0.10, 0.15, 0.30,
+                    10.0, 8.0, 0.0, "1" * 64, "2" * 64, "3" * 64,
+                ),
+            )
         scope_pass[name] = bool(validate_union_repair_ratio_plan(
             scope=RepairRatioScope(name), rows=rows,
             certified_floor=0.12,
-            profile_frozen=name == "per_segment_load_aware",
+            profile_frozen=name in {
+                "per_segment_load_aware",
+                "request_layer_uniform_io_balanced",
+            },
+            certified_ratio_candidates=(0.10, 0.12, 0.15, 0.30),
             adaptive_joint_decisions=adaptive_decisions,
+            uniform_io_decisions=uniform_decisions,
         ))
     return {
         "d1_all_resolved_layer2_reuse": all_d1.first_selective_reuse_layer == 2,

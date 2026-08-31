@@ -1051,7 +1051,10 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
         self.repair_ratio_plan = plan
         self.adaptive_ratio_decision_by_layer = {
             decision.layer_1based: decision
-            for decision in plan.adaptive_joint_decisions
+            for decision in (
+                tuple(plan.adaptive_joint_decisions)
+                + tuple(plan.uniform_io_decisions)
+            )
         }
 
     def configure_repair_metric(self, metric: RepairMetric) -> None:
@@ -1091,9 +1094,10 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
     def _apply_planned_gradual_support(self, consumer_layer: int) -> None:
         """Apply one profile-bound joint ratio vector before its layer.
 
-        Every Segment may receive a different ratio, but all ratios come from
-        the same request-level decision.  The measured pool is restricted to
-        the previous support, preserving CacheBlend-style no re-entry.
+        The explicit plan may be a legacy per-Segment vector or the main
+        request/layer-uniform I/O decision.  In both cases the measured pool
+        is restricted to the previous support, preserving CacheBlend-style
+        no re-entry.
         """
 
         if self.session is None or self.repair_ratio_plan is None:

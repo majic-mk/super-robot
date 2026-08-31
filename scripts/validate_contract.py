@@ -206,6 +206,17 @@ def main() -> int:
         or storage8.get("busy_replica_eviction_forbidden") is not True
     ):
         errors.append("schema-v8 tiered backing contract is invalid")
+    repair8 = v8_schema8.get("repair_ratios", {})
+    if (
+        repair8.get("load_recompute_aware_uniform")
+        != "request_layer_uniform_io_balanced"
+        or repair8.get("quality_reference_ratio") != 0.15
+        or repair8.get("uniform_io_same_absolute_layer_all_active_segments")
+        is not True
+        or repair8.get("io_balance_ratio_candidates")
+        != [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0]
+    ):
+        errors.append("schema-v8 uniform I/O repair contract is invalid")
     try:
         schema6_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema6.json").read_text(

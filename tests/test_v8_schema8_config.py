@@ -83,6 +83,16 @@ class Schema8ConfigTests(unittest.TestCase):
                 repair_policy="load_recompute_aware_gradual",
                 repair_ratio_scope="per_segment_load_aware",
             ).validate()
+        uniform = replace(
+            config,
+            repair_policy="load_recompute_aware_uniform",
+            repair_ratio_scope="request_layer_uniform_io_balanced",
+            repair_policy_profile_status="frozen",
+            repair_policy_profile_sha256="a" * 64,
+            runtime_cost_profile_status="frozen",
+            runtime_cost_profile_sha256="b" * 64,
+        )
+        uniform.validate()
 
     def test_schema8_gate_rejects_older_schema_and_accepts_exact_binding(self):
         binding = {
@@ -147,6 +157,18 @@ class Schema8ConfigTests(unittest.TestCase):
         self.assertIn(
             "load_recompute_aware_gradual",
             {row["coordinates"]["repair_policy"] for row in adaptive},
+        )
+        uniform = build_schema8_qualification_jobs(
+            model_key="mistral",
+            selection_depth_profile_sha256="a" * 64,
+            repair_policy_profile_sha256="b" * 64,
+            runtime_cost_profile_sha256="c" * 64,
+            selected_repair_policy="load_recompute_aware_uniform",
+        )
+        self.assertEqual(len(uniform), 140)
+        self.assertIn(
+            "load_recompute_aware_uniform",
+            {row["coordinates"]["repair_policy"] for row in uniform},
         )
 
     def test_schema8_profile_types_do_not_accept_fake_frozen_runtime(self):
@@ -224,6 +246,35 @@ class Schema8ConfigTests(unittest.TestCase):
                 "single_segment_load_priority",
             ),
         )
+        self.assertEqual(len(profile.profile_sha256), 64)
+
+    def test_uniform_io_profile_treats_fifteen_percent_as_reference_not_cap(self):
+        provenance = Schema8ProfileProvenance(
+            profile_kind="repair_policy",
+            code_commit="a" * 40,
+            cacheblend_patch_sha256="b" * 64,
+            model_id="mistral",
+            model_revision="c" * 40,
+            tokenizer_hash="d" * 64,
+            gpu_uuid="GPU-real",
+            measurement_sha256="e" * 64,
+            frozen=True,
+        )
+        profile = build_repair_policy_profile_v8(
+            provenance=provenance,
+            policy="load_recompute_aware_uniform",
+            scope="request_layer_uniform_io_balanced",
+            certified_floor=0.10,
+            shared_ratio_by_age={},
+            no_reentry_oracle_recall=0.99,
+            minimum_no_reentry_recall=0.95,
+            quality_reference_ratio=0.15,
+            io_balance_ratio_candidates=(
+                0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0,
+            ),
+        )
+        self.assertEqual(profile.quality_reference_ratio, 0.15)
+        self.assertEqual(profile.io_balance_ratio_candidates[-1], 1.0)
         self.assertEqual(len(profile.profile_sha256), 64)
 
 

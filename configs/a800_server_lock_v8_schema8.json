@@ -45,6 +45,7 @@
       "cpu_and_ssd_lru",
       "repair_ratio_scope_explicit",
       "request_level_joint_adaptive_ratio",
+      "request_layer_uniform_io_balanced_ratio",
       "runtime_joint_ratio_plan_execution",
       "full_kv_transfer_lease_enforced"
     ],

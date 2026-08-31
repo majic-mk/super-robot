@@ -60,6 +60,7 @@ repair_ratios:
   fixed_15: uniform_fixed
   static_gradual: shared_relative_schedule
   load_recompute_aware_gradual: per_segment_load_aware
+  load_recompute_aware_uniform: request_layer_uniform_io_balanced
   adaptive_requires_frozen_profile: true
   adaptive_controller_scope: request_level_joint_ratio_vector
   independent_per_segment_adaptive_choice_forbidden: true
@@ -69,7 +70,14 @@ repair_ratios:
   timing_equivalent_choice: prefer_more_repair
   runtime_execution: joint_plan_drives_layerwise_no_reentry_support
   full_cartesian_ratio_oracle: development_only
-  initial_cap: 0.15
+  legacy_initial_cap: 0.15
+  quality_reference_ratio: 0.15
+  io_balance_ratio_candidates: [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0]
+  io_balance_definition: max_frozen_profile_ratio_with_union_repair_not_slower_than_aggregate_load
+  uniform_io_target: max_certified_quality_floor_and_io_balance_ratio
+  uniform_io_first_layer: max_quality_reference_and_target
+  uniform_io_later_layers: min_previous_ratio_and_current_target
+  uniform_io_same_absolute_layer_all_active_segments: true
   reentry: none
 
 compatibility:

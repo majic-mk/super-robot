@@ -15,6 +15,7 @@ from probekv.v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from probekv.v8_schema8_repair import (
     JointLoadRecomputeAwareRepairController,
     JointRepairRatioCandidate,
+    RequestLayerUniformIORepairController,
     SegmentLayerRepairRatio,
     choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
@@ -436,6 +437,104 @@ class Schema8RepairRatioTests(unittest.TestCase):
         )
         self.assertEqual(plan.ratios_for_layer(3), {"c1": 0.15, "c2": 0.15})
         self.assertEqual(plan.ratios_for_layer(4), {"c1": 0.12, "c2": 0.10})
+
+    def test_uniform_io_controller_uses_hidden_maximum_above_fifteen_percent(self):
+        common = dict(
+            code_commit="a" * 40,
+            cacheblend_patch_sha256="b" * 64,
+            model_id="mistral",
+            model_revision="c" * 40,
+            tokenizer_hash="d" * 64,
+            gpu_uuid="GPU-real",
+            measurement_sha256="e" * 64,
+            frozen=True,
+        )
+        repair = build_repair_policy_profile_v8(
+            provenance=Schema8ProfileProvenance(
+                profile_kind="repair_policy", **common
+            ),
+            policy="load_recompute_aware_uniform",
+            scope="request_layer_uniform_io_balanced",
+            certified_floor=0.10,
+            shared_ratio_by_age={},
+            no_reentry_oracle_recall=0.99,
+            minimum_no_reentry_recall=0.95,
+        )
+        runtime = build_runtime_cost_profile_v8(
+            provenance=Schema8ProfileProvenance(
+                profile_kind="runtime_cost", **common
+            ),
+            category_measurements={
+                name: ({"cuda_event_timing": True},)
+                for name in RuntimeCostProfileV8.REQUIRED_CATEGORIES
+            },
+        )
+        controller = RequestLayerUniformIORepairController(
+            repair_policy_profile=repair,
+            runtime_cost_profile=runtime,
+        )
+
+        def candidates(layer, load, repair_ms_by_ratio):
+            return tuple(
+                JointRepairRatioCandidate(
+                    "l%d-r%.2f" % (layer, ratio),
+                    layer,
+                    (("c1", ratio), ("c2", ratio)),
+                    load,
+                    repair_ms,
+                    1.0,
+                )
+                for ratio, repair_ms in repair_ms_by_ratio
+            )
+
+        first = controller.choose_layer(
+            candidates=candidates(
+                3,
+                10.0,
+                ((0.10, 2.0), (0.12, 2.4), (0.15, 3.0), (0.20, 4.0),
+                 (0.30, 6.0), (0.50, 9.0), (0.75, 13.0), (1.0, 18.0)),
+            ),
+            expected_segment_ids=("c1", "c2"),
+        )
+        self.assertEqual(first.io_balance_ratio, 0.50)
+        self.assertEqual(first.selected_ratio, 0.50)
+        self.assertEqual(first.ratio_map(), {"c1": 0.50, "c2": 0.50})
+
+        second = controller.choose_layer(
+            candidates=candidates(
+                4,
+                1.0,
+                ((0.10, 2.0), (0.12, 2.4), (0.15, 3.0), (0.20, 4.0),
+                 (0.30, 6.0), (0.50, 9.0), (0.75, 13.0), (1.0, 18.0)),
+            ),
+            expected_segment_ids=("c1", "c2"),
+            previous_uniform_ratio=first.selected_ratio,
+        )
+        # The target is the certified 10% floor, but no-reentry gradual
+        # filtering takes one frozen-grid step: 50% -> 30%.
+        self.assertEqual(second.io_balance_ratio, 0.0)
+        self.assertEqual(second.selected_ratio, 0.30)
+
+    def test_uniform_io_plan_rejects_per_segment_ratio_vector(self):
+        with self.assertRaisesRegex(ValueError, "uniform I/O rows"):
+            from probekv.v8_schema8_repair import UniformIOBalanceDecision
+
+            validate_union_repair_ratio_plan(
+                scope=RepairRatioScope.REQUEST_LAYER_UNIFORM_IO_BALANCED,
+                rows=(
+                    SegmentLayerRepairRatio("c1", 3, 3, 0.30),
+                    SegmentLayerRepairRatio("c2", 3, 3, 0.20),
+                ),
+                certified_floor=0.10,
+                profile_frozen=True,
+                certified_ratio_candidates=(0.10, 0.15, 0.20, 0.30),
+                uniform_io_decisions=(
+                    UniformIOBalanceDecision(
+                        3, ("c1", "c2"), 0.30, 0.10, 0.15, 0.30,
+                        10.0, 8.0, 1.0, "a" * 64, "b" * 64, "c" * 64,
+                    ),
+                ),
+            )
 
 
 class Schema8TieredBackingTests(unittest.TestCase):

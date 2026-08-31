@@ -197,8 +197,8 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v8 schema-v7 transfer | `v8_schema7_transfer.py`, `cacheblend_v6_online_engine.py` | pinned staging/GDS fallback and split qualification/online integrity modes without online full SHA256 |
 | v8 schema-v8 selection barrier | `v8_schema8_selector.py`, `v8_schema8_runtime.py`, `v8_schema8_barrier.py`, `v8_schema8_planner.py` | all Segments resolve in dense state at d=1/d=2; Gate1 uses same-origin positive-saving critical path and final admission retains request gamma 0.8 |
 | v8 schema-v8 backing policy | `v8_schema8_storage.py` | one CPU-preferred backing; CPU LRU demotes to SSD and SSD LRU deletes an idle Source, with busy state derived from the authoritative lease graph |
-| v8 schema-v8 ratio scope | `v8_schema8_repair.py` | fixed ratios are uniform, static gradual ratios share a repair-age schedule, and per-Segment ratios require a frozen adaptive Profile |
-| v8 schema-v8 Profiles/Gate | `v8_schema8_profile.py`, `v8_schema8_qualification.py` | independent selection-depth, repair-policy and runtime-cost identities; Gate1 is optimistic Segment-marginal feasibility, adaptive ratios are chosen as bounded request-level vectors, and only exact schema-v8 real-GPU evidence can unlock H1/H2 |
+| v8 schema-v8 ratio scope | `v8_schema8_repair.py` | the main I/O-balanced policy uses one request/layer ratio for all active Segments; fixed/static and legacy per-Segment-vector policies remain explicit ablations |
+| v8 schema-v8 Profiles/Gate | `v8_schema8_profile.py`, `v8_schema8_qualification.py` | independent selection-depth, repair-policy and runtime-cost identities; Gate1 is optimistic Segment-marginal feasibility, uniform I/O balance is Profile-bound, and only exact schema-v8 real-GPU evidence can unlock H1/H2 |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |
@@ -259,6 +259,18 @@ may choose different per-Segment ratios only as one frozen-Profile-backed
 request-level vector. The controller minimizes
 `max(aggregate_load, union_repair) + nonoverlap`; timing-equivalent candidates
 prefer more repair, and every later layer may only shrink the previous support.
+
+The schema-v8 main I/O-aligned candidate is
+`load_recompute_aware_uniform`.  It profiles a single request/layer union
+repair curve and chooses
+`r_io = max {r in R_profile: T_union-repair(r) <= T_aggregate-load}`.  The operational
+target is `max(r_quality-floor, r_io)`: 0.15 is a conservative quality
+reference, not a performance cap.  At the first selective layer the support
+is `max(0.15, target)`; every later layer uses
+`min(previous_ratio, current_target)` to preserve no re-entry.  All active
+Segments at the same absolute layer use that one ratio, while each Segment
+still selects its own winner-specific top-drift token positions.  The older
+per-Segment vector remains available only as an explicit legacy ablation.
 
 ## Meaning of the bandwidth inequality
 
