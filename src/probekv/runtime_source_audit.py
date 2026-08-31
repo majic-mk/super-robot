@@ -390,6 +390,15 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             ),
         ),
         (
+            repo / "src" / "probekv" / "v8_schema8_fallback.py",
+            (
+                "class SelectionRuntimePath",
+                "class FastSelectionQualification",
+                "resolve_selection_runtime_path",
+                "legacy_multicheckpoint_three_gate",
+            ),
+        ),
+        (
             repo / "src" / "probekv" / "v8_schema8_planner.py",
             (
                 "class Gate1MarginalLowerBound",
@@ -464,6 +473,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
         "repair_ratio_scope_explicit": True,
         "request_level_joint_adaptive_ratio": True,
         "request_layer_uniform_io_balanced_ratio": True,
+        "legacy_multicheckpoint_three_gate_fallback": True,
         "runtime_joint_ratio_plan_execution": True,
         "request_lru_migration_preserves_epoch": True,
         "online_artifact_digest_creation_time_only": True,

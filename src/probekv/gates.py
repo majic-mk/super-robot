@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from .statistics import ConfidenceInterval, clopper_pearson_upper_bound
+from .v8_schema8_fallback import FastSelectionQualification
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,34 @@ def gate_h2(
     )
 
 
+def gate_h2_fast_selection(
+    qualification: FastSelectionQualification,
+) -> GateResult:
+    """Gate the schema-v8 d1/d2 fast path, not the legacy fallback."""
+
+    passed = qualification.passed()
+    return GateResult(
+        "H2-fast-selection",
+        passed,
+        (
+            "availability %.3f; coverage %.3f; early-depth5 %.3f; "
+            "wrong-lock %.3f; regret %.3f; p95-overhead %.3f; "
+            "budget-overrun %.3f; illegal %d; budget violations %d"
+        )
+        % (
+            qualification.state_availability,
+            qualification.selection_coverage,
+            qualification.early_resolution_rate_at_completed_depth5,
+            qualification.wrong_early_lock_rate,
+            qualification.mean_stable_normalized_oracle_regret,
+            qualification.selection_critical_path_p95_fraction,
+            qualification.selection_budget_realized_overrun_rate,
+            qualification.illegal_lock_count,
+            qualification.budget_admission_violation_count,
+        ),
+    )
+
+
 def gate_h3(
     task_score_difference_ci: ConfidenceInterval,
     tail_violations: int,
@@ -116,3 +145,27 @@ def publication_band(ttft_improvement: float, throughput_improvement: float, p95
     if max(ttft_improvement, throughput_improvement) < 0.03:
         return "stop_or_restructure"
     return "insufficient_or_mixed"
+
+
+def gate_h5(
+    *,
+    h1_passed: bool,
+    final_runtime_dispatch_frozen: bool,
+    h3_passed: bool,
+    h4_passed: bool,
+    ttft_improvement: float,
+    throughput_improvement: float,
+    p95_improvement: float,
+) -> GateResult:
+    prerequisites = (
+        h1_passed and final_runtime_dispatch_frozen and h3_passed and h4_passed
+    )
+    band = publication_band(
+        ttft_improvement, throughput_improvement, p95_improvement
+    )
+    passed = prerequisites and band in {"q1_candidate", "q2_candidate"}
+    return GateResult(
+        "H5",
+        passed,
+        "prerequisites=%s; publication_band=%s" % (prerequisites, band),
+    )

@@ -190,6 +190,22 @@ def main() -> int:
         or selection8.get("first_reuse_layer_if_any_d2") != 3
     ):
         errors.append("schema-v8 d1/d2 dense-barrier contract is invalid")
+    if (
+        selection8.get("fallback_policy")
+        != "legacy_multicheckpoint_three_gate"
+        or selection8.get("fallback_mistral_checkpoints") != [1, 2, 4, 5, 8]
+        or selection8.get("fallback_qwen_checkpoints") != [1, 2, 4, 5, 7]
+        or selection8.get("fallback_requires_own_runtime_qualification") is not True
+        or selection8.get("per_request_protocol_mixing_forbidden") is not True
+    ):
+        errors.append("schema-v8 legacy fallback contract is invalid")
+    if selection8.get("fast_path_enables_only_after_pass") != [
+        "dense_selection_barrier",
+        "d1_d2_detached_winner_prefetch",
+        "streamlined_final_commit_admission",
+        "request_layer_uniform_io_balanced_repair",
+    ]:
+        errors.append("schema-v8 fast-only feature set is not frozen")
     if v8_schema8.get("gate1", {}).get("gamma") != 1.0:
         errors.append("schema-v8 Gate1 must use positive-saving gamma 1.0")
     if v8_schema8.get("final_commit_admission", {}).get("gamma") != 0.8:
@@ -217,6 +233,53 @@ def main() -> int:
         != [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.0]
     ):
         errors.append("schema-v8 uniform I/O repair contract is invalid")
+    experiments8 = v8_schema8.get("experiments_h1_h5", {})
+    h2_metrics8 = experiments8.get("H2_depth_policy_and_dispatch", {}).get(
+        "hard_metrics", {}
+    )
+    if (
+        set(experiments8) != {
+            "H1_source_opportunity_and_correctness",
+            "H2_depth_policy_and_dispatch",
+            "H3_repair_quality",
+            "H4_systems_and_storage",
+            "H5_locked_end_to_end",
+        }
+        or experiments8.get("H2_depth_policy_and_dispatch", {}).get("decision")
+        != "fast_selection_candidate_if_qualified_else_legacy_candidate"
+        or experiments8.get("H5_locked_end_to_end", {}).get(
+            "locked_test_only_here"
+        )
+        is not True
+        or experiments8.get("H3_repair_quality", {}).get(
+            "uniform_io_under_legacy"
+        )
+        != "diagnostic_only_not_runtime_eligible"
+        or experiments8.get("H3_repair_quality", {}).get(
+            "final_runtime_dispatch_after_profile_and_runtime_qualification"
+        )
+        is not True
+        or h2_metrics8.get("state_availability_min") != 0.99
+        or h2_metrics8.get("selection_coverage_min") != 0.80
+        or h2_metrics8.get(
+            "early_resolution_rate_at_completed_depth5_min"
+        )
+        != 0.80
+        or h2_metrics8.get("wrong_early_lock_rate_max") != 0.05
+        or h2_metrics8.get(
+            "mean_stable_normalized_oracle_regret_max"
+        )
+        != 0.10
+        or h2_metrics8.get(
+            "selection_critical_path_p95_fraction_max"
+        )
+        != 0.05
+        or h2_metrics8.get(
+            "selection_budget_realized_overrun_rate_max"
+        )
+        != 0.05
+    ):
+        errors.append("schema-v8 H1-H5 experiment contract is incomplete")
     try:
         schema6_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema6.json").read_text(
@@ -377,6 +440,7 @@ def main() -> int:
         errors.append("schema-v8 server lock is invalid: %s" % error)
     else:
         runtime8 = schema8_lock.get("runtime", {})
+        capabilities8 = set(runtime8.get("required_capabilities", []))
         if (
             schema8_lock.get("schema_version") != 8
             or schema8_lock.get("stack", {}).get("cacheblend_patch_mode")
@@ -387,6 +451,8 @@ def main() -> int:
             or runtime8.get("run_h1") is not False
         ):
             errors.append("schema-v8 server lock crosses its no-GPU stop boundary")
+        if "legacy_multicheckpoint_three_gate_fallback" not in capabilities8:
+            errors.append("schema-v8 server lock omits the legacy fallback capability")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")

@@ -4,6 +4,7 @@ from dataclasses import replace
 from probekv.config import load_config
 from probekv.v6_contracts import SelectionExecutionPolicy
 from probekv.v8_schema8_jobs import (
+    build_schema8_legacy_fallback_qualification_jobs,
     build_schema8_no_gpu_handoff,
     build_schema8_qualification_jobs,
     build_schema8_runtime_measurement_jobs,
@@ -35,6 +36,11 @@ class Schema8ConfigTests(unittest.TestCase):
             SelectionExecutionPolicy.DENSE_SELECTION_BARRIER,
         )
         self.assertEqual(config.backing_tier_policy, "cpu_preferred_single_backing")
+        self.assertEqual(
+            config.selection_runtime_fallback_policy,
+            "legacy_multicheckpoint_three_gate",
+        )
+        self.assertTrue(config.legacy_fallback_gate_required)
 
     def test_schema7_remains_legacy_ac_policy(self):
         config = load_config(
@@ -69,6 +75,20 @@ class Schema8ConfigTests(unittest.TestCase):
         self.assertFalse(handoff["h1_h2_execution_allowed"])
         self.assertTrue(handoff["runtime_source_audit"]["runtime_source_ready"])
         self.assertTrue(handoff["gpu_rental_ready_for_schema8_sentinel"])
+        self.assertEqual(len(handoff["legacy_fallback_qualification_jobs"]), 140)
+
+    def test_legacy_fallback_has_an_independent_qualification_matrix(self):
+        jobs = build_schema8_legacy_fallback_qualification_jobs(
+            model_key="mistral",
+            legacy_runtime_contract_sha256="a" * 64,
+        )
+        self.assertEqual(len(jobs), 140)
+        self.assertEqual(len({row["job_id"] for row in jobs}), 140)
+        self.assertEqual(
+            {row["coordinates"]["selection_depth"] for row in jobs},
+            {1, 2, 4, 5, 8},
+        )
+        self.assertTrue(all(row["paper_evidence"] is False for row in jobs))
 
     def test_schema8_profiles_are_independent_and_adaptive_requires_repair_profile(self):
         config = load_config(

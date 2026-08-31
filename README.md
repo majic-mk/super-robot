@@ -125,6 +125,10 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
 - `docs/A100_RUNBOOK.md`: formal-server timing and evidence collection rules
   (legacy filename retained for stable links).
 - `docs/A800_STAGE2_RUNBOOK.md`: exact CB0-CB3 and 150-case H1 pilot commands.
+- `docs/PROBEKV_V8_SCHEMA8_H1_H5_PLAN.md`: current schema-v8 H1-H5 order,
+  conditional d1/d2 fast-path qualification, and the preserved independently
+  qualified legacy multi-checkpoint/three-gate fallback. Earlier H1-H5 text is
+  retained only for the schema version that produced it.
 - `docs/A800_V6_RENTAL_CHECKLIST.md`: final no-GPU artifact gate, pinned server
   installation, model audit and mandatory A800 runtime-qualification boundary.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.

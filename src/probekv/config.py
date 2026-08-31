@@ -129,6 +129,8 @@ class ExperimentConfig:
     cpu_eviction_policy: str = "legacy"
     ssd_eviction_policy: str = "legacy"
     repair_ratio_scope: str = "legacy"
+    selection_runtime_fallback_policy: str = "legacy_multicheckpoint_three_gate"
+    legacy_fallback_gate_required: bool = True
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -406,6 +408,15 @@ class ExperimentConfig:
             cpu_eviction_policy=str(raw.get("cpu_eviction_policy", "legacy")),
             ssd_eviction_policy=str(raw.get("ssd_eviction_policy", "legacy")),
             repair_ratio_scope=str(raw.get("repair_ratio_scope", "legacy")),
+            selection_runtime_fallback_policy=str(
+                raw.get(
+                    "selection_runtime_fallback_policy",
+                    "legacy_multicheckpoint_three_gate",
+                )
+            ),
+            legacy_fallback_gate_required=bool(
+                raw.get("legacy_fallback_gate_required", True)
+            ),
         )
         result.validate()
         return result
@@ -897,6 +908,14 @@ class ExperimentConfig:
             raise ValueError("schema-v8 CPU eviction must use exclusive-backing LRU")
         if self.ssd_eviction_policy != "exclusive_backing_lru":
             raise ValueError("schema-v8 SSD eviction must use exclusive-backing LRU")
+        if (
+            self.selection_runtime_fallback_policy
+            != "legacy_multicheckpoint_three_gate"
+            or self.legacy_fallback_gate_required is not True
+        ):
+            raise ValueError(
+                "schema-v8 must preserve the qualified legacy multi-checkpoint fallback"
+            )
         expected_scope = {
             "fixed_15": "uniform_fixed",
             "static_gradual": "shared_relative_schedule",

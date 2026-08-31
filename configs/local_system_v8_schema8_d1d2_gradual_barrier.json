@@ -74,6 +74,8 @@
   "max_detected_segments": null,
   "boundary_policy": "per_segment_staggered",
   "selection_execution_policy": "dense_selection_barrier",
+  "selection_runtime_fallback_policy": "legacy_multicheckpoint_three_gate",
+  "legacy_fallback_gate_required": true,
   "calibration_policy_match_required": false,
   "partial_reuse_enabled": true,
   "joint_quality_policy": "fixed_repair_offline_audit",

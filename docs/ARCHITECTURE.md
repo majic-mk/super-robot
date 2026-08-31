@@ -272,6 +272,16 @@ Segments at the same absolute layer use that one ratio, while each Segment
 still selects its own winner-specific top-drift token positions.  The older
 per-Segment vector remains available only as an explicit legacy ablation.
 
+The d1/d2 fast path is also conditional rather than destructive. A frozen
+SelectionDepthProfile and the repair/runtime Profiles plus schema-v8 GPU
+qualification must all pass before dense-barrier selection, uniform I/O repair
+and the streamlined FinalCommit path are enabled. If `d1_only` and
+`d1_d2_rescue` fail their frozen metrics, the whole run uses the preserved
+model-specific legacy checkpoints and Predicted Gate2 / Refined Gate3 runtime.
+The dispatcher never mixes those state machines inside one request. If neither
+reuse runtime is qualified, execution is fully dense. The current hypothesis
+ordering is frozen in `PROBEKV_V8_SCHEMA8_H1_H5_PLAN.md`.
+
 ## Meaning of the bandwidth inequality
 
 `BW_available >= KV_bytes_per_layer / compute_time_per_layer` means that the

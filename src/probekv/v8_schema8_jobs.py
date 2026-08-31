@@ -45,6 +45,14 @@ def build_schema8_sentinel_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
         _job("single_backing_replica", {"gpu_replica": "transient_hot"}),
         _job("verified_backing_migration", {"publish": "after_digest_match"}),
         _job("integrity_online_no_full_digest", {"mode": "online_immutable"}),
+        _job(
+            "selection_runtime_dispatch_fallback",
+            {
+                "fast_candidates": ["d1_only", "d1_d2_rescue"],
+                "fallback": "legacy_multicheckpoint_three_gate",
+                "fallback_must_be_independently_qualified": True,
+            },
+        ),
     ]
     for scope in (
         "uniform_fixed",
@@ -112,6 +120,16 @@ def build_schema8_runtime_measurement_jobs(
                 {"model": model_key, "source_tier": source_tier},
             )
         )
+    jobs.append(
+        _job(
+            "legacy_three_gate_compatibility",
+            {
+                "model": model_key,
+                "runtime_contract": "legacy_predicted_gate2_refined_gate3",
+                "required_when_fast_path_fails": True,
+            },
+        )
+    )
     return tuple(jobs)
 
 
@@ -183,6 +201,67 @@ def build_schema8_qualification_jobs(
     return tuple(jobs)
 
 
+def build_schema8_legacy_fallback_qualification_jobs(
+    *,
+    model_key: str,
+    legacy_runtime_contract_sha256: str,
+) -> Tuple[Dict[str, Any], ...]:
+    """Build an independent 140-job certificate for the preserved fallback.
+
+    The fallback is executable only when this exact legacy contract has its
+    own qualification evidence.  Fast-path failure never implicitly blesses
+    the old runtime, and a fast-path Gate cannot substitute for this manifest.
+    """
+
+    checkpoints = {
+        "mistral": (1, 2, 4, 5, 8),
+        "qwen": (1, 2, 4, 5, 7),
+    }.get(model_key)
+    if checkpoints is None:
+        raise ValueError("schema-v8 fallback supports only mistral/qwen")
+    if len(legacy_runtime_contract_sha256) != 64:
+        raise ValueError("legacy fallback qualification requires contract SHA256")
+    patterns = []
+    for segment_count in (1, 2, 5, 10, 37):
+        segment_patterns = []
+        for compared_k in (1, 4, 16):
+            for selection_depth in checkpoints:
+                for source_tier in ("gpu", "pinned_cpu", "ssd_staged"):
+                    segment_patterns.append(
+                        {
+                            "model": model_key,
+                            "segment_count": segment_count,
+                            "compared_k": compared_k,
+                            "selection_depth": selection_depth,
+                            "source_tier": source_tier,
+                            "runtime_contract": (
+                                "legacy_predicted_gate2_refined_gate3"
+                            ),
+                            "legacy_runtime_contract_sha256": (
+                                legacy_runtime_contract_sha256
+                            ),
+                        }
+                    )
+        segment_patterns.sort(
+            key=lambda row: hashlib.sha256(
+                json.dumps(row, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+        )
+        patterns.extend(segment_patterns[:28])
+    jobs = tuple(
+        _job(
+            "schema8_legacy_fallback_qualification",
+            {"qualification_index": index, **coordinates},
+        )
+        for index, coordinates in enumerate(patterns)
+    )
+    if len(jobs) != 140 or len({row["job_id"] for row in jobs}) != 140:
+        raise RuntimeError("legacy fallback matrix must contain 140 unique jobs")
+    return jobs
+
+
 def build_schema8_no_gpu_handoff(
     *,
     code_commit: str,
@@ -209,6 +288,10 @@ def build_schema8_no_gpu_handoff(
         raise ValueError("schema-v8 handoff provenance is incomplete")
     sentinel = build_schema8_sentinel_jobs(model_key)
     runtime = build_schema8_runtime_measurement_jobs(model_key)
+    legacy_fallback = build_schema8_legacy_fallback_qualification_jobs(
+        model_key=model_key,
+        legacy_runtime_contract_sha256=contract_sha256,
+    )
     audit = audit_v8_schema8_runtime_sources(
         (repo_root or Path(__file__).resolve().parents[2]).resolve()
     )
@@ -226,6 +309,7 @@ def build_schema8_no_gpu_handoff(
         "contract_sha256": contract_sha256,
         "sentinel_jobs": list(sentinel),
         "runtime_measurement_jobs": list(runtime),
+        "legacy_fallback_qualification_jobs": list(legacy_fallback),
         "profiles_frozen": False,
         "gpu_jobs_started": False,
         "runtime_source_audit": audit,
@@ -235,7 +319,11 @@ def build_schema8_no_gpu_handoff(
     }
     payload["jobs_sha256"] = hashlib.sha256(
         json.dumps(
-            {"sentinel": sentinel, "runtime_measurements": runtime},
+            {
+                "sentinel": sentinel,
+                "runtime_measurements": runtime,
+                "legacy_fallback_qualification": legacy_fallback,
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")

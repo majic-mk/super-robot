@@ -523,6 +523,7 @@ def freeze_selector_profile(
         "budget_admission_violation_count": int(
             selected_aggregate["budget_admission_violations"]
         ),
+        "illegal_lock_count": int(selected_aggregate["invalid"]),
     }
     payload = {
         "schema_version": schema_version,

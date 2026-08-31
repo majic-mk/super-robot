@@ -11,6 +11,22 @@ source_selection:
   source_freeze_is_final: true
   first_reuse_layer_if_all_d1: 2
   first_reuse_layer_if_any_d2: 3
+  fast_path_candidates: [d1_only, d1_d2_rescue]
+  fast_path_requires:
+    - frozen_selection_depth_profile
+    - frozen_repair_policy_profile
+    - frozen_runtime_cost_profile
+    - schema8_runtime_qualification
+  fast_path_enables_only_after_pass:
+    - dense_selection_barrier
+    - d1_d2_detached_winner_prefetch
+    - streamlined_final_commit_admission
+    - request_layer_uniform_io_balanced_repair
+  fallback_policy: legacy_multicheckpoint_three_gate
+  fallback_mistral_checkpoints: [1, 2, 4, 5, 8]
+  fallback_qwen_checkpoints: [1, 2, 4, 5, 7]
+  fallback_requires_own_runtime_qualification: true
+  per_request_protocol_mixing_forbidden: true
 
 gate1:
   scope: source_local_optimistic_marginal_feasibility
@@ -84,6 +100,51 @@ compatibility:
   schema7_profiles_unlock_schema8: false
   schema7_gates_unlock_schema8: false
   legacy_a_c_configs_unchanged: true
+
+experiments_h1_h5:
+  H1_source_opportunity_and_correctness:
+    purpose: prove_historical_source_choice_matters_before_optimizing_selector
+    policies: [deep_full_candidate_oracle, legacy_multicheckpoint]
+    outputs: [source_rsafe_spread, oracle_gain, r1_dense_equivalence]
+    fast_path_required: false
+  H2_depth_policy_and_dispatch:
+    purpose: qualify_d1_only_or_d1_d2_or_select_legacy_fallback
+    policies: [d1_only, d1_d2_rescue, legacy_multicheckpoint, deep_full_candidate_oracle]
+    hard_metrics:
+      state_availability_min: 0.99
+      selection_coverage_min: 0.80
+      early_resolution_rate_at_completed_depth5_min: 0.80
+      wrong_early_lock_rate_max: 0.05
+      mean_stable_normalized_oracle_regret_max: 0.10
+      selection_critical_path_p95_fraction_max: 0.05
+      selection_budget_realized_overrun_rate_max: 0.05
+      illegal_lock_count_max: 0
+      budget_admission_violation_count_max: 0
+    decision: fast_selection_candidate_if_qualified_else_legacy_candidate
+    output: h2_selection_candidate_not_final_runtime_dispatch
+  H3_repair_quality:
+    purpose: freeze_quality_floor_metric_and_repair_policy
+    policies: [fixed_15, static_gradual, load_recompute_aware_uniform]
+    fast_dispatch_policies: [fixed_15, static_gradual, load_recompute_aware_uniform]
+    legacy_dispatch_policies: [fixed_15, static_gradual]
+    uniform_io_under_legacy: diagnostic_only_not_runtime_eligible
+    final_runtime_dispatch_after_profile_and_runtime_qualification: true
+    operating_ratio_reference: 0.15
+    endpoints: [0.0, 1.0]
+    requirements: [task_noninferiority, tail_violation_bound, no_reentry_recall]
+    dispatch_path_bound: true
+  H4_systems_and_storage:
+    purpose: validate_request_joint_admission_overlap_and_tier_management
+    prerequisite: immutable_final_runtime_dispatch
+    factors: [prefix_cache, multi_segment, gpu_cpu_ssd, lru, io_balance, concurrency]
+    compare_runtime_contracts: [schema8_fast_path, legacy_three_gate]
+    admitted_reuse_gamma: 0.8
+  H5_locked_end_to_end:
+    purpose: final_ttft_throughput_and_tail_evaluation
+    prerequisites: [H1_pass, final_runtime_dispatch_frozen, H3_pass, H4_pass]
+    baselines: [full, prefix_cache, cacheblend, cachecraft_cfo, legacy_probekv, oracle]
+    locked_test_only_here: true
+    selected_dispatch_path_only: true
 
 no_gpu_gate:
   runtime_source_audit_required: true
