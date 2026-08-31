@@ -86,6 +86,8 @@ class RepairPolicyProfileV8:
     no_reentry_oracle_recall: float
     minimum_no_reentry_recall: float
     adaptive_candidate_templates: Tuple[str, ...] = ()
+    timing_equivalence_absolute_ms: float = 0.02
+    timing_equivalence_relative: float = 0.01
     profile_sha256: str = ""
 
     def __post_init__(self) -> None:
@@ -118,6 +120,11 @@ class RepairPolicyProfileV8:
                 )
         elif self.adaptive_candidate_templates:
             raise ValueError("non-adaptive repair cannot carry adaptive templates")
+        if min(
+            self.timing_equivalence_absolute_ms,
+            self.timing_equivalence_relative,
+        ) < 0:
+            raise ValueError("repair timing-equivalence tolerances must be non-negative")
         if self.certified_floor not in {0.10, 0.12, 0.15}:
             raise ValueError("repair floor is outside the development grid")
         ratios = [float(self.shared_ratio_by_age[key]) for key in sorted(self.shared_ratio_by_age)]
@@ -148,6 +155,8 @@ class RepairPolicyProfileV8:
             "no_reentry_oracle_recall": self.no_reentry_oracle_recall,
             "minimum_no_reentry_recall": self.minimum_no_reentry_recall,
             "adaptive_candidate_templates": list(self.adaptive_candidate_templates),
+            "timing_equivalence_absolute_ms": self.timing_equivalence_absolute_ms,
+            "timing_equivalence_relative": self.timing_equivalence_relative,
         }
 
 
@@ -226,6 +235,8 @@ def build_repair_policy_profile_v8(
     no_reentry_oracle_recall: float,
     minimum_no_reentry_recall: float,
     adaptive_candidate_templates: Tuple[str, ...] = (),
+    timing_equivalence_absolute_ms: float = 0.02,
+    timing_equivalence_relative: float = 0.01,
 ) -> RepairPolicyProfileV8:
     payload = {
         "protocol_version": 8,
@@ -238,6 +249,8 @@ def build_repair_policy_profile_v8(
         "no_reentry_oracle_recall": no_reentry_oracle_recall,
         "minimum_no_reentry_recall": minimum_no_reentry_recall,
         "adaptive_candidate_templates": list(adaptive_candidate_templates),
+        "timing_equivalence_absolute_ms": timing_equivalence_absolute_ms,
+        "timing_equivalence_relative": timing_equivalence_relative,
     }
     return RepairPolicyProfileV8(
         provenance,
@@ -248,6 +261,8 @@ def build_repair_policy_profile_v8(
         no_reentry_oracle_recall,
         minimum_no_reentry_recall,
         adaptive_candidate_templates,
+        timing_equivalence_absolute_ms,
+        timing_equivalence_relative,
         schema8_profile_digest("schema8-repair-policy", payload)
         if provenance.frozen else "",
     )

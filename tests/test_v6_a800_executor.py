@@ -126,6 +126,18 @@ class V6A800ExecutorContractTests(unittest.TestCase):
         self.assertIn("measure_schema6_ssd_staged_transfer", text)
         self.assertIn("ssd_to_pinned_cpu_to_gpu", text)
 
+    def test_online_reuse_consumes_creation_digest_instead_of_rehashing(self):
+        import inspect
+
+        source = inspect.getsource(RealCacheBlendA800Executor._reuse_generate)
+        self.assertIn("fixture.canonical_variant_digests", source)
+        self.assertIn(
+            "online immutable execution requires the Artifact-creation digest",
+            source,
+        )
+        self.assertIn("if prefix_layers and full_integrity", source)
+        self.assertIn('"per_request_artifact_full_digest_computed": False', source)
+
     def test_prefix_hit_uses_scheduler_metadata_not_timing(self):
         text = Path("src/probekv/v6_a800_executor.py").read_text(
             encoding="utf-8"

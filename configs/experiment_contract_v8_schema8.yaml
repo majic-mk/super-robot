@@ -64,6 +64,10 @@ repair_ratios:
   adaptive_controller_scope: request_level_joint_ratio_vector
   independent_per_segment_adaptive_choice_forbidden: true
   adaptive_v1_search: bounded_profile_candidates
+  timing_equivalence_absolute_ms: 0.02
+  timing_equivalence_relative: 0.01
+  timing_equivalent_choice: prefer_more_repair
+  runtime_execution: joint_plan_drives_layerwise_no_reentry_support
   full_cartesian_ratio_oracle: development_only
   initial_cap: 0.15
   reentry: none

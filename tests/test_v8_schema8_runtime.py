@@ -13,10 +13,17 @@ from probekv.v8_schema8_barrier import close_dense_selection_barrier
 from probekv.v8_schema8_contracts import RepairRatioScope
 from probekv.v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from probekv.v8_schema8_repair import (
+    JointLoadRecomputeAwareRepairController,
     JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
     choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
+)
+from probekv.v8_schema8_profile import (
+    RuntimeCostProfileV8,
+    Schema8ProfileProvenance,
+    build_repair_policy_profile_v8,
+    build_runtime_cost_profile_v8,
 )
 from probekv.v8_schema8_storage import Schema8TieredBackingManager
 from probekv.v8_schema8_storage import Schema8TieredReplicaCoordinator
@@ -339,6 +346,97 @@ class Schema8RepairRatioTests(unittest.TestCase):
         self.assertEqual(decision.selected_candidate_id, "high-tie")
         self.assertEqual(decision.ratio_map(), {"c1": 0.15, "c2": 0.15})
 
+    def test_profile_bound_controller_balances_joint_io_and_repair(self):
+        common = dict(
+            code_commit="a" * 40,
+            cacheblend_patch_sha256="b" * 64,
+            model_id="mistral",
+            model_revision="c" * 40,
+            tokenizer_hash="d" * 64,
+            gpu_uuid="GPU-real",
+            measurement_sha256="e" * 64,
+            frozen=True,
+        )
+        repair_profile = build_repair_policy_profile_v8(
+            provenance=Schema8ProfileProvenance(
+                profile_kind="repair_policy", **common
+            ),
+            policy="load_recompute_aware_gradual",
+            scope="per_segment_load_aware",
+            certified_floor=0.10,
+            shared_ratio_by_age={0: 0.15, 1: 0.12},
+            no_reentry_oracle_recall=0.99,
+            minimum_no_reentry_recall=0.95,
+            adaptive_candidate_templates=(
+                "uniform_cap", "uniform_floor", "single_segment_load_priority"
+            ),
+            timing_equivalence_absolute_ms=0.05,
+            timing_equivalence_relative=0.0,
+        )
+        runtime_profile = build_runtime_cost_profile_v8(
+            provenance=Schema8ProfileProvenance(
+                profile_kind="runtime_cost", **common
+            ),
+            category_measurements={
+                name: ({"cuda_event_timing": True},)
+                for name in RuntimeCostProfileV8.REQUIRED_CATEGORIES
+            },
+        )
+        controller = JointLoadRecomputeAwareRepairController(
+            repair_policy_profile=repair_profile,
+            runtime_cost_profile=runtime_profile,
+        )
+        decision = controller.choose_layer(
+            candidates=(
+                JointRepairRatioCandidate(
+                    "repair-10", 4, (("c1", 0.10), ("c2", 0.10)),
+                    5.0, 4.96, 1.0, template_id="uniform_floor",
+                ),
+                JointRepairRatioCandidate(
+                    "repair-15", 4, (("c1", 0.15), ("c2", 0.15)),
+                    5.0, 5.04, 1.0, template_id="uniform_cap",
+                ),
+            ),
+            expected_segment_ids=("c1", "c2"),
+            previous_ratio_by_segment={"c1": 0.15, "c2": 0.15},
+        )
+        # 6.00 vs 6.04 ms is within the frozen 0.05-ms profile resolution,
+        # so quality-first tie handling retains the larger repair support.
+        self.assertEqual(decision.selected_candidate_id, "repair-15")
+        self.assertEqual(decision.timing_equivalence_tolerance_ms, 0.05)
+        with self.assertRaisesRegex(ValueError, "may not increase"):
+            controller.choose_layer(
+                candidates=(
+                    JointRepairRatioCandidate(
+                        "illegal", 5, (("c1", 0.15), ("c2", 0.12)),
+                        1.0, 1.0, 0.0,
+                        template_id="single_segment_load_priority",
+                    ),
+                ),
+                expected_segment_ids=("c1", "c2"),
+                previous_ratio_by_segment={"c1": 0.12, "c2": 0.12},
+            )
+        plan = controller.build_plan(
+            candidates_by_layer={
+                3: (
+                    JointRepairRatioCandidate(
+                        "l3-cap", 3, (("c1", 0.15), ("c2", 0.15)),
+                        8.0, 5.0, 1.0, template_id="uniform_cap",
+                    ),
+                ),
+                4: (
+                    JointRepairRatioCandidate(
+                        "l4-mixed", 4, (("c1", 0.12), ("c2", 0.10)),
+                        3.0, 3.1, 1.0,
+                        template_id="single_segment_load_priority",
+                    ),
+                ),
+            },
+            first_selective_reuse_layer_by_segment={"c1": 3, "c2": 3},
+        )
+        self.assertEqual(plan.ratios_for_layer(3), {"c1": 0.15, "c2": 0.15})
+        self.assertEqual(plan.ratios_for_layer(4), {"c1": 0.12, "c2": 0.10})
+
 
 class Schema8TieredBackingTests(unittest.TestCase):
     def test_cpu_lru_demotes_and_ssd_lru_deletes(self):
@@ -435,6 +533,7 @@ class Schema8TieredBackingTests(unittest.TestCase):
             backing_manager=manager, lease_manager=leases
         )
         coordinator.register("source", size_bytes=10)
+        request_epoch = manager.record_request_use("source")
         destination = V8ReplicaResource(
             "ssd", "source", "artifact", KVLocation.SSD,
             1, 1, 10, False, lifecycle=ReplicaLifecycle.ALLOCATING,
@@ -450,6 +549,25 @@ class Schema8TieredBackingTests(unittest.TestCase):
         self.assertTrue(destination.is_backing)
         self.assertEqual(destination.lifecycle, ReplicaLifecycle.READY)
         self.assertEqual(manager.entry("source").tier, KVLocation.SSD)
+        self.assertEqual(
+            manager.entry("source").last_request_use_epoch,
+            request_epoch,
+        )
+
+    def test_migration_churn_does_not_refresh_request_lru(self):
+        manager = Schema8TieredBackingManager(
+            cpu_capacity_bytes=20, ssd_capacity_bytes=20
+        )
+        manager.register("cold", size_bytes=10)
+        manager.register("hot", size_bytes=10)
+        cold_epoch = manager.entry("cold").last_request_use_epoch
+        manager.record_request_use("hot")
+        # A background policy transition keeps the cold Source's epoch.  It is
+        # therefore still the deterministic LRU victim under later pressure.
+        manager._demote_cpu_victim(manager.entry("cold"), ())
+        self.assertEqual(manager.entry("cold").last_request_use_epoch, cold_epoch)
+        manager.register("new", size_bytes=10)
+        self.assertEqual(manager.entry("cold").tier, KVLocation.SSD)
 
     def test_failed_backing_migration_keeps_original_authoritative(self):
         leases = V8LeaseManager()

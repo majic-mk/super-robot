@@ -231,6 +231,12 @@ class V6H1CaseRuntime:
                     for layers in variants
                 ),),
                 current_layers=(current_layers,),
+                canonical_variant_digests=(tuple(
+                    TorchLayerwiseSourceLoader._digest(
+                        self.executor.torch, layers
+                    )
+                    for layers in variants
+                ),),
                 selection_state_separate_backing_verified=True,
             ),
             prefix_tokens=len(prefix),

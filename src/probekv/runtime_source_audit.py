@@ -373,6 +373,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
                 "class Schema8TieredReplicaCoordinator",
                 "begin_backing_migration",
                 "finish_backing_migration",
+                "last_request_use_epoch",
                 "evict_ssd_lru_source",
             ),
         ),
@@ -381,6 +382,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             (
                 "class MultiSegmentRepairRatioPlan",
                 "class JointRepairRatioDecision",
+                "class JointLoadRecomputeAwareRepairController",
                 "choose_request_level_adaptive_ratio",
                 "validate_union_repair_ratio_plan",
             ),
@@ -413,8 +415,10 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             (
                 "CacheBlendV8Schema8OnlineEngine",
                 "configure_dense_selection_barrier",
+                "measured_repair_positions",
                 "authorize_final_commit",
                 "runtime_schema_version == 8",
+                "online immutable execution requires the Artifact-creation digest",
             ),
         ),
         (
@@ -457,6 +461,9 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
         "verified_backing_migration": True,
         "repair_ratio_scope_explicit": True,
         "request_level_joint_adaptive_ratio": True,
+        "runtime_joint_ratio_plan_execution": True,
+        "request_lru_migration_preserves_epoch": True,
+        "online_artifact_digest_creation_time_only": True,
         "gpu_runtime_qualified": False,
         "failures": failures,
     }

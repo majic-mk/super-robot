@@ -981,6 +981,8 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
         self.r1_endpoint_segment_ids: set[str] = set()
         self.r0_endpoint_segment_ids: set[str] = set()
         self.measurement_only_admission_segment_ids: set[str] = set()
+        self.repair_metric = RepairMetric.WINNER_V_ONLY
+        self.adaptive_ratio_decision_by_layer: Dict[int, Any] = {}
 
     @staticmethod
     def capabilities() -> Mapping[str, bool]:
@@ -995,6 +997,7 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
                 "cpu_and_ssd_lru": True,
                 "repair_ratio_scope_explicit": True,
                 "request_level_joint_adaptive_ratio": True,
+                "runtime_joint_ratio_plan_execution": True,
                 "legacy_ac_policy_removed_from_main": True,
             }
         )
@@ -1046,6 +1049,88 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
         if plan_segments != set(self.selection_barrier.reuse_segment_ids):
             raise RuntimeError("repair ratio plan must cover every reusable Segment")
         self.repair_ratio_plan = plan
+        self.adaptive_ratio_decision_by_layer = {
+            decision.layer_1based: decision
+            for decision in plan.adaptive_joint_decisions
+        }
+
+    def configure_repair_metric(self, metric: RepairMetric) -> None:
+        if self.session is not None and self.session.commits:
+            raise RuntimeError("repair metric must be frozen before reuse commit")
+        self.repair_metric = RepairMetric(metric)
+
+    @staticmethod
+    def _rank_repair_positions(
+        measurement: WinnerRepairCheckMeasurement,
+        desired_count: int,
+    ) -> Tuple[int, ...]:
+        if not 0 <= desired_count <= len(measurement.absolute_positions):
+            raise ValueError("repair support count is outside the measured Segment")
+        ranked = sorted(
+            zip(measurement.absolute_positions, measurement.drift_scores),
+            key=lambda row: (-float(row[1]), int(row[0])),
+        )
+        return tuple(sorted(int(position) for position, _ in ranked[:desired_count]))
+
+    def measured_repair_positions(
+        self,
+        *,
+        segment_id: str,
+        repair_check_completed_depth: int,
+        desired_count: int,
+        support_positions: Optional[Sequence[int]] = None,
+    ) -> Tuple[int, ...]:
+        measurement = self.observe_winner_repair_check(
+            segment_id=segment_id,
+            metric=self.repair_metric,
+            repair_check_completed_depth=repair_check_completed_depth,
+            support_positions=support_positions,
+        )
+        return self._rank_repair_positions(measurement, desired_count)
+
+    def _apply_planned_gradual_support(self, consumer_layer: int) -> None:
+        """Apply one profile-bound joint ratio vector before its layer.
+
+        Every Segment may receive a different ratio, but all ratios come from
+        the same request-level decision.  The measured pool is restricted to
+        the previous support, preserving CacheBlend-style no re-entry.
+        """
+
+        if self.session is None or self.repair_ratio_plan is None:
+            return
+        ratios = self.repair_ratio_plan.ratios_for_layer(consumer_layer)
+        if not ratios:
+            return
+        for segment_id in sorted(self.session.commits):
+            commit = self.session.commits[segment_id]
+            if consumer_layer <= commit.boundary or segment_id not in ratios:
+                continue
+            previous = self.session.current_repair_positions_by_segment[segment_id]
+            total_rows = len(self.tickets[segment_id].segment_positions)
+            desired = min(total_rows, int(math.ceil(ratios[segment_id] * total_rows)))
+            if desired > len(previous):
+                raise RuntimeError("joint ratio plan attempted repair-token re-entry")
+            if desired == len(previous):
+                continue
+            updated = self.measured_repair_positions(
+                segment_id=segment_id,
+                repair_check_completed_depth=consumer_layer - 1,
+                desired_count=desired,
+                support_positions=previous,
+            )
+            self.shrink_gradual_repair_support(
+                segment_id=segment_id,
+                consumer_layer=consumer_layer,
+                repair_positions=updated,
+            )
+
+    def advance_to_layer(self, layer: int) -> None:
+        if self.session is None:
+            raise RuntimeError("advance requires an active request")
+        while self.session.current_layer < layer:
+            consumer = self.session.current_layer + 1
+            self._apply_planned_gradual_support(consumer)
+            super().advance_to_layer(consumer)
 
     def authorize_final_commit(
         self,

@@ -231,25 +231,34 @@ exactly 3 otherwise.  No global A/C commit policy participates in this main
 selection phase.
 
 Gate1 compares one frozen winner against the dense path from the same current
-boundary.  It includes the dense repair-check, support construction, and each
-layer's `max(load, repair) + non-overlap` critical-path cost.  Its threshold is
-`gamma1=1.0`: it rejects only a Source with no predicted positive saving.  It
-does not replace final admission.  Immediately before the first irreversible
-selective layer, FinalCommitAdmission uses actual sunk time and the complete
-request joint future critical path and still requires
+boundary. It is only an optimistic Source-local marginal lower-bound check:
+unavoidable support construction, visible winner-load marginal cost and
+marginal repair cost are compared with dense work from the same origin. The
+already sunk dense repair check, base Transformer timeline, request union
+repair kernel and aggregate copy stream are request-shared and are therefore
+not charged once per Segment. Its threshold is `gamma1=1.0`: it rejects only a
+Source with no predicted positive saving. It does not replace final admission.
+Immediately before the first irreversible selective layer,
+FinalCommitAdmission uses actual sunk time and the complete request joint
+future critical path and still requires
 `T_reuse <= 0.8 * T_dense-reference`.
 
 The backing policy does not keep permanent SSD, CPU, and GPU triples.  Each
 Artifact has one healthy backing in pinned CPU or SSD; a used SSD backing is
 promoted to CPU when possible, CPU pressure demotes the least-recently-used
 idle backing to SSD, and SSD pressure deletes the least-recently-used idle
-Source.  GPU remains a transient winner-only hot Replica.
+Source. GPU remains a transient winner-only hot Replica. The LRU key is
+`last_request_use_epoch`; only a real request's full-KV use updates it. Tier
+migration and background copying preserve it.
 
 Repair ratio equality is policy-specific.  `fixed_15` uses 0.15 for every
 Segment and layer.  `static_gradual` uses one schedule indexed by relative
 repair age, so Segments with different reuse boundaries may legitimately have
-different ratios at the same absolute layer.  `load_recompute_aware_gradual`
-may choose different per-Segment ratios only from a frozen certified Profile.
+different ratios at the same absolute layer. `load_recompute_aware_gradual`
+may choose different per-Segment ratios only as one frozen-Profile-backed
+request-level vector. The controller minimizes
+`max(aggregate_load, union_repair) + nonoverlap`; timing-equivalent candidates
+prefer more repair, and every later layer may only shrink the previous support.
 
 ## Meaning of the bandwidth inequality
 

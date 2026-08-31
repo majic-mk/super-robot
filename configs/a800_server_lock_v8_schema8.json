@@ -29,6 +29,9 @@
     "backing_tier_policy": "cpu_preferred_single_backing",
     "cpu_eviction_policy": "exclusive_backing_lru",
     "ssd_eviction_policy": "exclusive_backing_lru",
+    "lru_epoch_semantics": "last_real_request_use_migration_preserves_epoch",
+    "adaptive_repair_timing_equivalence_absolute_ms": 0.02,
+    "adaptive_repair_timing_equivalence_relative": 0.01,
     "selector_depth_profile_frozen": false,
     "repair_policy_profile_frozen": false,
     "runtime_cost_profile_frozen": false,
@@ -42,6 +45,7 @@
       "cpu_and_ssd_lru",
       "repair_ratio_scope_explicit",
       "request_level_joint_adaptive_ratio",
+      "runtime_joint_ratio_plan_execution",
       "full_kv_transfer_lease_enforced"
     ],
     "run_140_job_qualification": false,

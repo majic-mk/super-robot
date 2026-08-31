@@ -18,6 +18,7 @@ from .cacheblend_v6_online_engine import (
     CacheBlendV8Schema7OnlineEngine,
     CacheBlendV8Schema8OnlineEngine,
     TorchLayerwiseSourceLoader,
+    integrity_mode_performs_full_digest,
 )
 from .contracts import KVLocation
 from .model_adapters import ResumableModelSpec
@@ -25,6 +26,7 @@ from .v6_a800_jobs import V6A800Job, V6A800JobKind
 from .v6_qualification_worker import QualificationJobResult
 from .v7_contracts import CanonicalKVArtifact, PhysicalReplica, ReplicaLocator
 from .v7_planner import repair_token_count
+from .v8_schema7_contracts import RepairMetric
 
 
 def query_single_visible_gpu_uuid() -> str:
@@ -58,6 +60,9 @@ class RuntimeFixture:
     ]
     # segment -> Transformer layer -> current request (pre-RoPE K, V)
     current_layers: Tuple[Tuple[Tuple[Any, Any], ...], ...]
+    # Artifact-creation-time logical digests. Formal online execution consumes
+    # these identities and must not hash the complete Source again per request.
+    canonical_variant_digests: Tuple[Tuple[str, ...], ...] = ()
     exact_prefix_tokens: int = 0
     exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
     selection_state_separate_backing_verified: bool = False
@@ -606,6 +611,13 @@ class RealCacheBlendA800Executor:
             canonical_variants=tuple(tuple(rows) for rows in per_segment),
             selection_variants=selection_variants,
             current_layers=tuple(tuple(rows) for rows in current_layers),
+            canonical_variant_digests=tuple(
+                tuple(
+                    TorchLayerwiseSourceLoader._digest(self.torch, layers)
+                    for layers in variants
+                )
+                for variants in per_segment
+            ),
             exact_prefix_tokens=len(prefix_ids),
             exact_prefix_layers=tuple(exact_prefix_layers),
             selection_state_separate_backing_verified=separate_selection_backing,
@@ -848,6 +860,10 @@ class RealCacheBlendA800Executor:
         stop_token_ids: Sequence[int] = (),
         exact_prefix_tokens: int = 0,
         exact_prefix_layers: Sequence[Tuple[Any, Any]] = (),
+        repair_ratio_plan: Any = None,
+        repair_metric: RepairMetric = RepairMetric.WINNER_V_ONLY,
+        adaptive_repair_controller: Any = None,
+        adaptive_candidates_by_layer: Mapping[int, Sequence[Any]] | None = None,
     ) -> GenerationTrace:
         prefix_tokens = int(exact_prefix_tokens)
         if prefix_tokens < 0 or prefix_tokens > len(fixture.prompt_ids):
@@ -857,9 +873,12 @@ class RealCacheBlendA800Executor:
             raise ValueError("exact Prefix Cache shadow is incomplete")
         if not prefix_tokens and prefix_layers:
             raise ValueError("prefix shadow requires a native Prefix Cache hit")
+        full_integrity = integrity_mode_performs_full_digest(
+            self.source_loader.integrity_mode
+        )
         prefix_digest_before = (
             TorchLayerwiseSourceLoader._digest(self.torch, prefix_layers)
-            if prefix_layers else ""
+            if prefix_layers and full_integrity else ""
         )
         tensors = self._prepare(
             fixture, (), is_prompt=True, reuse=True, request_id="reuse-prefill"
@@ -887,6 +906,8 @@ class RealCacheBlendA800Executor:
                 attention_metadata=attention,
                 working_kv=self.kv_caches,
             )
+            if self.runtime_schema_version == 8:
+                engine.configure_repair_metric(RepairMetric(repair_metric))
             observed_k0 = None
             observed_kd = None
             if self.protocol_version == 8:
@@ -906,10 +927,18 @@ class RealCacheBlendA800Executor:
                     raise ValueError("locked winner variant is unavailable")
                 source_id = "s%d-v%d" % (index, winner_variant)
                 canonical_layers = variants[winner_variant]
-                logical = (
-                    TorchLayerwiseSourceLoader._digest(self.torch, canonical_layers)
-                    if self.protocol_version in {7, 8} else ""
-                )
+                logical = ""
+                if self.protocol_version in {7, 8}:
+                    try:
+                        logical = fixture.canonical_variant_digests[index][winner_variant]
+                    except (IndexError, TypeError):
+                        if not full_integrity:
+                            raise RuntimeError(
+                                "online immutable execution requires the Artifact-creation digest"
+                            ) from None
+                        logical = TorchLayerwiseSourceLoader._digest(
+                            self.torch, canonical_layers
+                        )
                 if self.runtime_schema_version >= 6:
                     # Qualification fixtures may reuse local indices while
                     # containing different token/context states.  The digest
@@ -1081,21 +1110,45 @@ class RealCacheBlendA800Executor:
                         validate_union_repair_ratio_plan,
                     )
 
-                    plan = validate_union_repair_ratio_plan(
-                        scope=RepairRatioScope.UNIFORM_FIXED,
-                        rows=tuple(
-                            SegmentLayerRepairRatio(
-                                "c%d" % index,
-                                int(boundaries[index]),
-                                int(boundaries[index]),
-                                float(ratio),
+                    plan = repair_ratio_plan
+                    if plan is not None and adaptive_repair_controller is not None:
+                        raise ValueError(
+                            "provide either an admitted repair plan or its controller"
+                        )
+                    if adaptive_repair_controller is not None:
+                        if not adaptive_candidates_by_layer:
+                            raise ValueError(
+                                "adaptive runtime requires profiled layer candidates"
                             )
-                            for index in expected_segments
-                        ),
-                        certified_floor=float(ratio),
-                        profile_frozen=False,
-                        certified_ratio_candidates=(float(ratio),),
-                    )
+                        plan = adaptive_repair_controller.build_plan(
+                            candidates_by_layer=adaptive_candidates_by_layer,
+                            first_selective_reuse_layer_by_segment={
+                                "c%d" % index: int(boundaries[index])
+                                for index in expected_segments
+                            },
+                        )
+                    if plan is None:
+                        plan = validate_union_repair_ratio_plan(
+                            scope=RepairRatioScope.UNIFORM_FIXED,
+                            rows=tuple(
+                                SegmentLayerRepairRatio(
+                                    "c%d" % index,
+                                    int(boundaries[index]),
+                                    int(boundaries[index]),
+                                    float(ratio),
+                                )
+                                for index in expected_segments
+                            ),
+                            certified_floor=float(ratio),
+                            profile_frozen=False,
+                            certified_ratio_candidates=(float(ratio),),
+                        )
+                    if {
+                        row.segment_id for row in plan.rows
+                    } != set(segment_ids):
+                        raise ValueError(
+                            "runtime repair plan differs from committed Segments"
+                        )
                     engine.install_repair_ratio_plan(plan)
                     engine.authorize_final_commit(
                         segment_ids,
@@ -1107,11 +1160,28 @@ class RealCacheBlendA800Executor:
                 for index, positions in enumerate(fixture.segment_positions):
                     if boundaries[index] != boundary:
                         continue
-                    repair_positions = tuple(
-                        int(value) for value in supplied_positions.get(
-                            index, self._repair_positions(positions, ratio)
+                    if index in supplied_positions:
+                        repair_positions = tuple(
+                            int(value) for value in supplied_positions[index]
                         )
-                    )
+                    elif (
+                        self.runtime_schema_version == 8
+                        and 0.0 < ratio < 1.0
+                    ):
+                        admitted_ratios = engine.repair_ratio_plan.ratios_for_layer(
+                            int(boundary)
+                        )
+                        desired_count = min(
+                            len(positions),
+                            int(math.ceil(admitted_ratios["c%d" % index] * len(positions))),
+                        )
+                        repair_positions = engine.measured_repair_positions(
+                            segment_id="c%d" % index,
+                            repair_check_completed_depth=int(boundary) - 1,
+                            desired_count=desired_count,
+                        )
+                    else:
+                        repair_positions = self._repair_positions(positions, ratio)
                     if not set(repair_positions).issubset(set(positions)):
                         raise ValueError("repair position lies outside its Segment")
                     engine.commit_ready_segment(
@@ -1147,7 +1217,7 @@ class RealCacheBlendA800Executor:
         )
         prefix_digest_after = (
             TorchLayerwiseSourceLoader._digest(self.torch, prefix_layers)
-            if prefix_layers else ""
+            if prefix_layers and full_integrity else ""
         )
         repair_rows = {
             position
@@ -1182,6 +1252,10 @@ class RealCacheBlendA800Executor:
                 self.runtime_schema_version == 8
                 and force_nonpaper_measurement_admission
             ),
+            "per_request_prefix_full_digest_verified": bool(
+                prefix_layers and full_integrity
+            ),
+            "per_request_artifact_full_digest_computed": False,
             "layer_audit": [
                 {
                     key: list(value) if isinstance(value, tuple) else value

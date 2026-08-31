@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from .v8_schema8_contracts import RepairRatioScope
+
+if TYPE_CHECKING:
+    from .v8_schema8_profile import RepairPolicyProfileV8, RuntimeCostProfileV8
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,7 @@ class JointRepairRatioCandidate:
     aggregate_load_upper_ms: float
     union_repair_upper_ms: float
     nonoverlap_upper_ms: float
+    template_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.candidate_id or self.layer_1based < 1:
@@ -73,6 +77,7 @@ class JointRepairRatioDecision:
     candidate_set_digest: str
     repair_policy_profile_sha256: str
     runtime_cost_profile_sha256: str
+    timing_equivalence_tolerance_ms: float = 0.0
 
     def __post_init__(self) -> None:
         if self.layer_1based < 1 or not self.selected_candidate_id:
@@ -85,6 +90,8 @@ class JointRepairRatioDecision:
             raise ValueError("adaptive ratio decision requires RepairPolicyProfile SHA")
         if len(self.runtime_cost_profile_sha256) != 64:
             raise ValueError("adaptive ratio decision requires RuntimeCostProfile SHA")
+        if self.timing_equivalence_tolerance_ms < 0:
+            raise ValueError("timing-equivalence tolerance must be non-negative")
 
     def ratio_map(self) -> Mapping[str, float]:
         return dict(self.ratios_by_segment)
@@ -96,6 +103,8 @@ def choose_request_level_adaptive_ratio(
     expected_segment_ids: Sequence[str],
     repair_policy_profile_sha256: str,
     runtime_cost_profile_sha256: str,
+    timing_equivalence_absolute_ms: float = 0.0,
+    timing_equivalence_relative: float = 0.0,
 ) -> JointRepairRatioDecision:
     """Choose one bounded ratio vector using the request union critical path.
 
@@ -116,15 +125,28 @@ def choose_request_level_adaptive_ratio(
             raise ValueError("joint ratio candidates must belong to one layer")
         if {segment_id for segment_id, _ in row.ratios_by_segment} != expected:
             raise ValueError("joint ratio candidate Segment inventory differs")
-    ordered = sorted(
-        rows,
+    if min(timing_equivalence_absolute_ms, timing_equivalence_relative) < 0:
+        raise ValueError("timing-equivalence tolerances must be non-negative")
+    best_cost = min(row.request_layer_critical_path_upper_ms for row in rows)
+    tolerance = max(
+        float(timing_equivalence_absolute_ms),
+        float(timing_equivalence_relative) * best_cost,
+    )
+    # If predicted completion is indistinguishable at the frozen profile's
+    # resolution, retain more repair work for quality instead of shaving an
+    # unmeasurable amount of TTFT.
+    equivalent = tuple(
+        row
+        for row in rows
+        if row.request_layer_critical_path_upper_ms <= best_cost + tolerance + 1e-12
+    )
+    selected = min(
+        equivalent,
         key=lambda row: (
-            row.request_layer_critical_path_upper_ms,
             -sum(float(ratio) for _, ratio in row.ratios_by_segment),
             row.candidate_id,
         ),
     )
-    selected = ordered[0]
     digest_payload = [
         {
             "candidate_id": row.candidate_id,
@@ -133,6 +155,7 @@ def choose_request_level_adaptive_ratio(
             "aggregate_load_upper_ms": row.aggregate_load_upper_ms,
             "union_repair_upper_ms": row.union_repair_upper_ms,
             "nonoverlap_upper_ms": row.nonoverlap_upper_ms,
+            "template_id": row.template_id,
         }
         for row in sorted(rows, key=lambda row: row.candidate_id)
     ]
@@ -149,7 +172,172 @@ def choose_request_level_adaptive_ratio(
         candidate_set_digest,
         repair_policy_profile_sha256,
         runtime_cost_profile_sha256,
+        tolerance,
     )
+
+
+class JointLoadRecomputeAwareRepairController:
+    """Profile-bound request-level I/O/repair balancing controller.
+
+    The controller never chooses ratios independently per Segment.  A caller
+    supplies the bounded candidate vectors measured/profiled for the current
+    request layer; this class enforces the certified floor/cap, no-reentry
+    monotonicity and profile provenance before choosing the union critical
+    path.  Fixed15 and static-gradual remain separate plans and do not call it.
+    """
+
+    def __init__(
+        self,
+        *,
+        repair_policy_profile: "RepairPolicyProfileV8",
+        runtime_cost_profile: "RuntimeCostProfileV8",
+    ) -> None:
+        if repair_policy_profile.policy != "load_recompute_aware_gradual":
+            raise ValueError("joint adaptive controller requires the adaptive policy")
+        if not repair_policy_profile.provenance.frozen:
+            raise ValueError("joint adaptive controller requires a frozen repair Profile")
+        if not runtime_cost_profile.provenance.frozen:
+            raise ValueError("joint adaptive controller requires a frozen runtime Profile")
+        if (
+            repair_policy_profile.provenance.model_id
+            != runtime_cost_profile.provenance.model_id
+            or repair_policy_profile.provenance.model_revision
+            != runtime_cost_profile.provenance.model_revision
+            or repair_policy_profile.provenance.code_commit
+            != runtime_cost_profile.provenance.code_commit
+        ):
+            raise ValueError("repair and runtime Profiles have incompatible provenance")
+        self.repair_policy_profile = repair_policy_profile
+        self.runtime_cost_profile = runtime_cost_profile
+        self.timing_equivalence_absolute_ms = float(
+            repair_policy_profile.timing_equivalence_absolute_ms
+        )
+        self.timing_equivalence_relative = float(
+            repair_policy_profile.timing_equivalence_relative
+        )
+
+    def choose_layer(
+        self,
+        *,
+        candidates: Sequence[JointRepairRatioCandidate],
+        expected_segment_ids: Sequence[str],
+        previous_ratio_by_segment: Optional[Mapping[str, float]] = None,
+    ) -> JointRepairRatioDecision:
+        previous = dict(previous_ratio_by_segment or {})
+        expected = set(str(value) for value in expected_segment_ids)
+        if previous and set(previous) != expected:
+            raise ValueError("previous adaptive ratios differ from active Segments")
+        floor = float(self.repair_policy_profile.certified_floor)
+        certified = {0.10, 0.12, 0.15}
+        allowed_templates = set(
+            self.repair_policy_profile.adaptive_candidate_templates
+        )
+        filtered = []
+        for candidate in candidates:
+            if candidate.template_id not in allowed_templates:
+                raise ValueError(
+                    "adaptive candidate is not emitted by a frozen template"
+                )
+            ratios = dict(candidate.ratios_by_segment)
+            if set(ratios) != expected:
+                raise ValueError("adaptive candidate Segment inventory differs")
+            if any(
+                ratio < floor - 1e-12
+                or ratio > 0.15 + 1e-12
+                or all(abs(ratio - value) > 1e-12 for value in certified)
+                for ratio in ratios.values()
+            ):
+                raise ValueError("adaptive candidate is outside the certified ratio grid")
+            if (
+                candidate.template_id == "uniform_floor"
+                and any(abs(ratio - floor) > 1e-12 for ratio in ratios.values())
+            ):
+                raise ValueError("uniform-floor template emitted a non-floor ratio")
+            if (
+                candidate.template_id == "uniform_cap"
+                and any(abs(ratio - 0.15) > 1e-12 for ratio in ratios.values())
+            ):
+                raise ValueError("uniform-cap template emitted a non-cap ratio")
+            if any(
+                segment_id in previous
+                and ratio > previous[segment_id] + 1e-12
+                for segment_id, ratio in ratios.items()
+            ):
+                raise ValueError("adaptive repair ratio may not increase by layer")
+            filtered.append(candidate)
+        return choose_request_level_adaptive_ratio(
+            candidates=tuple(filtered),
+            expected_segment_ids=tuple(sorted(expected)),
+            repair_policy_profile_sha256=(
+                self.repair_policy_profile.profile_sha256
+            ),
+            runtime_cost_profile_sha256=self.runtime_cost_profile.profile_sha256,
+            timing_equivalence_absolute_ms=self.timing_equivalence_absolute_ms,
+            timing_equivalence_relative=self.timing_equivalence_relative,
+        )
+
+    def build_plan(
+        self,
+        *,
+        candidates_by_layer: Mapping[int, Sequence[JointRepairRatioCandidate]],
+        first_selective_reuse_layer_by_segment: Mapping[str, int],
+    ) -> "MultiSegmentRepairRatioPlan":
+        """Build the executable no-reentry plan in increasing layer order."""
+
+        first_layers = {
+            str(segment_id): int(layer)
+            for segment_id, layer in first_selective_reuse_layer_by_segment.items()
+        }
+        if not first_layers:
+            raise ValueError("adaptive plan requires reusable Segments")
+        missing_boundary_layers = {
+            layer for layer in first_layers.values()
+            if layer not in {int(value) for value in candidates_by_layer}
+        }
+        if missing_boundary_layers:
+            raise ValueError("adaptive plan misses a Segment's first reuse layer")
+        previous = {segment_id: 0.15 for segment_id in first_layers}
+        decisions = []
+        rows = []
+        for layer in sorted(int(value) for value in candidates_by_layer):
+            active = tuple(
+                sorted(
+                    segment_id
+                    for segment_id, first_layer in first_layers.items()
+                    if layer >= first_layer
+                )
+            )
+            if not active:
+                raise ValueError("adaptive candidates precede all reuse boundaries")
+            decision = self.choose_layer(
+                candidates=candidates_by_layer[layer],
+                expected_segment_ids=active,
+                previous_ratio_by_segment={
+                    segment_id: previous[segment_id] for segment_id in active
+                },
+            )
+            ratios = decision.ratio_map()
+            for segment_id in active:
+                ratio = float(ratios[segment_id])
+                rows.append(
+                    SegmentLayerRepairRatio(
+                        segment_id,
+                        layer,
+                        first_layers[segment_id],
+                        ratio,
+                    )
+                )
+                previous[segment_id] = ratio
+            decisions.append(decision)
+        if not rows:
+            raise ValueError("adaptive plan has no profiled layers")
+        return validate_union_repair_ratio_plan(
+            scope=RepairRatioScope.PER_SEGMENT_LOAD_AWARE,
+            rows=tuple(rows),
+            certified_floor=self.repair_policy_profile.certified_floor,
+            profile_frozen=True,
+            adaptive_joint_decisions=tuple(decisions),
+        )
 
 
 @dataclass(frozen=True)

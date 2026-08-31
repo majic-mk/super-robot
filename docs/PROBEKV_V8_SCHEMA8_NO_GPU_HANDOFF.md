@@ -33,7 +33,11 @@ Storage has one backing copy per Artifact, not three permanent tier copies.
 Pinned CPU is preferred after a Source is used.  CPU LRU demotes an idle source
 to SSD.  SSD LRU removes the complete idle Source when SSD is full.  A leased,
 copying, or executing Source cannot be selected as a victim.  GPU replicas are
-transient winner-only copies.
+transient winner-only copies.  The eviction key is a single
+`last_request_use_epoch` on the Source backing: only a real full-KV request use
+refreshes it.  CPU/SSD migration, relocation, SelectionState comparison and
+background copying preserve the epoch, so migration churn cannot manufacture
+recency.
 
 The A800 sentinel must validate both barrier endpoints, Gate1 accounting,
 joint final admission, CPU/SSD LRU transitions, single-backing identity, and
@@ -61,6 +65,23 @@ vector using aggregate load and union-repair critical-path cost; independent
 per-Segment decisions are forbidden. Static gradual uses reuse age rather than
 absolute layer. The final 140-job matrix is generated only after all three
 Profile SHAs exist.
+
+The selected adaptive vector is now execution-visible.  Before each later
+Transformer layer the engine applies the Profile-bound request-level vector,
+re-measures winner-specific drift only inside the previous support, and may
+only shrink that support.  The controller minimizes
+`max(aggregate winner load, union repair) + non-overlap`; candidates within the
+Profile's timing-equivalence tolerance prefer the larger repair allocation.
+This keeps quality work that is hidden by I/O instead of using independent
+per-Segment schedules. `fixed_15` and `static_gradual` remain disjoint
+qualification baselines.
+
+Formal `online_immutable` execution consumes the logical digest frozen when
+the canonical Artifact is created. It does not recompute a complete Source or
+Prefix-shadow SHA256 per request. Full source/destination and prefix-shadow
+digests remain mandatory in qualification mode; a formal online fixture with
+no creation-time Artifact digest is rejected instead of silently hashing on
+the TTFT path.
 
 The Profile-bound 140-job qualification matrix always includes `fixed_15` as
 the correctness fallback plus the RepairPolicyProfile's selected online policy.

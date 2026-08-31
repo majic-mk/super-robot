@@ -14,7 +14,7 @@ class TieredBackingEntry:
     source_variant_id: str
     size_bytes: int
     tier: KVLocation
-    last_access_order: int
+    last_request_use_epoch: int
     backing_replica_id: str = ""
     busy: bool = False
 
@@ -76,7 +76,7 @@ class Schema8TieredBackingManager:
                     row.source_variant_id,
                     row.size_bytes,
                     row.tier,
-                    row.last_access_order,
+                    row.last_request_use_epoch,
                     row.backing_replica_id,
                     row.busy,
                 )
@@ -111,7 +111,7 @@ class Schema8TieredBackingManager:
                 key: {
                     "tier": row.tier.value,
                     "size_bytes": row.size_bytes,
-                    "last_access_order": row.last_access_order,
+                    "last_request_use_epoch": row.last_request_use_epoch,
                     "backing_replica_id": row.backing_replica_id,
                     "busy": row.busy,
                 }
@@ -151,7 +151,7 @@ class Schema8TieredBackingManager:
                 source_variant_id,
                 int(size_bytes),
                 target,
-                self._tick(),
+                self._tick() if initially_used else 0,
                 str(backing_replica_id),
             )
             self._entries[source_variant_id] = entry
@@ -165,12 +165,31 @@ class Schema8TieredBackingManager:
             raise
         return tuple(self._actions[start:])
 
+    def record_request_use(self, source_variant_id: str) -> int:
+        """Record one real request use, independently of physical migration.
+
+        Selection-state comparison, background tier migration, relocation and
+        eviction planning must not call this method.  A request that promotes
+        an SSD backing records its use once; the subsequent SSD->CPU copy keeps
+        the same epoch.
+        """
+
+        entry = self.entry(source_variant_id)
+        entry.last_request_use_epoch = self._tick()
+        return entry.last_request_use_epoch
+
     def access(self, source_variant_id: str) -> Tuple[TieredBackingAction, ...]:
+        """Record request use and produce the preferred backing-tier action.
+
+        This compatibility entry point models a request-triggered access.  Its
+        migration actions never refresh request recency a second time.
+        """
+
         entry = self.entry(source_variant_id)
         checkpoint = self._checkpoint()
         start = len(self._actions)
         try:
-            entry.last_access_order = self._tick()
+            self.record_request_use(source_variant_id)
             if entry.tier is KVLocation.PINNED_CPU:
                 self._actions.append(
                     TieredBackingAction(
@@ -197,7 +216,6 @@ class Schema8TieredBackingManager:
             # swap; failure must leave its pre-transition registry unchanged.
             entry = self.entry(source_variant_id)
             entry.tier = KVLocation.PINNED_CPU
-            entry.last_access_order = self._tick()
             self._actions.append(
                 TieredBackingAction(
                     "promote_ssd_to_cpu", source_variant_id,
@@ -233,7 +251,10 @@ class Schema8TieredBackingManager:
                     and not row.busy
                     and row.source_variant_id not in set(protected_source_ids)
                 ),
-                key=lambda row: (row.last_access_order, row.source_variant_id),
+                key=lambda row: (
+                    row.last_request_use_epoch,
+                    row.source_variant_id,
+                ),
             )
             if not candidates:
                 raise MemoryError("target tier is full and every LRU victim is busy")
@@ -448,5 +469,7 @@ class Schema8TieredReplicaCoordinator:
         entry = self.backing_manager.entry(ticket.source_variant_id)
         entry.tier = destination.tier
         entry.backing_replica_id = destination.replica_id
-        entry.last_access_order = self.backing_manager._tick()
+        # Migration is not a request use.  Preserve the Source-level recency
+        # across CPU<->SSD transitions so migration churn cannot make a cold
+        # Artifact appear hot.
         self.synchronize_busy()

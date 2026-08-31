@@ -98,6 +98,12 @@ def main() -> int:
             str(value)
             for value in repair_raw.get("adaptive_candidate_templates", ())
         ),
+        timing_equivalence_absolute_ms=float(
+            repair_raw.get("timing_equivalence_absolute_ms", 0.02)
+        ),
+        timing_equivalence_relative=float(
+            repair_raw.get("timing_equivalence_relative", 0.01)
+        ),
     )
     runtime = build_runtime_cost_profile_v8(
         provenance=Schema8ProfileProvenance(
