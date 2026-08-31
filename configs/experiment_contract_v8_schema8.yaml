@@ -13,20 +13,25 @@ source_selection:
   first_reuse_layer_if_any_d2: 3
 
 gate1:
-  scope: source_local_same_origin
+  scope: source_local_optimistic_marginal_feasibility
   gamma: 1.0
   includes:
-    - dense_repair_check
-    - repair_support_build
-    - layerwise_max_load_repair
-    - layerwise_nonoverlap
+    - unavoidable_support_build_marginal_lower_bound
+    - visible_load_marginal_lower_bound
+    - repair_marginal_lower_bound
   excludes:
-    - multi_segment_policy_wait
-    - final_request_admission
+    - common_dense_repair_check_sunk_cost
+    - base_transformer_compute
+    - request_union_repair_kernel
+    - request_aggregate_copy_critical_path
+    - final_request_joint_admission
 
 preparation_admission:
   economic_gate: false
   winner_only: true
+  d1_frozen_winner_detached_prefetch_before_barrier: true
+  prebarrier_prefetch_execution_visible: false
+  prebarrier_final_commit_forbidden: true
   requires_logical_source_lease: true
   requires_physical_replica_lease: true
   requires_hbm_reservation: true
@@ -37,12 +42,15 @@ final_commit_admission:
   actual_sunk_cost_required: true
   unresolved_segments: dense_fallback
   commit_irreversible: true
+  barrier_closed_required: true
+  ready_subset_incremental_commit: true
 
 storage:
   artifact_policy: single_canonical_lossless
   backing_policy: cpu_preferred_single_backing
-  cpu_eviction: per_replica_lru_demote_to_ssd
-  ssd_eviction: per_replica_lru_delete_source
+  lru_timestamp: one_last_request_use_epoch_per_exclusive_backing
+  cpu_eviction: exclusive_backing_lru_demote_to_ssd
+  ssd_eviction: exclusive_backing_lru_delete_source
   busy_replica_eviction_forbidden: true
   gpu_replica: transient_hot
   physical_transition_requires_verified_copy: true
@@ -53,6 +61,10 @@ repair_ratios:
   static_gradual: shared_relative_schedule
   load_recompute_aware_gradual: per_segment_load_aware
   adaptive_requires_frozen_profile: true
+  adaptive_controller_scope: request_level_joint_ratio_vector
+  independent_per_segment_adaptive_choice_forbidden: true
+  adaptive_v1_search: bounded_profile_candidates
+  full_cartesian_ratio_oracle: development_only
   initial_cap: 0.15
   reentry: none
 

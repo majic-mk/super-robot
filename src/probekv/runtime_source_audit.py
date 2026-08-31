@@ -343,6 +343,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             (
                 "class CacheBlendV8Schema8OnlineEngine",
                 "configure_dense_selection_barrier",
+                "admit_detached_preparation",
                 "admit_preparation",
                 "authorize_final_commit",
                 "selective reuse before FinalCommitAdmission is forbidden",
@@ -353,6 +354,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             (
                 "class Schema8BarrierRequestController",
                 "close_selection_barrier",
+                "apply_detached_preparation_admission",
                 "apply_final_commit_admission",
             ),
         ),
@@ -369,6 +371,8 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             (
                 "class Schema8TieredBackingManager",
                 "class Schema8TieredReplicaCoordinator",
+                "begin_backing_migration",
+                "finish_backing_migration",
                 "evict_ssd_lru_source",
             ),
         ),
@@ -376,7 +380,17 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
             repo / "src" / "probekv" / "v8_schema8_repair.py",
             (
                 "class MultiSegmentRepairRatioPlan",
+                "class JointRepairRatioDecision",
+                "choose_request_level_adaptive_ratio",
                 "validate_union_repair_ratio_plan",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_planner.py",
+            (
+                "class Gate1MarginalLowerBound",
+                "predicted_reuse_marginal_lower_ms",
+                "shared costs belong to request-level FinalCommitAdmission",
             ),
         ),
         (
@@ -436,10 +450,13 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
         "patch_files": [path.name for path in paths],
         "runtime_source_ready": not failures,
         "dense_d1_d2_barrier": True,
-        "gate1_positive_saving": True,
+        "d1_detached_winner_prefetch": True,
+        "gate1_optimistic_marginal_feasibility": True,
         "final_commit_joint_timeline": True,
         "cpu_ssd_lru": True,
+        "verified_backing_migration": True,
         "repair_ratio_scope_explicit": True,
+        "request_level_joint_adaptive_ratio": True,
         "gpu_runtime_qualified": False,
         "failures": failures,
     }

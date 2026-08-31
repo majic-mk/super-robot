@@ -879,10 +879,10 @@ class ExperimentConfig:
             raise ValueError("schema-v8 FinalCommitAdmission freezes gamma at 0.8")
         if self.backing_tier_policy != "cpu_preferred_single_backing":
             raise ValueError("schema-v8 requires CPU-preferred single backing")
-        if self.cpu_eviction_policy != "per_replica_lru":
-            raise ValueError("schema-v8 CPU eviction must use per-Replica LRU")
-        if self.ssd_eviction_policy != "per_replica_lru":
-            raise ValueError("schema-v8 SSD eviction must use per-Replica LRU")
+        if self.cpu_eviction_policy != "exclusive_backing_lru":
+            raise ValueError("schema-v8 CPU eviction must use exclusive-backing LRU")
+        if self.ssd_eviction_policy != "exclusive_backing_lru":
+            raise ValueError("schema-v8 SSD eviction must use exclusive-backing LRU")
         expected_scope = {
             "fixed_15": "uniform_fixed",
             "static_gradual": "shared_relative_schedule",

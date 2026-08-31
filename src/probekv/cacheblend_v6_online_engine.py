@@ -966,7 +966,7 @@ class CacheBlendV8Schema7OnlineEngine(CacheBlendV8OnlineEngine):
 
 
 class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
-    """Schema-v8 data plane with a closed d1/d2 barrier before preparation."""
+    """Schema-v8 data plane with dense barrier before execution-visible reuse."""
 
     patch_mode = "probekv_v8_gradual_barrier_tiered_lru"
     implementation_status = "no_gpu_complete_requires_schema8_a800_sentinel"
@@ -975,6 +975,7 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
         super().__init__(*args, **kwargs)
         self.selection_barrier = None
         self.preparation_admitted_segment_ids: set[str] = set()
+        self.detached_preparation_segment_ids: set[str] = set()
         self.final_commit_admitted_segment_ids: set[str] = set()
         self.repair_ratio_plan = None
         self.r1_endpoint_segment_ids: set[str] = set()
@@ -987,11 +988,13 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
         result.update(
             {
                 "dense_d1_d2_selection_barrier": True,
-                "gate1_same_origin_positive_saving": True,
+                "d1_detached_winner_prefetch": True,
+                "gate1_optimistic_marginal_feasibility": True,
                 "final_commit_request_joint_timeline": True,
                 "cpu_preferred_single_backing": True,
                 "cpu_and_ssd_lru": True,
                 "repair_ratio_scope_explicit": True,
+                "request_level_joint_adaptive_ratio": True,
                 "legacy_ac_policy_removed_from_main": True,
             }
         )
@@ -1002,14 +1005,27 @@ class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
 
         if not isinstance(decision, DenseSelectionBarrierDecision):
             raise TypeError("schema-v8 engine requires a barrier decision")
-        if self.tickets:
-            raise RuntimeError("selection barrier must close before full-KV transfer")
         if self.selection_barrier is not None and self.selection_barrier != decision:
             raise RuntimeError("selection barrier is immutable")
         frozen = set(self.frozen_source_by_segment)
         if frozen != set(decision.reuse_segment_ids):
             raise RuntimeError("barrier reuse set differs from frozen winners")
+        if set(self.tickets) - self.detached_preparation_segment_ids:
+            raise RuntimeError("pre-barrier transfer was not detached winner preparation")
+        if self.detached_preparation_segment_ids - set(decision.reuse_segment_ids):
+            raise RuntimeError("detached preparation differs from final frozen winners")
         self.selection_barrier = decision
+
+    def admit_detached_preparation(self, segment_ids: Sequence[str]) -> None:
+        """Resource-admit already frozen d1 winners before barrier closure."""
+
+        if self.selection_barrier is not None:
+            raise RuntimeError("detached preparation must precede barrier closure")
+        requested = set(str(value) for value in segment_ids)
+        if requested - set(self.frozen_source_by_segment):
+            raise RuntimeError("detached preparation requires frozen winner identity")
+        self.detached_preparation_segment_ids.update(requested)
+        self.preparation_admitted_segment_ids.update(requested)
 
     def admit_preparation(self, segment_ids: Sequence[str]) -> None:
         if self.selection_barrier is None:

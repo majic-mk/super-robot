@@ -17,6 +17,7 @@ from probekv.v8_schema8_profile import (
     RuntimeCostProfileV8,
     Schema8ProfileProvenance,
     SelectionDepthProfileV8,
+    build_repair_policy_profile_v8,
     build_runtime_cost_profile_v8,
 )
 
@@ -93,6 +94,7 @@ class Schema8ConfigTests(unittest.TestCase):
             "job_manifest_sha256": "e" * 64,
             "selection_depth_profile_sha256": "f" * 64,
             "repair_policy_profile_sha256": "1" * 64,
+            "selected_repair_policy": "static_gradual",
             "runtime_cost_profile_sha256": "2" * 64,
             "gpu_uuid": "GPU-test",
         }
@@ -102,9 +104,10 @@ class Schema8ConfigTests(unittest.TestCase):
             "cuda_event_timing": True,
             "native_prefix_cache_qualified": True,
             "dense_d1_d2_barrier_verified": True,
-            "gate1_positive_saving_verified": True,
+            "gate1_optimistic_marginal_verified": True,
             "final_commit_joint_timeline_verified": True,
             "cpu_ssd_lru_verified": True,
+            "backing_migration_verified": True,
             "repair_ratio_scope_verified": True,
             "r1_dense_equivalence": True,
             "source_digest_unchanged": True,
@@ -133,6 +136,18 @@ class Schema8ConfigTests(unittest.TestCase):
             {1, 2, 5, 10, 37},
         )
         self.assertTrue(all(row["paper_evidence"] is False for row in jobs))
+        adaptive = build_schema8_qualification_jobs(
+            model_key="mistral",
+            selection_depth_profile_sha256="a" * 64,
+            repair_policy_profile_sha256="b" * 64,
+            runtime_cost_profile_sha256="c" * 64,
+            selected_repair_policy="load_recompute_aware_gradual",
+        )
+        self.assertEqual(len(adaptive), 140)
+        self.assertIn(
+            "load_recompute_aware_gradual",
+            {row["coordinates"]["repair_policy"] for row in adaptive},
+        )
 
     def test_schema8_profile_types_do_not_accept_fake_frozen_runtime(self):
         common = dict(
@@ -173,6 +188,43 @@ class Schema8ConfigTests(unittest.TestCase):
             category_measurements=real_categories,
         )
         self.assertEqual(len(frozen.profile_sha256), 64)
+
+    def test_adaptive_profile_freezes_bounded_joint_candidate_templates(self):
+        provenance = Schema8ProfileProvenance(
+            profile_kind="repair_policy",
+            code_commit="a" * 40,
+            cacheblend_patch_sha256="b" * 64,
+            model_id="mistral",
+            model_revision="c" * 40,
+            tokenizer_hash="d" * 64,
+            gpu_uuid="GPU-real",
+            measurement_sha256="e" * 64,
+            frozen=True,
+        )
+        with self.assertRaisesRegex(ValueError, "bounded frozen"):
+            build_repair_policy_profile_v8(
+                provenance=provenance,
+                policy="load_recompute_aware_gradual",
+                scope="per_segment_load_aware",
+                certified_floor=0.10,
+                shared_ratio_by_age={0: 0.15, 1: 0.12},
+                no_reentry_oracle_recall=0.99,
+                minimum_no_reentry_recall=0.95,
+            )
+        profile = build_repair_policy_profile_v8(
+            provenance=provenance,
+            policy="load_recompute_aware_gradual",
+            scope="per_segment_load_aware",
+            certified_floor=0.10,
+            shared_ratio_by_age={0: 0.15, 1: 0.12},
+            no_reentry_oracle_recall=0.99,
+            minimum_no_reentry_recall=0.95,
+            adaptive_candidate_templates=(
+                "uniform_cap", "shared_age_schedule",
+                "single_segment_load_priority",
+            ),
+        )
+        self.assertEqual(len(profile.profile_sha256), 64)
 
 
 if __name__ == "__main__":

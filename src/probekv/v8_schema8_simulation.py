@@ -8,9 +8,11 @@ from .config import ExperimentConfig
 from .runtime_source_audit import audit_v8_schema8_runtime_sources
 from .v8_schema8_barrier import close_dense_selection_barrier
 from .v8_schema8_contracts import RepairRatioScope, schema8_no_gpu_gate
-from .v8_schema8_planner import Gate1LayerCost, Gate1LocalPlan
+from .v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from .v8_schema8_repair import (
+    JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
+    choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
 )
 from .v8_schema8_storage import Schema8TieredBackingManager
@@ -41,6 +43,40 @@ def _ratio_rows(
                 )
             )
     return tuple(rows)
+
+
+def _adaptive_decisions(
+    config: ExperimentConfig,
+    rows: Tuple[SegmentLayerRepairRatio, ...],
+) -> tuple:
+    if config.repair_ratio_scope != RepairRatioScope.PER_SEGMENT_LOAD_AWARE.value:
+        return ()
+    decisions = []
+    for layer in sorted({row.layer_1based for row in rows}):
+        selected = tuple(
+            sorted(
+                (row.segment_id, row.ratio)
+                for row in rows
+                if row.layer_1based == layer
+            )
+        )
+        all_fixed = tuple((segment_id, 0.15) for segment_id, _ in selected)
+        decisions.append(
+            choose_request_level_adaptive_ratio(
+                candidates=(
+                    JointRepairRatioCandidate(
+                        "profile-selected", layer, selected, 1.0, 1.0, 0.5
+                    ),
+                    JointRepairRatioCandidate(
+                        "fixed15-fallback", layer, all_fixed, 1.0, 2.0, 0.5
+                    ),
+                ),
+                expected_segment_ids=tuple(segment_id for segment_id, _ in selected),
+                repair_policy_profile_sha256=config.repair_policy_profile_sha256,
+                runtime_cost_profile_sha256=config.runtime_cost_profile_sha256,
+            )
+        )
+    return tuple(decisions)
 
 
 def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
@@ -85,26 +121,28 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     ),
                     repair_check_completed_depth=barrier.barrier_completed_depth,
                     first_selective_reuse_layer=first_layer,
-                    dense_repair_check_upper_ms=1.0,
-                    support_build_upper_ms=0.5,
-                    layer_costs=(
-                        Gate1LayerCost(first_layer, 0.15, 1.0, 2.0, 0.5),
-                        Gate1LayerCost(first_layer + 1, 0.12, 1.0, 1.5, 0.5),
+                    dense_repair_check_sunk_ms=1.0,
+                    marginal_lower_bound=Gate1MarginalLowerBound(
+                        support_build_marginal_lower_ms=0.5,
+                        visible_load_marginal_lower_ms=1.0,
+                        repair_marginal_lower_ms=1.5,
                     ),
-                    dense_remaining_same_origin_ms=8.0,
+                    dense_marginal_same_origin_ms=8.0,
                     gate1_gamma=config.gate1_gamma,
                 )
             )
 
+        ratio_rows = _ratio_rows(
+            config,
+            segment_ids=segment_ids,
+            first_reuse_layer=barrier.first_selective_reuse_layer,
+        )
         ratio_plan = validate_union_repair_ratio_plan(
             scope=RepairRatioScope(config.repair_ratio_scope),
-            rows=_ratio_rows(
-                config,
-                segment_ids=segment_ids,
-                first_reuse_layer=barrier.first_selective_reuse_layer,
-            ),
+            rows=ratio_rows,
             certified_floor=config.repair_floor,
             profile_frozen=config.repair_policy_profile_status == "frozen",
+            adaptive_joint_decisions=_adaptive_decisions(config, ratio_rows),
         )
 
         for segment_id in segment_ids:

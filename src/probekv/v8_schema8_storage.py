@@ -6,7 +6,7 @@ from typing import Dict, Mapping, Optional, Tuple, TYPE_CHECKING
 from .contracts import KVLocation
 
 if TYPE_CHECKING:
-    from .v8_leases import V8LeaseManager
+    from .v8_leases import V8LeaseManager, V8ReplicaResource
 
 
 @dataclass
@@ -35,8 +35,19 @@ class TieredBackingAction:
     bytes: int
 
 
+@dataclass(frozen=True)
+class BackingMigrationTicket:
+    source_variant_id: str
+    old_replica_id: str
+    destination_replica_id: str
+    old_tier: KVLocation
+    destination_tier: KVLocation
+    old_generation: int
+    destination_generation: int
+
+
 class Schema8TieredBackingManager:
-    """One backing copy with CPU preference and independent per-tier LRU.
+    """One backing copy with CPU preference and one request-use LRU epoch.
 
     The manager produces deterministic placement actions.  A runtime must
     complete and verify the destination copy before applying a move action to
@@ -348,3 +359,94 @@ class Schema8TieredReplicaCoordinator:
             raise RuntimeError("policy placement differs from the registered backing Replica")
         self.synchronize_busy()
         return actions
+
+    def begin_backing_migration(
+        self, destination: "V8ReplicaResource"
+    ) -> BackingMigrationTicket:
+        """Create a non-authoritative destination while preserving old backing."""
+
+        from .v8_leases import ReplicaLifecycle
+
+        source = self.lease_manager.sources.get(destination.source_variant_id)
+        if source is None or source.artifact_id != destination.artifact_id:
+            raise RuntimeError("backing migration destination has wrong Source identity")
+        old = [
+            replica
+            for replica in source.replicas.values()
+            if replica.healthy and replica.is_backing
+        ]
+        if len(old) != 1:
+            raise RuntimeError("backing migration requires one healthy old backing")
+        old_replica = old[0]
+        if old_replica.busy or source.logical_lease_refcount:
+            raise RuntimeError("busy Source backing cannot migrate")
+        if destination.tier is old_replica.tier:
+            raise RuntimeError("exclusive backing migration must change tier")
+        if destination.is_backing:
+            raise ValueError("migration destination is non-authoritative until commit")
+        if destination.lifecycle is not ReplicaLifecycle.ALLOCATING:
+            raise ValueError("migration destination must start ALLOCATING")
+        self.lease_manager.register_replica(destination)
+        old_replica.copy_in_flight += 1
+        destination.copy_in_flight += 1
+        return BackingMigrationTicket(
+            source.source_variant_id,
+            old_replica.replica_id,
+            destination.replica_id,
+            old_replica.tier,
+            destination.tier,
+            old_replica.generation,
+            destination.generation,
+        )
+
+    def finish_backing_migration(
+        self,
+        ticket: BackingMigrationTicket,
+        *,
+        copy_completed: bool,
+        source_logical_digest: str,
+        destination_logical_digest: str,
+    ) -> None:
+        """Atomically publish a verified destination or preserve the old backing."""
+
+        from .v8_leases import ReplicaLifecycle
+
+        source = self.lease_manager.sources[ticket.source_variant_id]
+        old = source.replicas[ticket.old_replica_id]
+        destination = source.replicas[ticket.destination_replica_id]
+        if (
+            old.generation != ticket.old_generation
+            or destination.generation != ticket.destination_generation
+            or old.tier is not ticket.old_tier
+            or destination.tier is not ticket.destination_tier
+        ):
+            raise RuntimeError("stale backing migration ticket")
+        valid = bool(
+            copy_completed
+            and source_logical_digest
+            and source_logical_digest == destination_logical_digest
+        )
+        old.copy_in_flight -= 1
+        destination.copy_in_flight -= 1
+        if min(old.copy_in_flight, destination.copy_in_flight) < 0:
+            raise RuntimeError("backing migration copy counter underflow")
+        if not valid:
+            destination.lifecycle = ReplicaLifecycle.DELETED
+            # The original authoritative backing remains untouched.
+            return
+        if not old.is_backing or old.lifecycle is not ReplicaLifecycle.READY:
+            raise RuntimeError("old backing changed before migration commit")
+        # This block is the authoritative placement swap. Runtime integration
+        # must execute it under the Replica registry lock.
+        destination.lifecycle = ReplicaLifecycle.READY
+        destination.is_backing = True
+        old.is_backing = False
+        old.lifecycle = ReplicaLifecycle.DELETED
+        destination.placement_epoch = max(
+            destination.placement_epoch, old.placement_epoch + 1
+        )
+        entry = self.backing_manager.entry(ticket.source_variant_id)
+        entry.tier = destination.tier
+        entry.backing_replica_id = destination.replica_id
+        entry.last_access_order = self.backing_manager._tick()
+        self.synchronize_busy()

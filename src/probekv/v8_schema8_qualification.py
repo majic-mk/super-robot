@@ -20,6 +20,7 @@ def evaluate_schema8_runtime_qualification(
         "job_manifest_sha256",
         "selection_depth_profile_sha256",
         "repair_policy_profile_sha256",
+        "selected_repair_policy",
         "runtime_cost_profile_sha256",
         "gpu_uuid",
     )
@@ -37,13 +38,16 @@ def evaluate_schema8_runtime_qualification(
         "dense_d1_d2_barrier_verified": runtime_audit.get(
             "dense_d1_d2_barrier_verified"
         ) is True,
-        "gate1_positive_saving_verified": runtime_audit.get(
-            "gate1_positive_saving_verified"
+        "gate1_optimistic_marginal_verified": runtime_audit.get(
+            "gate1_optimistic_marginal_verified"
         ) is True,
         "final_commit_joint_timeline_verified": runtime_audit.get(
             "final_commit_joint_timeline_verified"
         ) is True,
         "cpu_ssd_lru_verified": runtime_audit.get("cpu_ssd_lru_verified") is True,
+        "backing_migration_verified": runtime_audit.get(
+            "backing_migration_verified"
+        ) is True,
         "repair_ratio_scope_verified": runtime_audit.get(
             "repair_ratio_scope_verified"
         ) is True,

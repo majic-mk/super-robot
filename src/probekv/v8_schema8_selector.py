@@ -141,7 +141,9 @@ class Schema8D1D2Selector:
         chosen = min(
             economic,
             key=lambda row: (
-                gate1_plan_by_source[row.source_variant_id].predicted_reuse_future_upper_ms,
+                gate1_plan_by_source[
+                    row.source_variant_id
+                ].predicted_reuse_marginal_lower_ms,
                 row.residual_score,
                 row.source_variant_id,
             ),

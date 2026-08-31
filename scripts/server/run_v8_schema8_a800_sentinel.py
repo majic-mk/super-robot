@@ -17,6 +17,7 @@ from probekv.cacheblend_v6_online_engine import (
     CacheBlendV8Schema8OnlineEngine,
     integrity_mode_performs_full_digest,
 )
+from probekv.contracts import KVLocation
 from probekv.io import atomic_write_json
 from probekv.model_adapters import MISTRAL_SCHEMA8_SPEC
 from probekv.runtime_source_audit import audit_v8_schema8_runtime_sources
@@ -28,12 +29,17 @@ from probekv.v8_schema6_planner import DeterministicJointTimelineEstimator
 from probekv.v8_schema7_planner import FinalCommitPlanner
 from probekv.v8_schema8_barrier import close_dense_selection_barrier
 from probekv.v8_schema8_contracts import RepairRatioScope
-from probekv.v8_schema8_planner import Gate1LayerCost, Gate1LocalPlan
+from probekv.v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from probekv.v8_schema8_repair import (
+    JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
+    choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
 )
+from probekv.v8_schema8_runtime import Schema8BarrierRequestController
 from probekv.v8_schema8_storage import Schema8TieredBackingManager
+from probekv.v8_schema8_storage import Schema8TieredReplicaCoordinator
+from probekv.v8_leases import ReplicaLifecycle, V8LeaseManager, V8ReplicaResource
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -58,8 +64,8 @@ def _contract_sentinel_evidence() -> dict[str, bool]:
         abstained_segment_ids=("c2",),
     )
     gate1 = Gate1LocalPlan(
-        "winner", 1, 1, 2, 0.5, 0.5,
-        (Gate1LayerCost(2, 0.15, 1, 1, 0.5),), 3,
+        "winner", 1, 1, 2, 0.5,
+        Gate1MarginalLowerBound(0.5, 0.5, 0.5), 3,
     )
     snapshot = PlannerSnapshot(1, 1, "schema8-sentinel", 1, "sparse-real")
     final = FinalCommitPlanner(
@@ -79,12 +85,83 @@ def _contract_sentinel_evidence() -> dict[str, bool]:
         current_snapshot=snapshot,
         union_mask_digest="schema8-sentinel-mask",
     )
+    detached_leases = V8LeaseManager()
+    for suffix in ("1", "2"):
+        detached_leases.register_source(
+            "detached-source-%s" % suffix,
+            "detached-artifact-%s" % suffix,
+            "model",
+        )
+        detached_leases.register_replica(
+            V8ReplicaResource(
+                "detached-cpu-%s" % suffix,
+                "detached-source-%s" % suffix,
+                "detached-artifact-%s" % suffix,
+                KVLocation.PINNED_CPU, 1, 1, 1024, True,
+            )
+        )
+    detached_hbm = UnifiedHBMReservationManager(
+        allocator_capacity_bytes=8 * GIB, safety_bytes=4 * GIB
+    )
+    detached = Schema8BarrierRequestController(
+        request_id="detached", request_generation=1,
+        ordered_segment_ids=("c1", "c2"), lease_manager=detached_leases,
+        hbm_manager=detached_hbm,
+    )
+    detached.decision_ready("c1", "detached-source-1", 1)
+    detached.apply_gate1_plan(
+        "c1",
+        Gate1LocalPlan(
+            "detached-source-1", 1, 1, 2, 0,
+            Gate1MarginalLowerBound(0, 0.25, 0.25), 1,
+        ),
+        predicted_remaining_s=1,
+    )
+    detached_snapshot = PlannerSnapshot(
+        1, 1, "detached", detached_hbm.epoch, "profile"
+    )
+    detached.apply_detached_preparation_admission(
+        ("c1",), snapshot=detached_snapshot,
+        current_snapshot=detached_snapshot,
+    )
+    detached.begin_winner_prefetch(
+        "c1", artifact_id="detached-artifact-1",
+        replica_id="detached-cpu-1", replica_generation=1,
+        placement_epoch=1, target_hbm_bytes=1024, predicted_remaining_s=1,
+    )
+    detached.mark_winner_ready("c1", actual_reuse_boundary=3)
+    detached_not_visible = bool(
+        detached.barrier_decision is None and not detached.gate3_eligible("c1")
+    )
     storage = Schema8TieredBackingManager(
         cpu_capacity_bytes=1024, ssd_capacity_bytes=1024
     )
     storage.register("a", size_bytes=1024)
     demotion = storage.register("b", size_bytes=1024)
     deletion = storage.register("c", size_bytes=1024)
+    migration_leases = V8LeaseManager()
+    migration_leases.register_source("migration", "artifact", "model")
+    old_backing = V8ReplicaResource(
+        "migration-cpu", "migration", "artifact", KVLocation.PINNED_CPU,
+        1, 1, 1024, True,
+    )
+    migration_leases.register_replica(old_backing)
+    migration_policy = Schema8TieredBackingManager(
+        cpu_capacity_bytes=1024, ssd_capacity_bytes=1024
+    )
+    migration = Schema8TieredReplicaCoordinator(
+        backing_manager=migration_policy, lease_manager=migration_leases
+    )
+    migration.register("migration", size_bytes=1024)
+    destination = V8ReplicaResource(
+        "migration-ssd", "migration", "artifact", KVLocation.SSD,
+        1, 1, 1024, False, lifecycle=ReplicaLifecycle.ALLOCATING,
+    )
+    migration_ticket = migration.begin_backing_migration(destination)
+    migration.finish_backing_migration(
+        migration_ticket, copy_completed=True,
+        source_logical_digest="schema8", destination_logical_digest="schema8",
+    )
     scope_rows = {
         "uniform_fixed": (
             SegmentLayerRepairRatio("c1", 3, 3, 0.15),
@@ -101,19 +178,45 @@ def _contract_sentinel_evidence() -> dict[str, bool]:
     }
     scope_pass = {}
     for name, rows in scope_rows.items():
+        adaptive_decisions = ()
+        if name == "per_segment_load_aware":
+            adaptive_decisions = (
+                choose_request_level_adaptive_ratio(
+                    candidates=(
+                        JointRepairRatioCandidate(
+                            "joint-vector", 3,
+                            (("c1", 0.15), ("c2", 0.12)), 1, 1, 0,
+                        ),
+                        JointRepairRatioCandidate(
+                            "fixed15", 3,
+                            (("c1", 0.15), ("c2", 0.15)), 1, 2, 0,
+                        ),
+                    ),
+                    expected_segment_ids=("c1", "c2"),
+                    repair_policy_profile_sha256="0" * 64,
+                    runtime_cost_profile_sha256="0" * 64,
+                ),
+            )
         scope_pass[name] = bool(validate_union_repair_ratio_plan(
             scope=RepairRatioScope(name), rows=rows,
             certified_floor=0.12,
             profile_frozen=name == "per_segment_load_aware",
+            adaptive_joint_decisions=adaptive_decisions,
         ))
     return {
         "d1_all_resolved_layer2_reuse": all_d1.first_selective_reuse_layer == 2,
         "d1_d2_dense_barrier_layer3_reuse": mixed.first_selective_reuse_layer == 3,
-        "gate1_same_origin_critical_path": gate1.passed,
+        "d1_detached_prefetch_not_execution_visible": detached_not_visible,
+        "gate1_optimistic_marginal_feasibility": gate1.passed,
         "final_commit_joint_timeline": final.accepted_ready_segment_ids == ("c1",),
         "cpu_lru_demotion_to_ssd": any(row.action == "demote_cpu_to_ssd" for row in demotion),
         "ssd_lru_source_deletion": any(row.action == "evict_ssd_lru_source" for row in deletion),
         "single_backing_replica": len(storage.snapshot()["entries"]) == 2,
+        "verified_backing_migration": bool(
+            destination.is_backing
+            and destination.lifecycle is ReplicaLifecycle.READY
+            and old_backing.lifecycle is ReplicaLifecycle.DELETED
+        ),
         **{"repair_ratio_scope:%s" % key: value for key, value in scope_pass.items()},
     }
 

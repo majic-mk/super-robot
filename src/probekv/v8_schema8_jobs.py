@@ -33,12 +33,17 @@ def build_schema8_sentinel_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
         _job("native_prefix_cache_sentinel", {"model": model_key}),
         _job("d1_all_resolved_layer2_reuse", {"depths": [1]}),
         _job("d1_d2_dense_barrier_layer3_reuse", {"depths": [1, 2]}),
-        _job("gate1_same_origin_critical_path", {"gamma": 1.0}),
+        _job(
+            "d1_detached_prefetch_not_execution_visible",
+            {"barrier": "open", "winner_depth": 1},
+        ),
+        _job("gate1_optimistic_marginal_feasibility", {"gamma": 1.0}),
         _job("final_commit_joint_timeline", {"gamma": 0.8}),
         _job("r1_dense_equivalence", {"repair_ratio": 1.0}),
         _job("cpu_lru_demotion_to_ssd", {"busy_protected": True}),
         _job("ssd_lru_source_deletion", {"busy_protected": True}),
         _job("single_backing_replica", {"gpu_replica": "transient_hot"}),
+        _job("verified_backing_migration", {"publish": "after_digest_match"}),
         _job("integrity_online_no_full_digest", {"mode": "online_immutable"}),
     ]
     for scope in (
@@ -76,6 +81,16 @@ def build_schema8_runtime_measurement_jobs(
                 {"model": model_key, "segment_count": segment_count},
             )
         )
+        jobs.append(
+            _job(
+                "joint_adaptive_ratio_vectors",
+                {
+                    "model": model_key,
+                    "segment_count": segment_count,
+                    "candidate_policy": "bounded_profile_templates",
+                },
+            )
+        )
     for source_tier in ("gpu", "pinned_cpu", "ssd_staged"):
         jobs.append(
             _job(
@@ -92,6 +107,7 @@ def build_schema8_qualification_jobs(
     selection_depth_profile_sha256: str,
     repair_policy_profile_sha256: str,
     runtime_cost_profile_sha256: str,
+    selected_repair_policy: str = "static_gradual",
 ) -> Tuple[Dict[str, Any], ...]:
     """Build the final Profile-bound 140-job schema-v8 matrix."""
 
@@ -104,12 +120,21 @@ def build_schema8_qualification_jobs(
     )
     if any(len(value) != 64 for value in profile_shas):
         raise ValueError("schema-v8 qualification requires three frozen Profile SHAs")
+    if selected_repair_policy not in {
+        "fixed_15", "static_gradual", "load_recompute_aware_gradual"
+    }:
+        raise ValueError("qualification repair policy is not schema-v8")
+    qualification_repair_policies = (
+        ("fixed_15", "static_gradual")
+        if selected_repair_policy == "fixed_15"
+        else ("fixed_15", selected_repair_policy)
+    )
     patterns = []
     for segment_count in (1, 2, 5, 10, 37):
         segment_patterns = []
         for compared_k in (1, 4, 16):
             for barrier_case in ("all_d1", "contains_d2"):
-                for repair_policy in ("fixed_15", "static_gradual"):
+                for repair_policy in qualification_repair_policies:
                     for source_tier in ("gpu", "pinned_cpu", "ssd_staged"):
                         segment_patterns.append(
                             {

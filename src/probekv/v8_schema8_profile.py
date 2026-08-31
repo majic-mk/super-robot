@@ -85,6 +85,7 @@ class RepairPolicyProfileV8:
     shared_ratio_by_age: Mapping[int, float]
     no_reentry_oracle_recall: float
     minimum_no_reentry_recall: float
+    adaptive_candidate_templates: Tuple[str, ...] = ()
     profile_sha256: str = ""
 
     def __post_init__(self) -> None:
@@ -97,6 +98,26 @@ class RepairPolicyProfileV8:
         }.get(self.policy)
         if expected_scope != self.scope:
             raise ValueError("repair policy and ratio scope disagree")
+        allowed_templates = {
+            "uniform_floor",
+            "uniform_cap",
+            "shared_age_schedule",
+            "single_segment_quality_priority",
+            "single_segment_load_priority",
+        }
+        if self.policy == "load_recompute_aware_gradual":
+            if (
+                not self.adaptive_candidate_templates
+                or len(self.adaptive_candidate_templates) > 8
+                or len(set(self.adaptive_candidate_templates))
+                != len(self.adaptive_candidate_templates)
+                or not set(self.adaptive_candidate_templates).issubset(allowed_templates)
+            ):
+                raise ValueError(
+                    "adaptive repair requires a bounded frozen candidate-template set"
+                )
+        elif self.adaptive_candidate_templates:
+            raise ValueError("non-adaptive repair cannot carry adaptive templates")
         if self.certified_floor not in {0.10, 0.12, 0.15}:
             raise ValueError("repair floor is outside the development grid")
         ratios = [float(self.shared_ratio_by_age[key]) for key in sorted(self.shared_ratio_by_age)]
@@ -126,6 +147,7 @@ class RepairPolicyProfileV8:
             "shared_ratio_by_age": dict(self.shared_ratio_by_age),
             "no_reentry_oracle_recall": self.no_reentry_oracle_recall,
             "minimum_no_reentry_recall": self.minimum_no_reentry_recall,
+            "adaptive_candidate_templates": list(self.adaptive_candidate_templates),
         }
 
 
@@ -203,6 +225,7 @@ def build_repair_policy_profile_v8(
     shared_ratio_by_age: Mapping[int, float],
     no_reentry_oracle_recall: float,
     minimum_no_reentry_recall: float,
+    adaptive_candidate_templates: Tuple[str, ...] = (),
 ) -> RepairPolicyProfileV8:
     payload = {
         "protocol_version": 8,
@@ -214,6 +237,7 @@ def build_repair_policy_profile_v8(
         "shared_ratio_by_age": dict(shared_ratio_by_age),
         "no_reentry_oracle_recall": no_reentry_oracle_recall,
         "minimum_no_reentry_recall": minimum_no_reentry_recall,
+        "adaptive_candidate_templates": list(adaptive_candidate_templates),
     }
     return RepairPolicyProfileV8(
         provenance,
@@ -223,6 +247,7 @@ def build_repair_policy_profile_v8(
         shared_ratio_by_age,
         no_reentry_oracle_recall,
         minimum_no_reentry_recall,
+        adaptive_candidate_templates,
         schema8_profile_digest("schema8-repair-policy", payload)
         if provenance.frozen else "",
     )

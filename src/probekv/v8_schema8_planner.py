@@ -7,41 +7,52 @@ from .v8_schema7_planner import FinalCommitPlanner
 
 
 @dataclass(frozen=True)
-class Gate1LayerCost:
-    layer_1based: int
-    repair_ratio: float
-    predicted_load_upper_ms: float
-    predicted_repair_upper_ms: float
-    predicted_nonoverlap_upper_ms: float
+class Gate1MarginalLowerBound:
+    """Unavoidable Source-local costs under optimistic overlap.
+
+    Gate1 is deliberately not a miniature request planner. In particular it
+    must not assign the same base Transformer work, union repair kernel, or
+    aggregate copy-stream critical path to every Segment independently.
+    Those shared costs belong to request-level FinalCommitAdmission.
+    """
+
+    support_build_marginal_lower_ms: float
+    visible_load_marginal_lower_ms: float
+    repair_marginal_lower_ms: float
 
     def __post_init__(self) -> None:
-        if self.layer_1based < 1 or not 0 <= self.repair_ratio <= 0.15:
-            raise ValueError("invalid schema-v8 Gate1 layer plan")
         if min(
-            self.predicted_load_upper_ms,
-            self.predicted_repair_upper_ms,
-            self.predicted_nonoverlap_upper_ms,
+            self.support_build_marginal_lower_ms,
+            self.visible_load_marginal_lower_ms,
+            self.repair_marginal_lower_ms,
         ) < 0:
-            raise ValueError("Gate1 layer costs must be non-negative")
+            raise ValueError("Gate1 marginal lower-bound costs must be non-negative")
 
     @property
-    def critical_path_upper_ms(self) -> float:
+    def total_ms(self) -> float:
         return (
-            max(self.predicted_load_upper_ms, self.predicted_repair_upper_ms)
-            + self.predicted_nonoverlap_upper_ms
+            self.support_build_marginal_lower_ms
+            + self.visible_load_marginal_lower_ms
+            + self.repair_marginal_lower_ms
         )
 
 
 @dataclass(frozen=True)
 class Gate1LocalPlan:
+    """Optimistic Segment-local feasibility screen.
+
+    ``dense_repair_check_sunk_ms`` is retained for audit and later request-level
+    accounting, but is common/sunk at this decision point and therefore is not
+    charged again inside the marginal Gate1 comparison.
+    """
+
     source_variant_id: str
     selection_completed_depth: int
     repair_check_completed_depth: int
     first_selective_reuse_layer: int
-    dense_repair_check_upper_ms: float
-    support_build_upper_ms: float
-    layer_costs: Tuple[Gate1LayerCost, ...]
-    dense_remaining_same_origin_ms: float
+    dense_repair_check_sunk_ms: float
+    marginal_lower_bound: Gate1MarginalLowerBound
+    dense_marginal_same_origin_ms: float
     gate1_gamma: float = 1.0
 
     def __post_init__(self) -> None:
@@ -51,45 +62,41 @@ class Gate1LocalPlan:
             raise ValueError("Gate1 repair check cannot precede Source selection")
         if self.first_selective_reuse_layer != self.repair_check_completed_depth + 1:
             raise ValueError("Gate1 reuse must follow the dense repair-check layer")
-        if min(
-            self.dense_repair_check_upper_ms,
-            self.support_build_upper_ms,
-        ) < 0 or self.dense_remaining_same_origin_ms <= 0:
-            raise ValueError("Gate1 costs use one positive same-origin horizon")
+        if self.dense_repair_check_sunk_ms < 0:
+            raise ValueError("Gate1 sunk repair-check cost must be non-negative")
+        if self.dense_marginal_same_origin_ms <= 0:
+            raise ValueError("Gate1 requires positive same-origin dense marginal cost")
         if self.gate1_gamma != 1.0:
             raise ValueError("schema-v8 Gate1 gamma is frozen at 1.0")
-        layers = tuple(row.layer_1based for row in self.layer_costs)
-        if layers and (
-            layers != tuple(sorted(set(layers)))
-            or layers[0] != self.first_selective_reuse_layer
-        ):
-            raise ValueError("Gate1 layer costs must start at the first reuse layer")
+
+    @property
+    def predicted_reuse_marginal_lower_ms(self) -> float:
+        return self.marginal_lower_bound.total_ms
 
     @property
     def predicted_reuse_future_upper_ms(self) -> float:
-        return (
-            self.dense_repair_check_upper_ms
-            + self.support_build_upper_ms
-            + sum(row.critical_path_upper_ms for row in self.layer_costs)
+        raise AttributeError(
+            "schema-v8 Gate1 no longer predicts a per-Segment future upper bound; "
+            "use predicted_reuse_marginal_lower_ms"
         )
 
     @property
     def passed(self) -> bool:
         return (
-            self.predicted_reuse_future_upper_ms
-            <= self.gate1_gamma * self.dense_remaining_same_origin_ms + 1e-12
+            self.predicted_reuse_marginal_lower_ms
+            <= self.gate1_gamma * self.dense_marginal_same_origin_ms + 1e-12
         )
 
 
 def gate1_candidate_costs(plans: Sequence[Gate1LocalPlan]) -> Tuple[float, ...]:
     if not plans:
         raise ValueError("Gate1 requires at least one Source-local plan")
-    return tuple(plan.predicted_reuse_future_upper_ms for plan in plans)
+    return tuple(plan.predicted_reuse_marginal_lower_ms for plan in plans)
 
 
 __all__ = [
     "FinalCommitPlanner",
-    "Gate1LayerCost",
+    "Gate1MarginalLowerBound",
     "Gate1LocalPlan",
     "gate1_candidate_costs",
 ]

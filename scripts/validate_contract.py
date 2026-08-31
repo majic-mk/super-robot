@@ -197,8 +197,12 @@ def main() -> int:
     storage8 = v8_schema8.get("storage", {})
     if (
         storage8.get("backing_policy") != "cpu_preferred_single_backing"
-        or storage8.get("cpu_eviction") != "per_replica_lru_demote_to_ssd"
-        or storage8.get("ssd_eviction") != "per_replica_lru_delete_source"
+        or storage8.get("lru_timestamp")
+        != "one_last_request_use_epoch_per_exclusive_backing"
+        or storage8.get("cpu_eviction")
+        != "exclusive_backing_lru_demote_to_ssd"
+        or storage8.get("ssd_eviction")
+        != "exclusive_backing_lru_delete_source"
         or storage8.get("busy_replica_eviction_forbidden") is not True
     ):
         errors.append("schema-v8 tiered backing contract is invalid")

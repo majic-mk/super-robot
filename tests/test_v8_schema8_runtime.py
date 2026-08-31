@@ -5,15 +5,17 @@ from probekv.model_adapters import (
     MISTRAL_SCHEMA8_SPEC,
     validate_schema8_checkpoint_contract,
 )
-from probekv.v8_leases import V8LeaseManager, V8ReplicaResource
+from probekv.v8_leases import ReplicaLifecycle, V8LeaseManager, V8ReplicaResource
 from probekv.v8_schema6_contracts import CommitAxisState, PlannerSnapshot
 from probekv.v8_schema6_hbm import GIB, UnifiedHBMReservationManager
 from probekv.v8_schema7_contracts import FinalCommitDecision
 from probekv.v8_schema8_barrier import close_dense_selection_barrier
 from probekv.v8_schema8_contracts import RepairRatioScope
-from probekv.v8_schema8_planner import Gate1LayerCost, Gate1LocalPlan
+from probekv.v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 from probekv.v8_schema8_repair import (
+    JointRepairRatioCandidate,
     SegmentLayerRepairRatio,
+    choose_request_level_adaptive_ratio,
     validate_union_repair_ratio_plan,
 )
 from probekv.v8_schema8_storage import Schema8TieredBackingManager
@@ -39,34 +41,49 @@ def _runtime_resources():
     return leases, hbm
 
 
+def _g1(
+    source: str,
+    depth: int,
+    *,
+    support: float,
+    load: float,
+    repair: float,
+    dense: float,
+    sunk: float = 0.0,
+) -> Gate1LocalPlan:
+    return Gate1LocalPlan(
+        source,
+        depth,
+        depth,
+        depth + 1,
+        sunk,
+        Gate1MarginalLowerBound(support, load, repair),
+        dense,
+    )
+
+
 class Schema8GateAndBarrierTests(unittest.TestCase):
-    def test_gate1_uses_overlap_critical_path_and_positive_saving(self):
-        plan = Gate1LocalPlan(
-            "winner",
-            1,
-            1,
-            2,
-            1.0,
-            0.5,
-            (Gate1LayerCost(2, 0.15, 4.0, 6.0, 1.0),),
-            8.0,
+    def test_gate1_uses_optimistic_marginal_lower_bound(self):
+        plan = _g1(
+            "winner", 1, support=1.0, load=4.0, repair=3.5,
+            dense=8.0, sunk=100.0,
         )
-        self.assertEqual(plan.predicted_reuse_future_upper_ms, 8.5)
+        self.assertEqual(plan.predicted_reuse_marginal_lower_ms, 8.5)
         self.assertFalse(plan.passed)
-        cheaper = Gate1LocalPlan(
-            "winner",
-            1,
-            1,
-            2,
-            0.5,
-            0.5,
-            (Gate1LayerCost(2, 0.15, 2.0, 3.0, 1.0),),
-            5.0,
+        cheaper = _g1(
+            "winner", 1, support=0.5, load=1.0, repair=1.0,
+            dense=5.0, sunk=100.0,
         )
-        self.assertEqual(cheaper.predicted_reuse_future_upper_ms, 5.0)
+        self.assertEqual(cheaper.predicted_reuse_marginal_lower_ms, 2.5)
         self.assertTrue(cheaper.passed)
+        # Common repair-check work is audited as sunk, not charged once per
+        # Segment inside Gate1.
+        self.assertEqual(cheaper.dense_repair_check_sunk_ms, 100.0)
         with self.assertRaisesRegex(ValueError, "gamma"):
-            Gate1LocalPlan("winner", 1, 1, 2, 0, 0, (), 1, gate1_gamma=0.8)
+            Gate1LocalPlan(
+                "winner", 1, 1, 2, 0,
+                Gate1MarginalLowerBound(0, 0, 0), 1, gate1_gamma=0.8,
+            )
 
     def test_all_d1_starts_layer2_and_any_d2_starts_layer3(self):
         all_d1 = close_dense_selection_barrier(
@@ -97,34 +114,37 @@ class Schema8GateAndBarrierTests(unittest.TestCase):
         controller.decision_ready("c1", "source-c1", 1)
         controller.apply_gate1_plan(
             "c1",
-            Gate1LocalPlan(
-                "source-c1", 1, 1, 2, 0, 0,
-                (Gate1LayerCost(2, 0.15, 1, 1, 0),), 2,
-            ),
+            _g1("source-c1", 1, support=0, load=0.5, repair=0.5, dense=2),
             predicted_remaining_s=1,
         )
-        with self.assertRaisesRegex(RuntimeError, "selection closure"):
+        with self.assertRaisesRegex(RuntimeError, "detached resource admission"):
             controller.begin_winner_prefetch(
                 "c1", artifact_id="artifact-c1", replica_id="cpu-c1",
                 replica_generation=1, placement_epoch=1,
                 target_hbm_bytes=1024, predicted_remaining_s=1,
             )
+        detached_snapshot = PlannerSnapshot(1, 1, "scheduler", hbm.epoch, "profile")
+        controller.apply_detached_preparation_admission(
+            ("c1",), snapshot=detached_snapshot,
+            current_snapshot=detached_snapshot,
+        )
+        controller.begin_winner_prefetch(
+            "c1", artifact_id="artifact-c1", replica_id="cpu-c1",
+            replica_generation=1, placement_epoch=1,
+            target_hbm_bytes=1024, predicted_remaining_s=1,
+        )
+        controller.mark_winner_ready("c1", actual_reuse_boundary=3)
+        self.assertFalse(controller.gate3_eligible("c1"))
         controller.decision_ready("c2", "source-c2", 1)
         controller.apply_gate1_plan(
             "c2",
-            Gate1LocalPlan(
-                "source-c2", 1, 1, 2, 2, 1,
-                (Gate1LayerCost(2, 0.15, 2, 2, 1),), 1,
-            ),
+            _g1("source-c2", 1, support=1, load=1, repair=1, dense=1),
             predicted_remaining_s=1,
         )
         controller.decision_ready("c2", "source-c2", 2)
         controller.apply_gate1_plan(
             "c2",
-            Gate1LocalPlan(
-                "source-c2", 2, 2, 3, 2, 1,
-                (Gate1LayerCost(3, 0.15, 2, 2, 1),), 1,
-            ),
+            _g1("source-c2", 2, support=1, load=1, repair=1, dense=1),
             predicted_remaining_s=1,
         )
         barrier = controller.close_selection_barrier()
@@ -134,12 +154,7 @@ class Schema8GateAndBarrierTests(unittest.TestCase):
         controller.apply_preparation_admission(
             ("c1",), snapshot=snap, current_snapshot=snap
         )
-        controller.begin_winner_prefetch(
-            "c1", artifact_id="artifact-c1", replica_id="cpu-c1",
-            replica_generation=1, placement_epoch=1,
-            target_hbm_bytes=1024, predicted_remaining_s=1,
-        )
-        controller.mark_winner_ready("c1", actual_reuse_boundary=3)
+        self.assertTrue(controller.gate3_eligible("c1"))
         final_snapshot = PlannerSnapshot(1, 1, "scheduler", hbm.epoch, "profile")
         decision = FinalCommitDecision(
             ("c1",), (), ("c2",), 50, 100, final_snapshot,
@@ -180,13 +195,11 @@ class Schema8GateAndBarrierTests(unittest.TestCase):
             ResidualCandidate("economic-near", 0.30, 4, 1),
         )
         d1_plans = {
-            "quality-best": Gate1LocalPlan(
-                "quality-best", 1, 1, 2, 1, 1,
-                (Gate1LayerCost(2, 0.15, 4, 4, 1),), 5,
+            "quality-best": _g1(
+                "quality-best", 1, support=1, load=3, repair=2, dense=5,
             ),
-            "economic-near": Gate1LocalPlan(
-                "economic-near", 1, 1, 2, 0, 0,
-                (Gate1LayerCost(2, 0.15, 1, 1, 0),), 5,
+            "economic-near": _g1(
+                "economic-near", 1, support=0, load=1, repair=1, dense=5,
             ),
         }
         d1 = selector.decide(
@@ -195,13 +208,11 @@ class Schema8GateAndBarrierTests(unittest.TestCase):
         )
         self.assertEqual(d1.state, "continue_probe")
         d2_plans = {
-            "quality-best": Gate1LocalPlan(
-                "quality-best", 2, 2, 3, 1, 1,
-                (Gate1LayerCost(3, 0.15, 4, 4, 1),), 5,
+            "quality-best": _g1(
+                "quality-best", 2, support=1, load=3, repair=2, dense=5,
             ),
-            "economic-near": Gate1LocalPlan(
-                "economic-near", 2, 2, 3, 0, 0,
-                (Gate1LayerCost(3, 0.15, 1, 1, 0),), 5,
+            "economic-near": _g1(
+                "economic-near", 2, support=0, load=1, repair=1, dense=5,
             ),
         }
         d2_candidates = (
@@ -272,13 +283,61 @@ class Schema8RepairRatioTests(unittest.TestCase):
                 certified_floor=0.10,
                 profile_frozen=False,
             )
+        with self.assertRaisesRegex(ValueError, "request-level joint decision"):
+            validate_union_repair_ratio_plan(
+                scope=RepairRatioScope.PER_SEGMENT_LOAD_AWARE,
+                rows=rows,
+                certified_floor=0.10,
+                profile_frozen=True,
+            )
+        decision = choose_request_level_adaptive_ratio(
+            candidates=(
+                JointRepairRatioCandidate(
+                    "joint-fast", 3, (("c1", 0.15), ("c2", 0.10)),
+                    2.0, 3.0, 1.0,
+                ),
+                JointRepairRatioCandidate(
+                    "fixed15", 3, (("c1", 0.15), ("c2", 0.15)),
+                    2.0, 5.0, 1.0,
+                ),
+            ),
+            expected_segment_ids=("c1", "c2"),
+            repair_policy_profile_sha256="9" * 64,
+            runtime_cost_profile_sha256="a" * 64,
+        )
         plan = validate_union_repair_ratio_plan(
             scope=RepairRatioScope.PER_SEGMENT_LOAD_AWARE,
             rows=rows,
             certified_floor=0.10,
             profile_frozen=True,
+            adaptive_joint_decisions=(decision,),
         )
         self.assertEqual(plan.ratios_for_layer(3), {"c1": 0.15, "c2": 0.10})
+
+    def test_adaptive_vector_is_chosen_by_union_critical_path_not_per_segment(self):
+        decision = choose_request_level_adaptive_ratio(
+            candidates=(
+                JointRepairRatioCandidate(
+                    "mixed", 4, (("c1", 0.10), ("c2", 0.15)),
+                    5.0, 5.0, 1.0,
+                ),
+                JointRepairRatioCandidate(
+                    "low-independent", 4, (("c1", 0.10), ("c2", 0.10)),
+                    7.0, 3.0, 1.0,
+                ),
+                JointRepairRatioCandidate(
+                    "high-tie", 4, (("c1", 0.15), ("c2", 0.15)),
+                    5.0, 5.0, 1.0,
+                ),
+            ),
+            expected_segment_ids=("c1", "c2"),
+            repair_policy_profile_sha256="8" * 64,
+            runtime_cost_profile_sha256="b" * 64,
+        )
+        # mixed and high-tie have the same request critical path; quality-first
+        # tie breaking keeps the larger joint repair allocation.
+        self.assertEqual(decision.selected_candidate_id, "high-tie")
+        self.assertEqual(decision.ratio_map(), {"c1": 0.15, "c2": 0.15})
 
 
 class Schema8TieredBackingTests(unittest.TestCase):
@@ -360,6 +419,67 @@ class Schema8TieredBackingTests(unittest.TestCase):
             manager.register("untracked", size_bytes=1024)
         leases.release(logical.lease_id)
         self.assertFalse(coordinator.synchronize_busy()["source-c1"])
+
+    def test_backing_migration_publishes_only_after_verified_copy(self):
+        leases = V8LeaseManager()
+        leases.register_source("source", "artifact", "model")
+        old = V8ReplicaResource(
+            "cpu", "source", "artifact", KVLocation.PINNED_CPU,
+            1, 1, 10, True,
+        )
+        leases.register_replica(old)
+        manager = Schema8TieredBackingManager(
+            cpu_capacity_bytes=10, ssd_capacity_bytes=10
+        )
+        coordinator = Schema8TieredReplicaCoordinator(
+            backing_manager=manager, lease_manager=leases
+        )
+        coordinator.register("source", size_bytes=10)
+        destination = V8ReplicaResource(
+            "ssd", "source", "artifact", KVLocation.SSD,
+            1, 1, 10, False, lifecycle=ReplicaLifecycle.ALLOCATING,
+        )
+        ticket = coordinator.begin_backing_migration(destination)
+        self.assertTrue(old.is_backing)
+        self.assertFalse(destination.is_backing)
+        coordinator.finish_backing_migration(
+            ticket, copy_completed=True,
+            source_logical_digest="digest", destination_logical_digest="digest",
+        )
+        self.assertEqual(old.lifecycle, ReplicaLifecycle.DELETED)
+        self.assertTrue(destination.is_backing)
+        self.assertEqual(destination.lifecycle, ReplicaLifecycle.READY)
+        self.assertEqual(manager.entry("source").tier, KVLocation.SSD)
+
+    def test_failed_backing_migration_keeps_original_authoritative(self):
+        leases = V8LeaseManager()
+        leases.register_source("source", "artifact", "model")
+        old = V8ReplicaResource(
+            "cpu", "source", "artifact", KVLocation.PINNED_CPU,
+            1, 1, 10, True,
+        )
+        leases.register_replica(old)
+        manager = Schema8TieredBackingManager(
+            cpu_capacity_bytes=10, ssd_capacity_bytes=10
+        )
+        coordinator = Schema8TieredReplicaCoordinator(
+            backing_manager=manager, lease_manager=leases
+        )
+        coordinator.register("source", size_bytes=10)
+        destination = V8ReplicaResource(
+            "ssd", "source", "artifact", KVLocation.SSD,
+            1, 1, 10, False, lifecycle=ReplicaLifecycle.ALLOCATING,
+        )
+        ticket = coordinator.begin_backing_migration(destination)
+        coordinator.finish_backing_migration(
+            ticket, copy_completed=True,
+            source_logical_digest="expected", destination_logical_digest="corrupt",
+        )
+        self.assertTrue(old.is_backing)
+        self.assertEqual(old.lifecycle, ReplicaLifecycle.READY)
+        self.assertFalse(destination.is_backing)
+        self.assertEqual(destination.lifecycle, ReplicaLifecycle.DELETED)
+        self.assertEqual(manager.entry("source").tier, KVLocation.PINNED_CPU)
 
 
 if __name__ == "__main__":

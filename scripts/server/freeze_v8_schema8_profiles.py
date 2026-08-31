@@ -94,6 +94,10 @@ def main() -> int:
         },
         no_reentry_oracle_recall=float(repair_raw["no_reentry_oracle_recall"]),
         minimum_no_reentry_recall=float(repair_raw["minimum_no_reentry_recall"]),
+        adaptive_candidate_templates=tuple(
+            str(value)
+            for value in repair_raw.get("adaptive_candidate_templates", ())
+        ),
     )
     runtime = build_runtime_cost_profile_v8(
         provenance=Schema8ProfileProvenance(

@@ -40,6 +40,7 @@ class Schema8BarrierRequestController(Schema6RequestController):
             hbm_manager=hbm_manager,
         )
         self.barrier_decision: DenseSelectionBarrierDecision | None = None
+        self.detached_preparation_segment_ids: set[str] = set()
 
     def apply_selector_decision(
         self,
@@ -136,14 +137,54 @@ class Schema8BarrierRequestController(Schema6RequestController):
             current_snapshot=current_snapshot,
         )
 
+    def apply_detached_preparation_admission(
+        self,
+        segment_ids: Sequence[str],
+        *,
+        snapshot: PlannerSnapshot,
+        current_snapshot: PlannerSnapshot,
+    ) -> None:
+        """Resource-admit d1 winners while the whole request remains dense.
+
+        Source identity is frozen, but preparation remains speculative until
+        the d1/d2 selection barrier closes. No execution-visible reuse or
+        FinalCommitAdmission is possible through this method.
+        """
+
+        if self.barrier_decision is not None:
+            raise RuntimeError("detached preparation is only useful before barrier close")
+        for segment_id in segment_ids:
+            row = self.records[segment_id]
+            if (
+                row.selection_state is not SelectionAxisState.SOURCE_FROZEN
+                or row.decision_completed_depth != 1
+            ):
+                raise RuntimeError("detached preparation requires a frozen d1 winner")
+        self.apply_gate2(
+            {
+                segment_id: Gate2AxisState.DEFERRED.value
+                for segment_id in segment_ids
+            },
+            snapshot=snapshot,
+            current_snapshot=current_snapshot,
+        )
+        self.detached_preparation_segment_ids.update(segment_ids)
+
     def begin_winner_prefetch(self, segment_id: str, **kwargs: object) -> None:
-        if self.barrier_decision is None:
-            raise RuntimeError("schema-v8 prefetch must wait for selection closure")
-        if kwargs.pop("speculative_resource_admitted", False):
-            raise RuntimeError("schema-v8 main path has no deferred A/C prefetch")
+        detached = (
+            self.barrier_decision is None
+            and segment_id in self.detached_preparation_segment_ids
+        )
+        caller_speculative = bool(kwargs.pop("speculative_resource_admitted", False))
+        if self.barrier_decision is None and not detached:
+            raise RuntimeError(
+                "schema-v8 pre-barrier prefetch requires detached resource admission"
+            )
+        if caller_speculative and not detached:
+            raise RuntimeError("schema-v8 does not expose generic A/C speculation")
         super().begin_winner_prefetch(
             segment_id,
-            speculative_resource_admitted=False,
+            speculative_resource_admitted=detached,
             **kwargs,
         )
 
