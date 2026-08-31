@@ -46,6 +46,7 @@ storage:
   busy_replica_eviction_forbidden: true
   gpu_replica: transient_hot
   physical_transition_requires_verified_copy: true
+  busy_state_source: logical_and_physical_lease_graph
 
 repair_ratios:
   fixed_15: uniform_fixed
@@ -61,6 +62,7 @@ compatibility:
   legacy_a_c_configs_unchanged: true
 
 no_gpu_gate:
+  runtime_source_audit_required: true
   schema8_local_implementation_complete: true
   artifact_preparation_ready: true
   gpu_rental_ready_for_schema8_sentinel: true

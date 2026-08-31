@@ -31,6 +31,16 @@
     "selector_depth_profile_frozen": false,
     "repair_policy_profile_frozen": false,
     "runtime_cost_profile_frozen": false,
+    "integrity_mode": "qualification_full",
+    "required_capabilities": [
+      "dense_d1_d2_selection_barrier",
+      "gate1_same_origin_positive_saving",
+      "final_commit_request_joint_timeline",
+      "cpu_preferred_single_backing",
+      "cpu_and_ssd_lru",
+      "repair_ratio_scope_explicit",
+      "full_kv_transfer_lease_enforced"
+    ],
     "run_140_job_qualification": false,
     "run_h1": false
   }

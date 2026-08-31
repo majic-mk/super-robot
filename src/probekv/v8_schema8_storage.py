@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Mapping, Optional, Tuple, TYPE_CHECKING
 
 from .contracts import KVLocation
+
+if TYPE_CHECKING:
+    from .v8_leases import V8LeaseManager
 
 
 @dataclass
@@ -12,6 +15,7 @@ class TieredBackingEntry:
     size_bytes: int
     tier: KVLocation
     last_access_order: int
+    backing_replica_id: str = ""
     busy: bool = False
 
     def __post_init__(self) -> None:
@@ -62,6 +66,7 @@ class Schema8TieredBackingManager:
                     row.size_bytes,
                     row.tier,
                     row.last_access_order,
+                    row.backing_replica_id,
                     row.busy,
                 )
                 for key, row in self._entries.items()
@@ -96,6 +101,7 @@ class Schema8TieredBackingManager:
                     "tier": row.tier.value,
                     "size_bytes": row.size_bytes,
                     "last_access_order": row.last_access_order,
+                    "backing_replica_id": row.backing_replica_id,
                     "busy": row.busy,
                 }
                 for key, row in sorted(self._entries.items())
@@ -111,6 +117,7 @@ class Schema8TieredBackingManager:
         *,
         size_bytes: int,
         initially_used: bool = True,
+        backing_replica_id: str = "",
     ) -> Tuple[TieredBackingAction, ...]:
         if source_variant_id in self._entries:
             raise ValueError("a Source Variant may have one backing entry")
@@ -134,6 +141,7 @@ class Schema8TieredBackingManager:
                 int(size_bytes),
                 target,
                 self._tick(),
+                str(backing_replica_id),
             )
             self._entries[source_variant_id] = entry
             self._actions.append(
@@ -262,3 +270,81 @@ class Schema8TieredBackingManager:
                 KVLocation.SSD, None, victim.size_bytes,
             )
         )
+
+
+class Schema8TieredReplicaCoordinator:
+    """Derive tier-LRU eviction protection from the authoritative lease graph.
+
+    Callers must synchronize immediately before planning any pressure action.
+    This removes the unsafe requirement for application code to remember a
+    separate manual ``set_busy`` flag.
+    """
+
+    def __init__(
+        self,
+        *,
+        backing_manager: Schema8TieredBackingManager,
+        lease_manager: "V8LeaseManager",
+    ) -> None:
+        self.backing_manager = backing_manager
+        self.lease_manager = lease_manager
+
+    def synchronize_busy(self) -> Mapping[str, bool]:
+        result: Dict[str, bool] = {}
+        for source_id, entry in self.backing_manager._entries.items():
+            source = self.lease_manager.sources.get(source_id)
+            if source is None or not source.active:
+                raise RuntimeError("tiered backing lacks an active lease resource")
+            healthy = [
+                replica
+                for replica in source.replicas.values()
+                if replica.healthy and replica.is_backing
+            ]
+            if len(healthy) != 1:
+                raise RuntimeError("Source must have exactly one healthy backing Replica")
+            replica = healthy[0]
+            if entry.backing_replica_id and entry.backing_replica_id != replica.replica_id:
+                raise RuntimeError("tiered backing points at another Replica")
+            if replica.tier is not entry.tier:
+                raise RuntimeError("tiered backing and Replica registry disagree")
+            entry.backing_replica_id = replica.replica_id
+            entry.busy = bool(source.logical_lease_refcount or replica.busy)
+            result[source_id] = entry.busy
+        return result
+
+    def access(self, source_variant_id: str) -> Tuple[TieredBackingAction, ...]:
+        self.synchronize_busy()
+        return self.backing_manager.access(source_variant_id)
+
+    def register(
+        self,
+        source_variant_id: str,
+        *,
+        size_bytes: int,
+        initially_used: bool = True,
+    ) -> Tuple[TieredBackingAction, ...]:
+        source = self.lease_manager.sources.get(source_variant_id)
+        if source is None:
+            raise RuntimeError("backing registration requires a Source resource")
+        healthy = [
+            replica
+            for replica in source.replicas.values()
+            if replica.healthy and replica.is_backing
+        ]
+        if len(healthy) != 1:
+            raise RuntimeError("backing registration requires exactly one healthy Replica")
+        replica = healthy[0]
+        actions = self.backing_manager.register(
+            source_variant_id,
+            size_bytes=size_bytes,
+            initially_used=initially_used,
+            backing_replica_id=replica.replica_id,
+        )
+        entry = self.backing_manager.entry(source_variant_id)
+        if entry.tier is not replica.tier:
+            # Placement actions must be executed and atomically reflected in
+            # the Replica registry before this coordinator may expose them.
+            self.backing_manager._entries.pop(source_variant_id, None)
+            raise RuntimeError("policy placement differs from the registered backing Replica")
+        self.synchronize_busy()
+        return actions

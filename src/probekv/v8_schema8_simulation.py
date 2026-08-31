@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import statistics
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from .config import ExperimentConfig
+from .runtime_source_audit import audit_v8_schema8_runtime_sources
 from .v8_schema8_barrier import close_dense_selection_barrier
 from .v8_schema8_contracts import RepairRatioScope, schema8_no_gpu_gate
 from .v8_schema8_planner import Gate1LayerCost, Gate1LocalPlan
@@ -64,7 +66,12 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
         )
         barrier = close_dense_selection_barrier(
             segment_ids=segment_ids,
-            resolved_completed_depth_by_segment=resolved,
+            resolved_completed_depth_by_segment={
+                segment_id: resolved.get(segment_id, 2)
+                for segment_id in segment_ids
+            },
+            source_frozen_segment_ids=segment_ids,
+            abstained_segment_ids=(),
         )
 
         gate1_plans = []
@@ -76,6 +83,7 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                     selection_completed_depth=(
                         barrier.resolved_completed_depth_by_segment[segment_id]
                     ),
+                    repair_check_completed_depth=barrier.barrier_completed_depth,
                     first_selective_reuse_layer=first_layer,
                     dense_repair_check_upper_ms=1.0,
                     support_build_upper_ms=0.5,
@@ -96,7 +104,7 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 first_reuse_layer=barrier.first_selective_reuse_layer,
             ),
             certified_floor=config.repair_floor,
-            profile_frozen=config.selector_profile_status == "frozen",
+            profile_frozen=config.repair_policy_profile_status == "frozen",
         )
 
         for segment_id in segment_ids:
@@ -124,7 +132,10 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
             }
         )
 
-    gate = schema8_no_gpu_gate()
+    audit = audit_v8_schema8_runtime_sources(Path(__file__).resolve().parents[2])
+    gate = schema8_no_gpu_gate(
+        runtime_source_ready=audit.get("runtime_source_ready") is True
+    )
     return {
         "summary": {
             "cases": len(rows),
@@ -146,7 +157,12 @@ def run_v8_schema8_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
                 ),
                 "paper_evidence": False,
             },
-            dict(gate, name="schema8_no_gpu_readiness", passed=True),
+            dict(
+                gate,
+                name="schema8_no_gpu_readiness",
+                passed=gate["gpu_rental_ready_for_schema8_sentinel"],
+            ),
         ],
+        "runtime_source_audit": audit,
         "rows": rows,
     }

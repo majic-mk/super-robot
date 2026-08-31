@@ -19,6 +19,7 @@ def main() -> int:
     parser.add_argument("--config-sha256", required=True)
     parser.add_argument("--contract-sha256", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--jobs-output")
     args = parser.parse_args()
     handoff = build_schema8_no_gpu_handoff(
         code_commit=args.code_commit,
@@ -36,6 +37,14 @@ def main() -> int:
         json.dumps(handoff, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if args.jobs_output:
+        jobs_output = Path(args.jobs_output).resolve()
+        jobs_output.parent.mkdir(parents=True, exist_ok=True)
+        jobs = [*handoff["sentinel_jobs"], *handoff["runtime_measurement_jobs"]]
+        jobs_output.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in jobs),
+            encoding="utf-8",
+        )
     print(json.dumps({"output": str(output), "jobs_sha256": handoff["jobs_sha256"]}))
     return 0
 

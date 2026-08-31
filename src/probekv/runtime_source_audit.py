@@ -319,3 +319,127 @@ def audit_v8_schema7_runtime_sources(repo: Path) -> Dict[str, Any]:
         "gpu_runtime_qualified": False,
         "failures": failures,
     }
+
+
+def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
+    """Static proof that schema-v8 has a real server-to-engine call chain.
+
+    This audit deliberately checks executable entry points, not just contracts
+    or local simulations.  It is a no-GPU rental prerequisite, not a GPU
+    qualification result.
+    """
+
+    manifest = repo / "patches" / "cacheblend" / "manifest.json"
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            manifest, "probekv_v8_gradual_barrier_tiered_lru"
+        )
+    except (OSError, ValueError) as error:
+        return {"runtime_source_ready": False, "failures": [str(error)]}
+    checks = (
+        (
+            repo / "src" / "probekv" / "cacheblend_v6_online_engine.py",
+            (
+                "class CacheBlendV8Schema8OnlineEngine",
+                "configure_dense_selection_barrier",
+                "admit_preparation",
+                "authorize_final_commit",
+                "selective reuse before FinalCommitAdmission is forbidden",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_runtime.py",
+            (
+                "class Schema8BarrierRequestController",
+                "close_selection_barrier",
+                "apply_final_commit_admission",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_selector.py",
+            (
+                "class Schema8D1D2Selector",
+                "d1_gate1_failed_continue",
+                "d2_residual_band_min_cost",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_storage.py",
+            (
+                "class Schema8TieredBackingManager",
+                "class Schema8TieredReplicaCoordinator",
+                "evict_ssd_lru_source",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_repair.py",
+            (
+                "class MultiSegmentRepairRatioPlan",
+                "validate_union_repair_ratio_plan",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_profile.py",
+            (
+                "class SelectionDepthProfileV8",
+                "class RepairPolicyProfileV8",
+                "class RuntimeCostProfileV8",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema8_qualification.py",
+            (
+                "evaluate_schema8_runtime_qualification",
+                "validate_schema8_h1_gate",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v6_a800_executor.py",
+            (
+                "CacheBlendV8Schema8OnlineEngine",
+                "configure_dense_selection_barrier",
+                "authorize_final_commit",
+                "runtime_schema_version == 8",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "run_v8_schema8_a800_sentinel.py",
+            (
+                "CacheBlendV8Schema8OnlineEngine",
+                "runtime_schema_version=8",
+                "qualification_full",
+                "schema8_runtime_contract_passed",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "freeze_v8_schema8_profiles.py",
+            (
+                "build_selection_depth_profile_v8",
+                "build_repair_policy_profile_v8",
+                "build_runtime_cost_profile_v8",
+            ),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing schema-v8 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "protocol_version": 8,
+        "schema_version": 8,
+        "patch_mode": "probekv_v8_gradual_barrier_tiered_lru",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "dense_d1_d2_barrier": True,
+        "gate1_positive_saving": True,
+        "final_commit_joint_timeline": True,
+        "cpu_ssd_lru": True,
+        "repair_ratio_scope_explicit": True,
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }

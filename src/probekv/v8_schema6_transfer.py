@@ -17,8 +17,28 @@ class Schema6TransferAuthorization:
     controller: Schema6RequestController
     segment_id: str
     lease_manager: V8LeaseManager
+    source_variant_id: str
+    artifact_id: str
+    replica_id: str
     ready: bool = False
     released: bool = False
+
+    def assert_valid_for(
+        self, *, source_variant_id: str, artifact_id: str, replica_id: str
+    ) -> None:
+        if self.released:
+            raise RuntimeError("full-KV transfer authorization was released")
+        if (
+            self.source_variant_id,
+            self.artifact_id,
+            self.replica_id,
+        ) != (source_variant_id, artifact_id, replica_id):
+            raise RuntimeError("full-KV transfer authorization binding differs")
+        row = self.controller.records[self.segment_id]
+        if not all(
+            (row.logical_lease_id, row.physical_lease_id, row.hbm_reservation_id)
+        ):
+            raise RuntimeError("full-KV transfer authorization lost lease/HBM ownership")
 
     def mark_ready(self, *, actual_reuse_boundary: int) -> None:
         if self.released:
@@ -129,7 +149,12 @@ class Schema6FullKVTransferAuthorizer:
             raise RuntimeError("full-KV authorization lacks lease or HBM reservation")
         self.authorized_transfers += 1
         return Schema6TransferAuthorization(
-            controller, local_segment_id, self.lease_manager
+            controller,
+            local_segment_id,
+            self.lease_manager,
+            source_variant_id,
+            artifact.artifact_id,
+            replica.replica_id,
         )
 
     def audit(self) -> dict[str, int | bool]:

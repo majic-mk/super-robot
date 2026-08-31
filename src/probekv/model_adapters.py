@@ -108,6 +108,41 @@ SCHEMA6_MODEL_SPECS = {
     spec.model_id: spec for spec in (MISTRAL_SCHEMA6_SPEC, QWEN_SCHEMA6_SPEC)
 }
 
+# Schema-v8 resolves every online Source decision at completed depth d=1 or
+# d=2.  Keep these specs separate so historical v6/v7 manifests retain their
+# original checkpoint identities.
+MISTRAL_SCHEMA8_SPEC = replace(
+    MISTRAL_SPEC,
+    adapter_name="mistral_cacheblend_llama_v041_schema8",
+    checkpoints=(1, 2),
+)
+QWEN_SCHEMA8_SPEC = replace(
+    QWEN_SPEC,
+    adapter_name="qwen2_5_vllm041_schema8",
+    checkpoints=(1, 2),
+)
+SCHEMA8_MODEL_SPECS = {
+    spec.model_id: spec for spec in (MISTRAL_SCHEMA8_SPEC, QWEN_SCHEMA8_SPEC)
+}
+
+
+def validate_schema8_checkpoint_contract(
+    *, model_id: str, checkpoint_sources: Mapping[str, Sequence[int]]
+) -> Tuple[int, ...]:
+    spec = SCHEMA8_MODEL_SPECS.get(model_id)
+    if spec is None:
+        raise ValueError("unsupported schema-v8 model")
+    if not checkpoint_sources:
+        raise ValueError("schema-v8 checkpoint validator requires sources")
+    for source_name, checkpoints in checkpoint_sources.items():
+        observed = tuple(int(value) for value in checkpoints)
+        if observed != spec.checkpoints:
+            raise ValueError(
+                "schema-v8 checkpoints differ for %s: %r != %r"
+                % (source_name, observed, spec.checkpoints)
+            )
+    return spec.checkpoints
+
 
 def validate_schema6_checkpoint_contract(
     *, model_id: str, checkpoint_sources: Mapping[str, Sequence[int]]

@@ -95,6 +95,12 @@ class ExperimentConfig:
     residual_band_numeric_slack: float = 1e-6
     selector_profile_status: str = "legacy"
     selector_profile_sha256: str = ""
+    selection_depth_profile_status: str = "legacy"
+    selection_depth_profile_sha256: str = ""
+    repair_policy_profile_status: str = "legacy"
+    repair_policy_profile_sha256: str = ""
+    runtime_cost_profile_status: str = "legacy"
+    runtime_cost_profile_sha256: str = ""
     v8_execution_phase: str = "online_main"
     v8_schema_version: int = 5
     runtime_patch_mode: str = ""
@@ -323,6 +329,24 @@ class ExperimentConfig:
             ),
             selector_profile_sha256=str(
                 raw.get("selector_profile_sha256", "")
+            ),
+            selection_depth_profile_status=str(
+                raw.get("selection_depth_profile_status", "legacy")
+            ),
+            selection_depth_profile_sha256=str(
+                raw.get("selection_depth_profile_sha256", "")
+            ),
+            repair_policy_profile_status=str(
+                raw.get("repair_policy_profile_status", "legacy")
+            ),
+            repair_policy_profile_sha256=str(
+                raw.get("repair_policy_profile_sha256", "")
+            ),
+            runtime_cost_profile_status=str(
+                raw.get("runtime_cost_profile_status", "legacy")
+            ),
+            runtime_cost_profile_sha256=str(
+                raw.get("runtime_cost_profile_sha256", "")
             ),
             v8_execution_phase=str(raw.get("v8_execution_phase", "online_main")),
             v8_schema_version=int(raw.get("v8_schema_version", 5)),
@@ -739,10 +763,15 @@ class ExperimentConfig:
             raise ValueError("v8 canonical semantic policy changed")
         if self.interference_accounting_mode is not InterferenceAccountingMode.EXPLICIT_PENALTY:
             raise ValueError("v8 requires explicit interference accounting")
-        if self.selector_profile_status not in {"local_test_only", "unfrozen", "frozen"}:
-            raise ValueError("invalid v8 selector profile status")
-        if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
-            raise ValueError("a frozen v8 profile requires a SHA256")
+        if self.v8_schema_version < 8:
+            if self.selector_profile_status not in {
+                "local_test_only", "unfrozen", "frozen"
+            }:
+                raise ValueError("invalid v8 selector profile status")
+            if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
+                raise ValueError("a frozen v8 profile requires a SHA256")
+        elif self.selector_profile_status != "legacy" or self.selector_profile_sha256:
+            raise ValueError("schema-v8 cannot reuse the legacy SelectorProfile fields")
         if self.v8_schema_version == 7:
             self._validate_v8_schema7()
         if self.v8_schema_version == 8:
@@ -871,6 +900,36 @@ class ExperimentConfig:
             raise ValueError("schema-v8 integrity mode is invalid")
         if self.pinned_staging_pool_bytes <= 0:
             raise ValueError("schema-v8 pinned staging pool must be positive")
+        profile_pairs = (
+            (
+                "selection-depth",
+                self.selection_depth_profile_status,
+                self.selection_depth_profile_sha256,
+            ),
+            (
+                "repair-policy",
+                self.repair_policy_profile_status,
+                self.repair_policy_profile_sha256,
+            ),
+            (
+                "runtime-cost",
+                self.runtime_cost_profile_status,
+                self.runtime_cost_profile_sha256,
+            ),
+        )
+        for name, status, sha256 in profile_pairs:
+            if status not in {"unfrozen", "frozen"}:
+                raise ValueError("invalid schema-v8 %s Profile status" % name)
+            if status == "frozen" and len(sha256) != 64:
+                raise ValueError("frozen schema-v8 %s Profile requires SHA256" % name)
+            if status != "frozen" and sha256:
+                raise ValueError("unfrozen schema-v8 %s Profile cannot carry SHA" % name)
+        if (
+            self.repair_policy == "load_recompute_aware_gradual"
+            and self.v8_execution_phase == "online_main"
+            and self.repair_policy_profile_status != "frozen"
+        ):
+            raise ValueError("adaptive schema-v8 repair requires a frozen RepairPolicyProfile")
 
 
 def load_config(path: str) -> ExperimentConfig:

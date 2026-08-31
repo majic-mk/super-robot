@@ -15,6 +15,8 @@ from .cacheblend_v6_online_engine import (
     CacheBlendV6OnlineEngine,
     CacheBlendV7OnlineEngine,
     CacheBlendV8OnlineEngine,
+    CacheBlendV8Schema7OnlineEngine,
+    CacheBlendV8Schema8OnlineEngine,
     TorchLayerwiseSourceLoader,
 )
 from .contracts import KVLocation
@@ -161,6 +163,8 @@ class RealCacheBlendA800Executor:
         runtime_schema_version: int = 5,
         selection_workspace_capacity_provider: Callable[[], int] | None = None,
         full_kv_transfer_authorizer: Any | None = None,
+        integrity_mode: str = "legacy_source_full",
+        require_pre_pinned: bool = False,
     ) -> None:
         import torch
         from vllm import LLM, SamplingParams
@@ -177,17 +181,23 @@ class RealCacheBlendA800Executor:
             raise ValueError("qualification executor supports protocol v6, v7 or v8")
         if protocol_version == 7 and engine_class is not CacheBlendV7OnlineEngine:
             raise ValueError("protocol v7 requires CacheBlendV7OnlineEngine")
-        if protocol_version == 8 and engine_class is not CacheBlendV8OnlineEngine:
-            raise ValueError("protocol v8 requires CacheBlendV8OnlineEngine")
+        expected_v8_engine = {
+            5: CacheBlendV8OnlineEngine,
+            6: CacheBlendV8OnlineEngine,
+            7: CacheBlendV8Schema7OnlineEngine,
+            8: CacheBlendV8Schema8OnlineEngine,
+        }.get(runtime_schema_version)
+        if protocol_version == 8 and engine_class is not expected_v8_engine:
+            raise ValueError("protocol v8 requires the schema-selected online engine")
         self.protocol_version = protocol_version
-        if protocol_version == 8 and runtime_schema_version not in {5, 6}:
-            raise ValueError("protocol v8 supports runtime schema-v5 or schema-v6")
+        if protocol_version == 8 and runtime_schema_version not in {5, 6, 7, 8}:
+            raise ValueError("unsupported protocol-v8 runtime schema")
         if protocol_version != 8 and runtime_schema_version != 5:
             raise ValueError("runtime schema selection is only defined for protocol v8")
-        if runtime_schema_version == 6 and selection_workspace_capacity_provider is None:
-            raise ValueError("schema-v6 requires an elastic workspace capacity provider")
-        if runtime_schema_version == 6 and full_kv_transfer_authorizer is None:
-            raise ValueError("schema-v6 requires a full-KV transfer authorizer")
+        if runtime_schema_version >= 6 and selection_workspace_capacity_provider is None:
+            raise ValueError("schema-v6+ requires an elastic workspace capacity provider")
+        if runtime_schema_version >= 6 and full_kv_transfer_authorizer is None:
+            raise ValueError("schema-v6+ requires a full-KV transfer authorizer")
         self.runtime_schema_version = int(runtime_schema_version)
         self.selection_workspace_capacity_provider = selection_workspace_capacity_provider
         self.full_kv_transfer_authorizer = full_kv_transfer_authorizer
@@ -225,7 +235,11 @@ class RealCacheBlendA800Executor:
         self.kv_caches = worker.cache_engine.gpu_cache
         if len(self.kv_caches) != model_spec.num_layers:
             raise RuntimeError("vLLM KV cache layer count differs from adapter")
-        self.source_loader = TorchLayerwiseSourceLoader(torch)
+        self.source_loader = TorchLayerwiseSourceLoader(
+            torch,
+            integrity_mode=integrity_mode,
+            require_pre_pinned=require_pre_pinned,
+        )
         self.fixtures: Dict[Tuple[int, int, int, int], RuntimeFixture] = {}
         self.sentinel = self._run_sentinel(int(sentinel_tokens))
 
@@ -266,7 +280,7 @@ class RealCacheBlendA800Executor:
 
     def capabilities(self) -> Mapping[str, bool]:
         capabilities = dict(self.engine_class.capabilities())
-        if self.runtime_schema_version == 6:
+        if self.runtime_schema_version >= 6:
             capabilities.update(
                 {
                     "cfo_post_rope_qk_hook": (
@@ -743,6 +757,7 @@ class RealCacheBlendA800Executor:
         *,
         exact_prefix_tokens: int = 0,
         exact_prefix_layers: Sequence[Tuple[Any, Any]] = (),
+        force_nonpaper_measurement_admission: bool = False,
     ) -> GenerationTrace:
         """Run the layer-resumable hook without installing or committing a Source.
 
@@ -877,11 +892,14 @@ class RealCacheBlendA800Executor:
             if self.protocol_version == 8:
                 observed_k0 = engine.session.observe_pre_rope_k(0)
             first_probe = min(max(1, int(probe_layer)), self.model_spec.num_layers - 1)
+            if self.runtime_schema_version == 8 and first_probe not in {1, 2}:
+                raise ValueError("schema-v8 online selection is limited to d=1/d=2")
             engine.advance_to_layer(first_probe)
             if self.protocol_version == 8:
                 observed_kd = engine.session.observe_pre_rope_k(first_probe)
             tickets = []
             transfer_authorizations = []
+            prepared_sources = []
             for index, positions in enumerate(fixture.segment_positions):
                 variants = fixture.canonical_variants[index]
                 if not 0 <= winner_variant < len(variants):
@@ -892,7 +910,7 @@ class RealCacheBlendA800Executor:
                     TorchLayerwiseSourceLoader._digest(self.torch, canonical_layers)
                     if self.protocol_version in {7, 8} else ""
                 )
-                if self.runtime_schema_version == 6:
+                if self.runtime_schema_version >= 6:
                     # Qualification fixtures may reuse local indices while
                     # containing different token/context states.  The digest
                     # keeps Source Variant identity exact across those runs.
@@ -933,7 +951,10 @@ class RealCacheBlendA800Executor:
                             layout_signature="contiguous-bf16",
                         ),
                     )
-                    if self.runtime_schema_version == 6:
+                    if (
+                        self.runtime_schema_version >= 6
+                        and self.runtime_schema_version != 8
+                    ):
                         transfer_authorizations.append(
                             self.full_kv_transfer_authorizer.authorize(
                                 segment_id="c%d" % index,
@@ -943,14 +964,16 @@ class RealCacheBlendA800Executor:
                                 predicted_remaining_s=30.0,
                             )
                         )
-                    tickets.append(engine.start_artifact_replica_prefetch(
-                        segment_id="c%d" % index,
-                        source_variant_id=source_id,
-                        artifact=artifact,
-                        replica=replica,
-                        canonical_layers=canonical_layers,
-                        segment_positions=positions,
-                    ))
+                    prepared_sources.append(
+                        (
+                            "c%d" % index,
+                            source_id,
+                            artifact,
+                            replica,
+                            canonical_layers,
+                            positions,
+                        )
+                    )
                 else:
                     tickets.append(engine.start_winner_prefetch(
                         segment_id="c%d" % index,
@@ -958,14 +981,78 @@ class RealCacheBlendA800Executor:
                         canonical_layers=canonical_layers,
                         segment_positions=positions,
                     ))
+            if self.runtime_schema_version == 8:
+                from .v8_schema8_barrier import close_dense_selection_barrier
+
+                segment_ids = tuple(row[0] for row in prepared_sources)
+                barrier = close_dense_selection_barrier(
+                    segment_ids=segment_ids,
+                    resolved_completed_depth_by_segment={
+                        segment_id: first_probe for segment_id in segment_ids
+                    },
+                    source_frozen_segment_ids=segment_ids,
+                    abstained_segment_ids=(),
+                )
+                engine.configure_dense_selection_barrier(barrier)
+                engine.admit_preparation(segment_ids)
+                for (
+                    segment_id,
+                    source_id,
+                    artifact,
+                    replica,
+                    canonical_layers,
+                    positions,
+                ) in prepared_sources:
+                    transfer_authorizations.append(
+                        self.full_kv_transfer_authorizer.authorize(
+                            segment_id=segment_id,
+                            source_variant_id=source_id,
+                            artifact=artifact,
+                            replica=replica,
+                            predicted_remaining_s=30.0,
+                        )
+                    )
+            for (
+                segment_id,
+                source_id,
+                artifact,
+                replica,
+                canonical_layers,
+                positions,
+            ) in prepared_sources:
+                transfer_authorization = next(
+                    (
+                        row for row in transfer_authorizations
+                        if row.source_variant_id == source_id
+                    ),
+                    None,
+                )
+                prefetch_kwargs = dict(
+                    segment_id=segment_id,
+                    source_variant_id=source_id,
+                    artifact=artifact,
+                    replica=replica,
+                    canonical_layers=canonical_layers,
+                    segment_positions=positions,
+                )
+                if self.runtime_schema_version == 8:
+                    prefetch_kwargs["transfer_authorization"] = transfer_authorization
+                tickets.append(engine.start_artifact_replica_prefetch(**prefetch_kwargs))
             for ticket in tickets:
                 for event in ticket.layer_events.values():
                     event.synchronize()
             base = first_probe + 1
-            boundaries = dict(boundary_by_segment or {
-                index: min(base + index % 3, self.model_spec.num_layers)
-                for index in range(len(fixture.segment_positions))
-            })
+            boundaries = dict(
+                boundary_by_segment
+                or {
+                    index: (
+                        base
+                        if self.runtime_schema_version == 8
+                        else min(base + index % 3, self.model_spec.num_layers)
+                    )
+                    for index in range(len(fixture.segment_positions))
+                }
+            )
             for index, authorization in enumerate(transfer_authorizations):
                 authorization.mark_ready(
                     actual_reuse_boundary=int(boundaries[index])
@@ -981,6 +1068,39 @@ class RealCacheBlendA800Executor:
             supplied_positions = dict(repair_positions_by_segment or {})
             if supplied_positions and set(supplied_positions) != expected_segments:
                 raise ValueError("repair positions must cover every Segment")
+            if self.runtime_schema_version == 8:
+                segment_ids = tuple("c%d" % index for index in expected_segments)
+                if ratio >= 1.0:
+                    engine.authorize_final_commit(segment_ids, r1_endpoint=True)
+                elif ratio <= 0.0:
+                    engine.authorize_final_commit(segment_ids, r0_endpoint=True)
+                else:
+                    from .v8_schema8_contracts import RepairRatioScope
+                    from .v8_schema8_repair import (
+                        SegmentLayerRepairRatio,
+                        validate_union_repair_ratio_plan,
+                    )
+
+                    plan = validate_union_repair_ratio_plan(
+                        scope=RepairRatioScope.UNIFORM_FIXED,
+                        rows=tuple(
+                            SegmentLayerRepairRatio(
+                                "c%d" % index,
+                                int(boundaries[index]),
+                                int(boundaries[index]),
+                                float(ratio),
+                            )
+                            for index in expected_segments
+                        ),
+                        certified_floor=float(ratio),
+                        profile_frozen=False,
+                        certified_ratio_candidates=(float(ratio),),
+                    )
+                    engine.install_repair_ratio_plan(plan)
+                    engine.authorize_final_commit(
+                        segment_ids,
+                        measurement_only=force_nonpaper_measurement_admission,
+                    )
             for boundary in sorted(set(boundaries.values())):
                 if engine.session.current_layer < boundary - 1:
                     engine.advance_to_layer(boundary - 1)
@@ -1058,6 +1178,10 @@ class RealCacheBlendA800Executor:
                 for segment_id, commit in engine.session.commits.items()
             },
             "final_active_positions": list(engine.session.active_positions),
+            "forced_nonpaper_measurement_admission": bool(
+                self.runtime_schema_version == 8
+                and force_nonpaper_measurement_admission
+            ),
             "layer_audit": [
                 {
                     key: list(value) if isinstance(value, tuple) else value
@@ -1414,7 +1538,7 @@ class RealCacheBlendA800Executor:
             self.selection_scratch_peak_bytes, int(scratch_bytes)
         )
         capacity = self.selection_scratch_capacity_bytes
-        if self.protocol_version == 8 and self.runtime_schema_version == 6:
+        if self.protocol_version == 8 and self.runtime_schema_version >= 6:
             capacity = int(self.selection_workspace_capacity_provider())
             if capacity <= 0:
                 raise MemoryError("schema-v6 elastic SelectionState workspace is unavailable")
@@ -1477,8 +1601,8 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure the exact Residual-K kernel with a schema-v6 tensor shape."""
 
-        if self.runtime_schema_version != 6:
-            raise RuntimeError("schema-v6 comparison measurement requires schema-v6 runtime")
+        if self.runtime_schema_version < 6:
+            raise RuntimeError("comparison measurement requires schema-v6+ runtime")
         if compared_k not in {1, 2, 4, 8, 16} or token_count < 2:
             raise ValueError("unsupported schema-v6 comparison cell")
         if completed_depth not in self.model_spec.checkpoints:
@@ -1523,8 +1647,8 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure the real pinned-CPU to GPU leg used by schema-v6 staging."""
 
-        if self.runtime_schema_version != 6 or bytes_count <= 0:
-            raise ValueError("invalid schema-v6 transfer cell")
+        if self.runtime_schema_version < 6 or bytes_count <= 0:
+            raise ValueError("invalid schema-v6+ transfer cell")
         source = self.torch.empty(bytes_count, dtype=self.torch.uint8, pin_memory=True)
         target = self.torch.empty(bytes_count, dtype=self.torch.uint8, device="cuda")
         stream = self.torch.cuda.Stream()
@@ -1560,8 +1684,8 @@ class RealCacheBlendA800Executor:
         so the SSD category cannot silently become a page-cache benchmark.
         """
 
-        if self.runtime_schema_version != 6 or bytes_count <= 0:
-            raise ValueError("invalid schema-v6 SSD transfer cell")
+        if self.runtime_schema_version < 6 or bytes_count <= 0:
+            raise ValueError("invalid schema-v6+ SSD transfer cell")
         directory = Path(staging_directory).resolve()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / ("schema6-ssd-transfer-%d.bin" % int(bytes_count))
@@ -1637,8 +1761,8 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure the actual layer-wise Source loader at the requested size."""
 
-        if self.runtime_schema_version != 6 or token_count < 1:
-            raise ValueError("invalid schema-v6 full-KV load cell")
+        if self.runtime_schema_version < 6 or token_count < 1:
+            raise ValueError("invalid schema-v6+ full-KV load cell")
         first, last = (int(layer_range[0]), int(layer_range[1]))
         if first < 1 or last > self.model_spec.num_layers or first > last:
             raise ValueError("full-KV layer range is outside the model")
@@ -1750,8 +1874,8 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure one real multi-Segment resumable request critical path."""
 
-        if self.runtime_schema_version != 6:
-            raise RuntimeError("joint measurement requires schema-v6 runtime")
+        if self.runtime_schema_version < 6:
+            raise RuntimeError("joint measurement requires schema-v6+ runtime")
         if boundary not in self.model_spec.checkpoints:
             raise ValueError("joint boundary differs from model checkpoints")
         if not 0 <= repair_ratio <= 1:
@@ -1767,6 +1891,9 @@ class RealCacheBlendA800Executor:
                 token_count=1,
                 probe_layer=int(boundary),
                 winner_variant=0,
+                force_nonpaper_measurement_admission=(
+                    self.runtime_schema_version == 8 and repair_ratio < 1.0
+                ),
             )
 
         for _ in range(warmups):
@@ -1811,8 +1938,8 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure a real H2D copy workload with/without concurrent GPU work."""
 
-        if self.runtime_schema_version != 6 or copy_bytes <= 0 or concurrency < 1:
-            raise ValueError("invalid schema-v6 interference cell")
+        if self.runtime_schema_version < 6 or copy_bytes <= 0 or concurrency < 1:
+            raise ValueError("invalid schema-v6+ interference cell")
         sources = [
             self.torch.empty(copy_bytes, dtype=self.torch.uint8, pin_memory=True)
             for _ in range(concurrency)
@@ -1937,6 +2064,9 @@ class RealCacheBlendA800Executor:
                 probe_layer=job.probe_layer,
                 winner_variant=winner_variant,
                 teacher_tokens=dense.token_ids if dense is not None else (),
+                force_nonpaper_measurement_admission=(
+                    self.runtime_schema_version == 8 and job.repair_ratio < 1.0
+                ),
             )
             if dense is not None:
                 r1_equal = integrity.token_ids == dense.token_ids
@@ -1973,6 +2103,9 @@ class RealCacheBlendA800Executor:
                     token_count=1,
                     probe_layer=job.probe_layer,
                     winner_variant=winner_variant,
+                    force_nonpaper_measurement_admission=(
+                        self.runtime_schema_version == 8 and job.repair_ratio < 1.0
+                    ),
                 )
             elif job.kind == V6A800JobKind.SUMMARY_GENERATION:
                 # exact_bf16 summary: materialize the selected current K/V rows.

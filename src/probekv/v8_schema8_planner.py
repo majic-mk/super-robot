@@ -36,6 +36,7 @@ class Gate1LayerCost:
 class Gate1LocalPlan:
     source_variant_id: str
     selection_completed_depth: int
+    repair_check_completed_depth: int
     first_selective_reuse_layer: int
     dense_repair_check_upper_ms: float
     support_build_upper_ms: float
@@ -46,8 +47,10 @@ class Gate1LocalPlan:
     def __post_init__(self) -> None:
         if not self.source_variant_id or self.selection_completed_depth < 1:
             raise ValueError("Gate1 plan requires a selected Source and legal depth")
-        if self.first_selective_reuse_layer < self.selection_completed_depth + 1:
-            raise ValueError("Gate1 reuse cannot precede the selection boundary")
+        if self.repair_check_completed_depth < self.selection_completed_depth:
+            raise ValueError("Gate1 repair check cannot precede Source selection")
+        if self.first_selective_reuse_layer != self.repair_check_completed_depth + 1:
+            raise ValueError("Gate1 reuse must follow the dense repair-check layer")
         if min(
             self.dense_repair_check_upper_ms,
             self.support_build_upper_ms,

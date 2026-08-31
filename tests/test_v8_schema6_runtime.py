@@ -138,6 +138,13 @@ class Schema6ResourceAndStateTests(unittest.TestCase):
             segment_id="c1", source_variant_id="source", artifact=artifact,
             replica=replica, predicted_remaining_s=1,
         )
+        authorization.assert_valid_for(
+            source_variant_id="source", artifact_id="artifact", replica_id="cpu"
+        )
+        with self.assertRaisesRegex(RuntimeError, "binding differs"):
+            authorization.assert_valid_for(
+                source_variant_id="other", artifact_id="artifact", replica_id="cpu"
+            )
         row = authorization.controller.records[authorization.segment_id]
         self.assertTrue(row.logical_lease_id)
         self.assertTrue(row.physical_lease_id)

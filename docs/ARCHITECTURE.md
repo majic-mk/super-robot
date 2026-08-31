@@ -195,9 +195,10 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v8 schema-v7 repair | `v8_schema7_repair.py`, `v8_schema7_contracts.py` | winner-only K/V/KV repair metrics, dense repair-check boundary, immutable gradual no-reentry support |
 | v8 schema-v7 admission | `v8_schema7_planner.py`, `v8_schema7_runtime.py` | PreparationAdmission plus refined ready-subset FinalCommitAdmission without Source reselection |
 | v8 schema-v7 transfer | `v8_schema7_transfer.py`, `cacheblend_v6_online_engine.py` | pinned staging/GDS fallback and split qualification/online integrity modes without online full SHA256 |
-| v8 schema-v8 selection barrier | `v8_schema8_barrier.py`, `v8_schema8_planner.py` | all Segments resolve in dense state at d=1/d=2; Gate1 uses same-origin positive-saving critical path and final admission retains request gamma 0.8 |
-| v8 schema-v8 backing policy | `v8_schema8_storage.py` | one CPU-preferred backing; CPU LRU demotes to SSD and SSD LRU deletes an idle Source while busy entries remain protected |
+| v8 schema-v8 selection barrier | `v8_schema8_selector.py`, `v8_schema8_runtime.py`, `v8_schema8_barrier.py`, `v8_schema8_planner.py` | all Segments resolve in dense state at d=1/d=2; Gate1 uses same-origin positive-saving critical path and final admission retains request gamma 0.8 |
+| v8 schema-v8 backing policy | `v8_schema8_storage.py` | one CPU-preferred backing; CPU LRU demotes to SSD and SSD LRU deletes an idle Source, with busy state derived from the authoritative lease graph |
 | v8 schema-v8 ratio scope | `v8_schema8_repair.py` | fixed ratios are uniform, static gradual ratios share a repair-age schedule, and per-Segment ratios require a frozen adaptive Profile |
+| v8 schema-v8 Profiles/Gate | `v8_schema8_profile.py`, `v8_schema8_qualification.py` | independent selection-depth, repair-policy and runtime-cost identities; only exact schema-v8 real-GPU evidence can unlock H1/H2 |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |

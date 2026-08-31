@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -961,4 +962,166 @@ class CacheBlendV8Schema7OnlineEngine(CacheBlendV8OnlineEngine):
             values,
             float(start_event.elapsed_time(end_event)),
             (time.perf_counter() - started_host) * 1000.0,
+        )
+
+
+class CacheBlendV8Schema8OnlineEngine(CacheBlendV8Schema7OnlineEngine):
+    """Schema-v8 data plane with a closed d1/d2 barrier before preparation."""
+
+    patch_mode = "probekv_v8_gradual_barrier_tiered_lru"
+    implementation_status = "no_gpu_complete_requires_schema8_a800_sentinel"
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.selection_barrier = None
+        self.preparation_admitted_segment_ids: set[str] = set()
+        self.final_commit_admitted_segment_ids: set[str] = set()
+        self.repair_ratio_plan = None
+        self.r1_endpoint_segment_ids: set[str] = set()
+        self.r0_endpoint_segment_ids: set[str] = set()
+        self.measurement_only_admission_segment_ids: set[str] = set()
+
+    @staticmethod
+    def capabilities() -> Mapping[str, bool]:
+        result = dict(CacheBlendV8Schema7OnlineEngine.capabilities())
+        result.update(
+            {
+                "dense_d1_d2_selection_barrier": True,
+                "gate1_same_origin_positive_saving": True,
+                "final_commit_request_joint_timeline": True,
+                "cpu_preferred_single_backing": True,
+                "cpu_and_ssd_lru": True,
+                "repair_ratio_scope_explicit": True,
+                "legacy_ac_policy_removed_from_main": True,
+            }
+        )
+        return result
+
+    def configure_dense_selection_barrier(self, decision: Any) -> None:
+        from .v8_schema8_contracts import DenseSelectionBarrierDecision
+
+        if not isinstance(decision, DenseSelectionBarrierDecision):
+            raise TypeError("schema-v8 engine requires a barrier decision")
+        if self.tickets:
+            raise RuntimeError("selection barrier must close before full-KV transfer")
+        if self.selection_barrier is not None and self.selection_barrier != decision:
+            raise RuntimeError("selection barrier is immutable")
+        frozen = set(self.frozen_source_by_segment)
+        if frozen != set(decision.reuse_segment_ids):
+            raise RuntimeError("barrier reuse set differs from frozen winners")
+        self.selection_barrier = decision
+
+    def admit_preparation(self, segment_ids: Sequence[str]) -> None:
+        if self.selection_barrier is None:
+            raise RuntimeError("PreparationAdmission requires a closed barrier")
+        requested = set(str(value) for value in segment_ids)
+        if requested - set(self.selection_barrier.reuse_segment_ids):
+            raise RuntimeError("dense Segment cannot enter winner preparation")
+        self.preparation_admitted_segment_ids.update(requested)
+
+    def install_repair_ratio_plan(self, plan: Any) -> None:
+        from .v8_schema8_repair import MultiSegmentRepairRatioPlan
+
+        if not isinstance(plan, MultiSegmentRepairRatioPlan):
+            raise TypeError("schema-v8 engine requires a validated ratio plan")
+        if self.selection_barrier is None:
+            raise RuntimeError("repair ratio plan requires a closed barrier")
+        plan_segments = {row.segment_id for row in plan.rows}
+        if plan_segments != set(self.selection_barrier.reuse_segment_ids):
+            raise RuntimeError("repair ratio plan must cover every reusable Segment")
+        self.repair_ratio_plan = plan
+
+    def authorize_final_commit(
+        self,
+        accepted_segment_ids: Sequence[str],
+        *,
+        r1_endpoint: bool = False,
+        r0_endpoint: bool = False,
+        measurement_only: bool = False,
+        joint_admission_decision: Any | None = None,
+    ) -> None:
+        if self.selection_barrier is None:
+            raise RuntimeError("FinalCommitAdmission requires a closed barrier")
+        accepted = set(str(value) for value in accepted_segment_ids)
+        if r0_endpoint and r1_endpoint:
+            raise ValueError("repair endpoint cannot be both r=0 and r=1")
+        if not r1_endpoint and not r0_endpoint and not measurement_only:
+            from .v8_schema7_contracts import FinalCommitDecision
+
+            if not isinstance(joint_admission_decision, FinalCommitDecision):
+                raise RuntimeError("online FinalCommitAdmission requires joint decision evidence")
+            if accepted != set(joint_admission_decision.accepted_ready_segment_ids):
+                raise RuntimeError("engine admission differs from Joint Planner subset")
+            if (
+                joint_admission_decision.request_total_ms
+                > 0.8 * joint_admission_decision.dense_reference_total_ms + 1e-12
+            ):
+                raise RuntimeError("Joint Planner decision exceeds final gamma")
+        if accepted - self.preparation_admitted_segment_ids:
+            raise RuntimeError("FinalCommitAdmission cannot bypass preparation")
+        if not r1_endpoint and not r0_endpoint and self.repair_ratio_plan is None:
+            raise RuntimeError("online FinalCommitAdmission requires a repair ratio plan")
+        self.final_commit_admitted_segment_ids.update(accepted)
+        if r1_endpoint:
+            self.r1_endpoint_segment_ids.update(accepted)
+        if r0_endpoint:
+            self.r0_endpoint_segment_ids.update(accepted)
+        if measurement_only:
+            self.measurement_only_admission_segment_ids.update(accepted)
+
+    def start_artifact_replica_prefetch(
+        self,
+        *,
+        segment_id: str,
+        transfer_authorization: Any = None,
+        **kwargs: Any,
+    ) -> LayerwiseLoadTicket:
+        if segment_id not in self.preparation_admitted_segment_ids:
+            raise RuntimeError("schema-v8 full-KV transfer lacks PreparationAdmission")
+        if transfer_authorization is None:
+            raise RuntimeError("schema-v8 full-KV transfer lacks lease/HBM authorization")
+        transfer_authorization.assert_valid_for(
+            source_variant_id=str(kwargs["source_variant_id"]),
+            artifact_id=kwargs["artifact"].artifact_id,
+            replica_id=kwargs["replica"].replica_id,
+        )
+        return super().start_artifact_replica_prefetch(segment_id=segment_id, **kwargs)
+
+    def commit_ready_segment(
+        self,
+        *,
+        segment_id: str,
+        boundary: int,
+        segment_positions: Sequence[int],
+        repair_positions: Sequence[int],
+        scheduler_boundary: int,
+    ) -> int:
+        if segment_id not in self.final_commit_admitted_segment_ids:
+            raise RuntimeError("selective reuse before FinalCommitAdmission is forbidden")
+        positions = tuple(int(value) for value in segment_positions)
+        repair = tuple(int(value) for value in repair_positions)
+        if segment_id in self.r1_endpoint_segment_ids:
+            expected_count = len(positions)
+        elif segment_id in self.r0_endpoint_segment_ids:
+            expected_count = 0
+        else:
+            ratios = self.repair_ratio_plan.ratios_for_layer(int(boundary))
+            if segment_id not in ratios:
+                raise RuntimeError("repair ratio plan misses the actual reuse layer")
+            expected_count = min(
+                len(positions),
+                int(math.ceil(ratios[segment_id] * len(positions))),
+            )
+        if len(repair) != expected_count:
+            raise RuntimeError("repair mask count differs from the admitted ratio")
+        if len(set(repair)) != len(repair) or not set(repair).issubset(positions):
+            raise ValueError("repair mask must be unique and inside its Segment")
+        if self.selection_barrier is None or boundary < self.selection_barrier.first_selective_reuse_layer:
+            raise RuntimeError("reuse boundary precedes the dense selection barrier")
+        return super().commit_ready_segment(
+            segment_id=segment_id,
+            boundary=boundary,
+            segment_positions=positions,
+            repair_positions=repair,
+            scheduler_boundary=scheduler_boundary,
         )
