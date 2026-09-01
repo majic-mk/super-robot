@@ -185,6 +185,7 @@ class V7SourcePool:
         *,
         canonical_source_state_digest: str,
         summary_digest: str,
+        expected_replacement_source_variant_id: Optional[str] = None,
     ) -> StoredSourceVariant:
         model = identity.model_math_signature
         namespace = self._namespaces.get(model)
@@ -205,7 +206,16 @@ class V7SourcePool:
             return existing
         siblings = self.variants_for_content(model, identity.reuse_content_key, include_unavailable=True)
         if len(siblings) >= self.max_variants_per_content:
-            self._evict_variant(self._lowest_value_variant(siblings), "variant_limit")
+            victim = self._lowest_value_variant(siblings)
+            if (
+                expected_replacement_source_variant_id is not None
+                and victim.source_variant_id
+                != expected_replacement_source_variant_id
+            ):
+                raise RuntimeError("stale Source Variant replacement plan")
+            self._evict_variant(victim, "variant_limit")
+        elif expected_replacement_source_variant_id is not None:
+            raise RuntimeError("replacement was requested below the Variant limit")
         order = self._tick()
         stored = StoredSourceVariant(
             identity=identity,
@@ -222,6 +232,26 @@ class V7SourcePool:
             source_variant_id=identity.source_variant_id,
         )
         return stored
+
+    def plan_variant_replacement(
+        self,
+        model_math_signature: str,
+        reuse_content_key: str,
+    ) -> Optional[StoredSourceVariant]:
+        """Return the safe capacity victim without mutating placement state.
+
+        Variant replacement is deliberately separate from CPU/SSD Replica
+        demotion.  The former removes one historical context from a content
+        bucket; the latter only changes where the same Artifact is stored.
+        """
+        siblings = self.variants_for_content(
+            model_math_signature,
+            reuse_content_key,
+            include_unavailable=True,
+        )
+        if len(siblings) < self.max_variants_per_content:
+            return None
+        return self._lowest_value_variant(siblings)
 
     def register_artifact(
         self,

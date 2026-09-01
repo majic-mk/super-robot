@@ -1,0 +1,66 @@
+protocol_version: 8
+schema_version: 9
+stage: no_gpu_absolute_residual_variant_admission
+runtime_patch_mode: probekv_v8_absolute_residual_variant_admission
+
+source_selection:
+  method: training_free_current_state_residual_k
+  online_depths: [1, 2]
+  source_score_trim_ratio_candidates: [0.0, 0.10, 0.15, 0.30, 0.40]
+  relative_ranking_required: true
+  absolute_residual_admission_required: true
+  d1_failure_action: d2_rescue
+  d2_final_order:
+    - absolute_compatible_filter
+    - residual_band
+    - gate1_economic_filter
+    - minimum_predicted_cost
+  source_freeze_is_final: true
+
+variant_admission:
+  profile: VariantAdmissionProfile
+  threshold_scope: model_by_completed_depth
+  content_miss_materialization: true
+  absolute_mismatch_materialization: true
+  mismatch_requires_full_candidate_coverage: true
+  budget_truncated_materialization: false
+  gate1_failure_materialization: false
+  final_commit_failure_materialization: false
+  canonical_source_requires: exact_dense_full_prefill
+  selective_repair_promotion: false
+  r1_repair_promotion: false
+  max_variants_per_content: 16
+  materialization_budget_fraction: 0.02
+
+capacity:
+  variant_replacement: value_density_then_lru
+  busy_or_probation_variant_protected: true
+  no_safe_victim_action: reject_materialization
+  independent_from_replica_tiering: true
+  backing_policy: one_exclusive_cpu_or_ssd_backing
+  gpu_replica: transient_hot
+
+economics:
+  gate1_gamma: 1.0
+  final_commit_gamma: 0.8
+  absolute_compatibility_does_not_replace_gate1: true
+  unresolved_segments: joint_dense_fallback
+
+compatibility:
+  schema8_profiles_unlock_schema9: false
+  schema8_gates_unlock_schema9: false
+  schema8_runtime_fallback_preserved: true
+  locked_test_accessed: false
+  paper_evidence: false
+
+no_gpu_gate:
+  schema9_local_implementation_complete: true
+  artifact_preparation_ready: true
+  gpu_rental_ready_for_schema9_profile_freeze: true
+  variant_admission_profile_frozen: false
+  selection_depth_profile_frozen: false
+  repair_policy_profile_frozen: false
+  runtime_cost_profile_frozen: false
+  gpu_runtime_qualified: false
+  h1_h2_execution_allowed: false
+  failures: []

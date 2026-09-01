@@ -37,6 +37,10 @@ def main() -> int:
         "--v8-schema8-contract",
         default="configs/experiment_contract_v8_schema8.yaml",
     )
+    parser.add_argument(
+        "--v8-schema9-contract",
+        default="configs/experiment_contract_v8_schema9.yaml",
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
@@ -48,6 +52,8 @@ def main() -> int:
     v8_schema7 = yaml.safe_load(v8_schema7_path.read_text(encoding="utf-8"))
     v8_schema8_path = Path(args.v8_schema8_contract)
     v8_schema8 = yaml.safe_load(v8_schema8_path.read_text(encoding="utf-8"))
+    v8_schema9_path = Path(args.v8_schema9_contract)
+    v8_schema9 = yaml.safe_load(v8_schema9_path.read_text(encoding="utf-8"))
     errors = []
     if contract.get("schema_version") != 7:
         errors.append("current experiment contract must use schema version 7")
@@ -280,6 +286,33 @@ def main() -> int:
         != 0.05
     ):
         errors.append("schema-v8 H1-H5 experiment contract is incomplete")
+    if (v8_schema9.get("protocol_version"), v8_schema9.get("schema_version")) != (8, 9):
+        errors.append("absolute-residual Variant contract must use schema9")
+    if (
+        v8_schema9.get("runtime_patch_mode")
+        != "probekv_v8_absolute_residual_variant_admission"
+    ):
+        errors.append("schema9 contract uses another runtime patch mode")
+    selection9 = v8_schema9.get("source_selection", {})
+    admission9 = v8_schema9.get("variant_admission", {})
+    if (
+        selection9.get("absolute_residual_admission_required") is not True
+        or selection9.get("d1_failure_action") != "d2_rescue"
+        or admission9.get("mismatch_requires_full_candidate_coverage") is not True
+        or admission9.get("canonical_source_requires")
+        != "exact_dense_full_prefill"
+        or admission9.get("selective_repair_promotion") is not False
+        or admission9.get("r1_repair_promotion") is not False
+        or admission9.get("max_variants_per_content") != 16
+    ):
+        errors.append("schema9 absolute admission/materialization contract is invalid")
+    capacity9 = v8_schema9.get("capacity", {})
+    if (
+        capacity9.get("variant_replacement") != "value_density_then_lru"
+        or capacity9.get("independent_from_replica_tiering") is not True
+        or capacity9.get("no_safe_victim_action") != "reject_materialization"
+    ):
+        errors.append("schema9 capacity and tiering contracts are conflated")
     try:
         schema6_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema6.json").read_text(
@@ -390,6 +423,19 @@ def main() -> int:
         ):
             errors.append("v8 schema-v8 config did not freeze Gate scopes")
     try:
+        local_v8_schema9 = load_config(
+            "configs/local_system_v8_schema9_absolute_variant_admission.json"
+        )
+    except (OSError, ValueError) as error:
+        errors.append("v8 schema9 config is invalid: %s" % error)
+    else:
+        if (
+            local_v8_schema9.v8_schema_version != 9
+            or not local_v8_schema9.absolute_residual_admission_enabled
+            or local_v8_schema9.canonical_variant_provenance != "dense_exact"
+        ):
+            errors.append("v8 schema9 config did not freeze admission provenance")
+    try:
         schema7_patches = patch_files_for_mode(
             Path("patches/cacheblend/manifest.json"),
             "probekv_v8_winner_gradual_streaming",
@@ -409,6 +455,16 @@ def main() -> int:
     else:
         if len(schema8_patches) != 8:
             errors.append("schema-v8 CacheBlend patchset must contain eight patches")
+    try:
+        schema9_patches = patch_files_for_mode(
+            Path("patches/cacheblend/manifest.json"),
+            "probekv_v8_absolute_residual_variant_admission",
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors.append("schema9 CacheBlend patch contract is invalid: %s" % error)
+    else:
+        if len(schema9_patches) != 8:
+            errors.append("schema9 CacheBlend patchset must contain eight patches")
     try:
         schema7_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema7.json").read_text(
@@ -453,6 +509,25 @@ def main() -> int:
             errors.append("schema-v8 server lock crosses its no-GPU stop boundary")
         if "legacy_multicheckpoint_three_gate_fallback" not in capabilities8:
             errors.append("schema-v8 server lock omits the legacy fallback capability")
+    try:
+        schema9_lock = json.loads(
+            Path("configs/a800_server_lock_v8_schema9.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append("schema9 server lock is invalid: %s" % error)
+    else:
+        runtime9 = schema9_lock.get("runtime", {})
+        if (
+            schema9_lock.get("schema_version") != 9
+            or schema9_lock.get("stack", {}).get("cacheblend_patch_mode")
+            != "probekv_v8_absolute_residual_variant_admission"
+            or runtime9.get("variant_admission_profile_frozen") is not False
+            or runtime9.get("run_qualification") is not False
+            or runtime9.get("run_h1") is not False
+        ):
+            errors.append("schema9 server lock crosses its no-GPU stop boundary")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")
@@ -492,6 +567,7 @@ def main() -> int:
         "v8_schema6_contract": str(v8_schema6_path.resolve()),
         "v8_schema7_contract": str(v8_schema7_path.resolve()),
         "v8_schema8_contract": str(v8_schema8_path.resolve()),
+        "v8_schema9_contract": str(v8_schema9_path.resolve()),
         "valid": not errors,
         "errors": errors,
         "matrix_counts": matrix_counts,

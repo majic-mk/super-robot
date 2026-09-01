@@ -131,6 +131,15 @@ class ExperimentConfig:
     repair_ratio_scope: str = "legacy"
     selection_runtime_fallback_policy: str = "legacy_multicheckpoint_three_gate"
     legacy_fallback_gate_required: bool = True
+    variant_admission_profile_status: str = "legacy"
+    variant_admission_profile_sha256: str = ""
+    absolute_residual_admission_enabled: bool = False
+    absolute_residual_threshold_by_depth: Tuple[Tuple[int, float], ...] = ()
+    materialize_on_content_miss: bool = False
+    materialize_on_complete_residual_mismatch: bool = False
+    require_full_candidate_coverage_for_mismatch: bool = True
+    variant_materialization_budget_fraction: float = 0.02
+    canonical_variant_provenance: str = "dense_exact"
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -417,6 +426,36 @@ class ExperimentConfig:
             legacy_fallback_gate_required=bool(
                 raw.get("legacy_fallback_gate_required", True)
             ),
+            variant_admission_profile_status=str(
+                raw.get("variant_admission_profile_status", "legacy")
+            ),
+            variant_admission_profile_sha256=str(
+                raw.get("variant_admission_profile_sha256", "")
+            ),
+            absolute_residual_admission_enabled=bool(
+                raw.get("absolute_residual_admission_enabled", False)
+            ),
+            absolute_residual_threshold_by_depth=tuple(
+                (int(depth), float(value))
+                for depth, value in raw.get(
+                    "absolute_residual_threshold_by_depth", []
+                )
+            ),
+            materialize_on_content_miss=bool(
+                raw.get("materialize_on_content_miss", False)
+            ),
+            materialize_on_complete_residual_mismatch=bool(
+                raw.get("materialize_on_complete_residual_mismatch", False)
+            ),
+            require_full_candidate_coverage_for_mismatch=bool(
+                raw.get("require_full_candidate_coverage_for_mismatch", True)
+            ),
+            variant_materialization_budget_fraction=float(
+                raw.get("variant_materialization_budget_fraction", 0.02)
+            ),
+            canonical_variant_provenance=str(
+                raw.get("canonical_variant_provenance", "dense_exact")
+            ),
         )
         result.validate()
         return result
@@ -691,8 +730,8 @@ class ExperimentConfig:
             raise ValueError("v7 server runs require the explicit v7 runtime")
 
     def _validate_v8(self) -> None:
-        if self.v8_schema_version not in {5, 6, 7, 8}:
-            raise ValueError("v8 runtime schema must be 5, 6, 7 or 8")
+        if self.v8_schema_version not in {5, 6, 7, 8, 9}:
+            raise ValueError("v8 runtime schema must be 5, 6, 7, 8 or 9")
         if self.legacy_online_kmax_present:
             raise ValueError("v8 forbids legacy online_kmax")
         if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
@@ -744,7 +783,7 @@ class ExperimentConfig:
             SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
             SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
         }
-        if self.v8_schema_version == 8:
+        if self.v8_schema_version in {8, 9}:
             allowed_execution_policies.add(
                 SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
             )
@@ -796,22 +835,28 @@ class ExperimentConfig:
             if self.selector_profile_status == "frozen" and not self.selector_profile_sha256:
                 raise ValueError("a frozen v8 profile requires a SHA256")
         elif self.selector_profile_status != "legacy" or self.selector_profile_sha256:
-            raise ValueError("schema-v8 cannot reuse the legacy SelectorProfile fields")
+            raise ValueError("schema-v8+ cannot reuse the legacy SelectorProfile fields")
         if self.v8_schema_version == 7:
             self._validate_v8_schema7()
         if self.v8_schema_version == 8:
             self._validate_v8_schema8()
+        if self.v8_schema_version == 9:
+            self._validate_v8_schema9()
         if self.evidence_class != "local_simulation":
             required_backend = (
                 "cacheblend_v8_schema7_gradual_streaming"
                 if self.v8_schema_version == 7
                 else (
-                    "cacheblend_v8_schema8_gradual_barrier"
-                    if self.v8_schema_version == 8
+                    "cacheblend_v8_schema9_absolute_variant_admission"
+                    if self.v8_schema_version == 9
                     else (
-                        "cacheblend_v8_schema6_joint"
-                        if self.v8_schema_version == 6
-                        else "cacheblend_v8_training_free"
+                        "cacheblend_v8_schema8_gradual_barrier"
+                        if self.v8_schema_version == 8
+                        else (
+                            "cacheblend_v8_schema6_joint"
+                            if self.v8_schema_version == 6
+                            else "cacheblend_v8_training_free"
+                        )
                     )
                 )
             )
@@ -985,6 +1030,100 @@ class ExperimentConfig:
             and self.repair_policy_profile_status != "frozen"
         ):
             raise ValueError("adaptive schema-v8 repair requires a frozen RepairPolicyProfile")
+
+    def _validate_v8_schema9(self) -> None:
+        if (
+            self.runtime_patch_mode
+            != "probekv_v8_absolute_residual_variant_admission"
+        ):
+            raise ValueError("schema9 requires its explicit runtime patch mode")
+        if self.source_selection_metric != "residual_k_pre_rope":
+            raise ValueError("schema9 Source selection must use pre-RoPE Residual-K")
+        if self.source_selection_depth_policy not in {"d1_only", "d1_d2_rescue"}:
+            raise ValueError("schema9 online main path is limited to d1/d2")
+        expected = (
+            (1,)
+            if self.source_selection_depth_policy == "d1_only"
+            else (1, 2)
+        )
+        if self.probe_checkpoints != expected:
+            raise ValueError("schema9 checkpoints differ from its d1/d2 policy")
+        if (
+            self.selection_execution_policy
+            is not SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
+        ):
+            raise ValueError("schema9 preserves the qualified dense selection barrier")
+        if not self.absolute_residual_admission_enabled:
+            raise ValueError("schema9 requires absolute residual admission")
+        thresholds = tuple(self.absolute_residual_threshold_by_depth)
+        if tuple(depth for depth, _ in thresholds) != tuple(
+            sorted(set(depth for depth, _ in thresholds))
+        ) or any(depth not in {1, 2} or value < 0 for depth, value in thresholds):
+            raise ValueError("schema9 absolute residual thresholds are invalid")
+        if set(depth for depth, _ in thresholds) != set(expected):
+            raise ValueError("schema9 needs one threshold per online depth")
+        if tuple(self.source_score_trim_ratio_candidates) != (
+            0.0, 0.10, 0.15, 0.30, 0.40
+        ):
+            raise ValueError("schema9 Source trim development grid changed")
+        if self.source_score_trim_ratio not in self.source_score_trim_ratio_candidates:
+            raise ValueError("schema9 Source trim ratio is outside the grid")
+        if not (
+            self.materialize_on_content_miss
+            and self.materialize_on_complete_residual_mismatch
+            and self.require_full_candidate_coverage_for_mismatch
+        ):
+            raise ValueError("schema9 exact-dense materialization guards changed")
+        if not 0 <= self.variant_materialization_budget_fraction <= 0.05:
+            raise ValueError("schema9 materialization budget must be within 5%")
+        if self.canonical_variant_provenance != "dense_exact":
+            raise ValueError("schema9 canonical Variant must come from exact dense prefill")
+        if self.variant_admission_profile_status not in {"unfrozen", "frozen"}:
+            raise ValueError("invalid schema9 VariantAdmissionProfile status")
+        if self.variant_admission_profile_status == "frozen":
+            if len(self.variant_admission_profile_sha256) != 64:
+                raise ValueError("frozen VariantAdmissionProfile requires SHA256")
+        elif self.variant_admission_profile_sha256:
+            raise ValueError("unfrozen VariantAdmissionProfile cannot carry SHA")
+        if self.gate1_gamma != 1.0 or self.gamma != 0.8:
+            raise ValueError("schema9 freezes Gate1=1.0 and final admission=0.8")
+        if (
+            self.selection_runtime_fallback_policy
+            != "legacy_multicheckpoint_three_gate"
+            or not self.legacy_fallback_gate_required
+        ):
+            raise ValueError("schema9 must preserve the qualified schema8 fallback")
+        expected_scope = {
+            "fixed_15": "uniform_fixed",
+            "static_gradual": "shared_relative_schedule",
+            "load_recompute_aware_gradual": "per_segment_load_aware",
+            "load_recompute_aware_uniform": "request_layer_uniform_io_balanced",
+        }.get(self.repair_policy)
+        if expected_scope is None or self.repair_ratio_scope != expected_scope:
+            raise ValueError("schema9 repair policy and ratio scope disagree")
+        for name, status, sha256 in (
+            (
+                "selection-depth",
+                self.selection_depth_profile_status,
+                self.selection_depth_profile_sha256,
+            ),
+            (
+                "repair-policy",
+                self.repair_policy_profile_status,
+                self.repair_policy_profile_sha256,
+            ),
+            (
+                "runtime-cost",
+                self.runtime_cost_profile_status,
+                self.runtime_cost_profile_sha256,
+            ),
+        ):
+            if status not in {"unfrozen", "frozen"}:
+                raise ValueError("invalid schema9 %s Profile status" % name)
+            if status == "frozen" and len(sha256) != 64:
+                raise ValueError("frozen schema9 %s Profile requires SHA256" % name)
+            if status != "frozen" and sha256:
+                raise ValueError("unfrozen schema9 %s Profile cannot carry SHA" % name)
 
 
 def load_config(path: str) -> ExperimentConfig:

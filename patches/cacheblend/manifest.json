@@ -76,6 +76,16 @@
       "0006-probekv-v7-conservative-repair-rounding.patch",
       "0007-probekv-schema6-cfo-post-rope-hook.patch",
       "0008-probekv-resumable-active-kv-writeback.patch"
+    ],
+    "probekv_v8_absolute_residual_variant_admission": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch",
+      "0007-probekv-schema6-cfo-post-rope-hook.patch",
+      "0008-probekv-resumable-active-kv-writeback.patch"
     ]
   },
   "runtime_modes": {
@@ -201,6 +211,17 @@
       "status": "no_gpu_complete_requires_schema8_a800_sentinel",
       "paper_evidence": false,
       "purpose": "schema-v8 d1/d2 dense barrier, tiered LRU, and explicit repair-ratio scope"
+    },
+    "absolute_residual_variant_admission_runtime_v8": {
+      "patch_mode": "probekv_v8_absolute_residual_variant_admission",
+      "inherits": "gradual_barrier_tiered_lru_runtime_v8",
+      "absolute_residual_admission": true,
+      "dense_exact_variant_materialization": true,
+      "full_candidate_coverage_for_mismatch": true,
+      "online_variant_growth": true,
+      "status": "no_gpu_complete_requires_schema9_profile_freeze_and_a800_qualification",
+      "paper_evidence": false,
+      "purpose": "schema9 absolute Source compatibility and audited online Variant growth"
     }
   },
   "innovation_claim": false,
@@ -212,5 +233,6 @@
   "v7_full_kv_artifact_policy": "one lossless BF16 Artifact per Source Variant",
   "v8_source_selection_policy": "training-free residual K with K-only SelectionState",
   "v8_schema7_repair_policy": "winner-specific fixed15 fallback plus profiled gradual no-reentry candidates",
-  "v8_schema8_main_policy": "dense d1/d2 selection barrier, CPU-preferred single backing, tier LRU, and explicit ratio scope"
+  "v8_schema8_main_policy": "dense d1/d2 selection barrier, CPU-preferred single backing, tier LRU, and explicit ratio scope",
+  "v8_schema9_main_policy": "schema8 runtime plus absolute residual admission and exact-dense online Variant growth"
 }

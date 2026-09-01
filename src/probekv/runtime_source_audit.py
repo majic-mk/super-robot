@@ -428,7 +428,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
                 "configure_dense_selection_barrier",
                 "measured_repair_positions",
                 "authorize_final_commit",
-                "runtime_schema_version == 8",
+                "runtime_schema_version in {8, 9}",
                 "online immutable execution requires the Artifact-creation digest",
             ),
         ),
@@ -477,6 +477,74 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
         "runtime_joint_ratio_plan_execution": True,
         "request_lru_migration_preserves_epoch": True,
         "online_artifact_digest_creation_time_only": True,
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }
+
+
+def audit_v8_schema9_runtime_sources(repo: Path) -> Dict[str, Any]:
+    """Static no-GPU audit for absolute admission and Variant materialization."""
+    repo = repo.resolve()
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            repo / "patches" / "cacheblend" / "manifest.json",
+            "probekv_v8_absolute_residual_variant_admission",
+        )
+    except (OSError, ValueError) as error:
+        paths = ()
+        failures.append("schema9 patch manifest invalid: %s" % error)
+    checks = (
+        (
+            repo / "src" / "probekv" / "v8_schema9_selector.py",
+            (
+                "class Schema9D1D2Selector",
+                "d1_absolute_residual_failed_rescue",
+                "d2_no_absolute_compatible_source",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema9_materialization.py",
+            (
+                "class VariantMaterializationController",
+                "canonical_source_requires_exact_dense_prefill",
+                "absolute_mismatch_requires_full_candidate_coverage",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema9_runtime.py",
+            (
+                "class Schema9AbsoluteAdmissionRequestController",
+                "materialize_after_exact_dense",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema9_profile.py",
+            ("class VariantAdmissionProfile", "threshold_for_depth"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema9_qualification.py",
+            ("evaluate_schema9_runtime_qualification", "validate_schema9_h1_gate"),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing schema9 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "protocol_version": 8,
+        "schema_version": 9,
+        "patch_mode": "probekv_v8_absolute_residual_variant_admission",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "absolute_residual_admission": True,
+        "dense_exact_variant_materialization": True,
+        "full_candidate_coverage_for_mismatch": True,
+        "schema8_fallback_preserved": True,
         "gpu_runtime_qualified": False,
         "failures": failures,
     }

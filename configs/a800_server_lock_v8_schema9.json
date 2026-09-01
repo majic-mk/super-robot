@@ -1,0 +1,36 @@
+{
+  "schema_version": 9,
+  "protocol_version": 8,
+  "purpose": "non-paper absolute-residual admission and online Variant growth qualification",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "transformers": "4.40.2",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v8_absolute_residual_variant_admission"
+  },
+  "runtime": {
+    "backend": "cacheblend_v8_schema9_absolute_variant_admission",
+    "source_selection_completed_depths": [1, 2],
+    "absolute_residual_admission": true,
+    "full_candidate_coverage_required_for_mismatch_materialization": true,
+    "canonical_variant_provenance": "dense_exact",
+    "max_variants_per_content": 16,
+    "gate1_gamma": 1.0,
+    "final_commit_gamma": 0.8,
+    "legacy_schema8_fallback_required": true,
+    "variant_admission_profile_frozen": false,
+    "run_qualification": false,
+    "run_h1": false
+  }
+}

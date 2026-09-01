@@ -195,7 +195,7 @@ class RealCacheBlendA800Executor:
         if protocol_version == 8 and engine_class is not expected_v8_engine:
             raise ValueError("protocol v8 requires the schema-selected online engine")
         self.protocol_version = protocol_version
-        if protocol_version == 8 and runtime_schema_version not in {5, 6, 7, 8}:
+        if protocol_version == 8 and runtime_schema_version not in {5, 6, 7, 8, 9}:
             raise ValueError("unsupported protocol-v8 runtime schema")
         if protocol_version != 8 and runtime_schema_version != 5:
             raise ValueError("runtime schema selection is only defined for protocol v8")
@@ -906,14 +906,14 @@ class RealCacheBlendA800Executor:
                 attention_metadata=attention,
                 working_kv=self.kv_caches,
             )
-            if self.runtime_schema_version == 8:
+            if self.runtime_schema_version in {8, 9}:
                 engine.configure_repair_metric(RepairMetric(repair_metric))
             observed_k0 = None
             observed_kd = None
             if self.protocol_version == 8:
                 observed_k0 = engine.session.observe_pre_rope_k(0)
             first_probe = min(max(1, int(probe_layer)), self.model_spec.num_layers - 1)
-            if self.runtime_schema_version == 8 and first_probe not in {1, 2}:
+            if self.runtime_schema_version in {8, 9} and first_probe not in {1, 2}:
                 raise ValueError("schema-v8 online selection is limited to d=1/d=2")
             engine.advance_to_layer(first_probe)
             if self.protocol_version == 8:
@@ -982,7 +982,7 @@ class RealCacheBlendA800Executor:
                     )
                     if (
                         self.runtime_schema_version >= 6
-                        and self.runtime_schema_version != 8
+                        and self.runtime_schema_version not in {8, 9}
                     ):
                         transfer_authorizations.append(
                             self.full_kv_transfer_authorizer.authorize(
@@ -1010,7 +1010,7 @@ class RealCacheBlendA800Executor:
                         canonical_layers=canonical_layers,
                         segment_positions=positions,
                     ))
-            if self.runtime_schema_version == 8:
+            if self.runtime_schema_version in {8, 9}:
                 from .v8_schema8_barrier import close_dense_selection_barrier
 
                 segment_ids = tuple(row[0] for row in prepared_sources)
@@ -1064,7 +1064,7 @@ class RealCacheBlendA800Executor:
                     canonical_layers=canonical_layers,
                     segment_positions=positions,
                 )
-                if self.runtime_schema_version == 8:
+                if self.runtime_schema_version in {8, 9}:
                     prefetch_kwargs["transfer_authorization"] = transfer_authorization
                 tickets.append(engine.start_artifact_replica_prefetch(**prefetch_kwargs))
             for ticket in tickets:
@@ -1076,7 +1076,7 @@ class RealCacheBlendA800Executor:
                 or {
                     index: (
                         base
-                        if self.runtime_schema_version == 8
+                        if self.runtime_schema_version in {8, 9}
                         else min(base + index % 3, self.model_spec.num_layers)
                     )
                     for index in range(len(fixture.segment_positions))
@@ -1097,7 +1097,7 @@ class RealCacheBlendA800Executor:
             supplied_positions = dict(repair_positions_by_segment or {})
             if supplied_positions and set(supplied_positions) != expected_segments:
                 raise ValueError("repair positions must cover every Segment")
-            if self.runtime_schema_version == 8:
+            if self.runtime_schema_version in {8, 9}:
                 segment_ids = tuple("c%d" % index for index in expected_segments)
                 if ratio >= 1.0:
                     engine.authorize_final_commit(segment_ids, r1_endpoint=True)
@@ -1165,7 +1165,7 @@ class RealCacheBlendA800Executor:
                             int(value) for value in supplied_positions[index]
                         )
                     elif (
-                        self.runtime_schema_version == 8
+                        self.runtime_schema_version in {8, 9}
                         and 0.0 < ratio < 1.0
                     ):
                         admitted_ratios = engine.repair_ratio_plan.ratios_for_layer(
@@ -1249,7 +1249,7 @@ class RealCacheBlendA800Executor:
             },
             "final_active_positions": list(engine.session.active_positions),
             "forced_nonpaper_measurement_admission": bool(
-                self.runtime_schema_version == 8
+                self.runtime_schema_version in {8, 9}
                 and force_nonpaper_measurement_admission
             ),
             "per_request_prefix_full_digest_verified": bool(
@@ -1966,7 +1966,7 @@ class RealCacheBlendA800Executor:
                 probe_layer=int(boundary),
                 winner_variant=0,
                 force_nonpaper_measurement_admission=(
-                    self.runtime_schema_version == 8 and repair_ratio < 1.0
+                    self.runtime_schema_version in {8, 9} and repair_ratio < 1.0
                 ),
             )
 
@@ -2139,7 +2139,7 @@ class RealCacheBlendA800Executor:
                 winner_variant=winner_variant,
                 teacher_tokens=dense.token_ids if dense is not None else (),
                 force_nonpaper_measurement_admission=(
-                    self.runtime_schema_version == 8 and job.repair_ratio < 1.0
+                    self.runtime_schema_version in {8, 9} and job.repair_ratio < 1.0
                 ),
             )
             if dense is not None:
@@ -2178,7 +2178,7 @@ class RealCacheBlendA800Executor:
                     probe_layer=job.probe_layer,
                     winner_variant=winner_variant,
                     force_nonpaper_measurement_admission=(
-                        self.runtime_schema_version == 8 and job.repair_ratio < 1.0
+                        self.runtime_schema_version in {8, 9} and job.repair_ratio < 1.0
                     ),
                 )
             elif job.kind == V6A800JobKind.SUMMARY_GENERATION:
