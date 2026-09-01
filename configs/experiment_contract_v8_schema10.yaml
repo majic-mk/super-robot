@@ -21,7 +21,7 @@ variant_admission:
   exploration_claims_context_novelty: false
   exploration_replacement_at_k16: false
   max_variants_per_content: 16
-  replacement_policy: value_density_v1_full_scope_only
+  replacement_policy: per_content_variant_lru_full_scope_only
   replacement_budget_fraction: 0.01
   exploration_quota_per_content: 2
   probation_comparison_observations: 2

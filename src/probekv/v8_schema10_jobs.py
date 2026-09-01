@@ -186,6 +186,7 @@ def build_schema10_h1_h5_manifests(model_key: str) -> Mapping[str, object]:
             "purpose": "runtime_storage_concurrency_and_gate1_counterfactual",
             "metrics": [
                 "cpu_ssd_lru",
+                "per_content_variant_lru",
                 "probation_verified_expired_counts",
                 "pool_saturation",
                 "replacement_churn",

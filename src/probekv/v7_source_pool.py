@@ -52,6 +52,7 @@ class StoredSourceVariant:
     summary_digest: str
     registered_order: int
     last_access_order: int
+    last_request_use_epoch: int
     state: SourceVariantState = SourceVariantState.ACTIVE
     artifact: Optional[CanonicalKVArtifact] = None
     replicas: Dict[str, PhysicalReplica] = field(default_factory=dict)
@@ -256,6 +257,7 @@ class V7SourcePool:
             summary_digest=summary_digest,
             registered_order=order,
             last_access_order=order,
+            last_request_use_epoch=order,
             materialization_reason=str(materialization_reason),
         )
         self._variants[key] = stored
@@ -424,7 +426,10 @@ class V7SourcePool:
         if variant.stats.observations >= self.probation_observations:
             variant.maturity = SourceVariantMaturity.VERIFIED
             variant.probation_protected = False
-        variant.last_access_order = self._tick()
+        access_epoch = self._tick()
+        variant.last_access_order = access_epoch
+        if selected or admitted:
+            variant.last_request_use_epoch = access_epoch
 
     def record_content_lookup_opportunity(
         self,
@@ -608,7 +613,9 @@ class V7SourcePool:
             raise RuntimeError("Replica logical digest differs from Artifact")
         if replica.state is not ReplicaState.READY:
             raise RuntimeError("Replica is not bindable")
-        variant.last_access_order = self._tick()
+        request_use_epoch = self._tick()
+        variant.last_access_order = request_use_epoch
+        variant.last_request_use_epoch = request_use_epoch
         return replica
 
     def variants_for_content(

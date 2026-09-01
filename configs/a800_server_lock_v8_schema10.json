@@ -27,7 +27,7 @@
     "bounded_probation": true,
     "controlled_budget_truncated_exploration": true,
     "max_variants_per_content": 16,
-    "replacement_policy": "value_density_v1_full_scope_only",
+    "replacement_policy": "per_content_variant_lru_full_scope_only",
     "replacement_budget_fraction": 0.01,
     "gate1_counterfactual": true,
     "atomic_preparation_reservation_required": true,

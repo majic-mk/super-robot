@@ -45,9 +45,16 @@ freezes `gate1_mode=explicit_barrier|fused_advisory`. Atomic preparation
 reservation and `FinalCommitAdmission` are mandatory in both modes.
 
 At `K=16`, replacement is never implicit. Only complete-scope absolute
-mismatch evidence may invoke the frozen `value_density_v1_full_scope_only`
+mismatch evidence may invoke the frozen `per_content_variant_lru_full_scope_only`
 replacement policy, and replacement work must fit its own frozen budget.
 Content miss and budget-truncated exploration cannot silently evict a Variant.
+
+Within one canonical Segment/content bucket, the replacement victim is the
+Source Variant with the oldest real request-use epoch. Merely comparing a
+candidate does not refresh this epoch; Source selection/binding or actual reuse
+does. Probation protection and in-flight leases override LRU. Cross-content
+global capacity may still use value density, while CPU and SSD backing tiers
+retain their independent LRU policies.
 
 Gate1 removal is never inferred from pass rate. A side-effect-free development
 counterfactual measures extra bytes, visible copy, staging, interference, HBM

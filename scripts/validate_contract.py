@@ -334,7 +334,7 @@ def main() -> int:
         or admission10.get("exploration_claims_context_novelty") is not False
         or admission10.get("max_protected_probation_per_content") != 2
         or admission10.get("replacement_policy")
-        != "value_density_v1_full_scope_only"
+        != "per_content_variant_lru_full_scope_only"
         or admission10.get("replacement_budget_fraction") != 0.01
         or preparation10.get("atomic_preparation_reservation_required") is not True
         or preparation10.get("final_commit_admission_required") is not True
@@ -478,7 +478,7 @@ def main() -> int:
                 != (0.10, 0.15, 0.20, 0.25, 0.30)
                 or not local_v8_schema10.materialize_on_budget_truncated_exploration
                 or local_v8_schema10.variant_replacement_policy
-                != "value_density_v1_full_scope_only"
+                != "per_content_variant_lru_full_scope_only"
                 or local_v8_schema10.variant_replacement_budget_fraction != 0.01
             ):
                 errors.append("v8 schema10 config did not freeze Variant growth")
@@ -600,7 +600,7 @@ def main() -> int:
             or runtime10.get("variant_admission_profile_frozen") is not False
             or runtime10.get("preparation_policy_profile_frozen") is not False
             or runtime10.get("replacement_policy")
-            != "value_density_v1_full_scope_only"
+            != "per_content_variant_lru_full_scope_only"
             or runtime10.get("replacement_budget_fraction") != 0.01
             or runtime10.get("run_qualification") is not False
             or runtime10.get("run_h1") is not False

@@ -68,7 +68,9 @@ def main() -> int:
         thresholds=thresholds,
         materialization_budget_fraction=float(payload.get("materialization_budget_fraction", 0.02)),
         replacement_policy=str(
-            payload.get("replacement_policy", "value_density_v1_full_scope_only")
+            payload.get(
+                "replacement_policy", "per_content_variant_lru_full_scope_only"
+            )
         ),
         replacement_budget_fraction=float(
             payload.get("replacement_budget_fraction", 0.01)

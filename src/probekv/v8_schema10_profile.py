@@ -27,7 +27,7 @@ class VariantAdmissionProfileV10:
     source_residual_trim_ratio: float
     thresholds: Tuple[AbsoluteResidualThreshold, ...]
     materialization_budget_fraction: float = 0.02
-    replacement_policy: str = "value_density_v1_full_scope_only"
+    replacement_policy: str = "per_content_variant_lru_full_scope_only"
     replacement_budget_fraction: float = 0.01
     exploration_quota_per_content: int = 2
     probation_comparison_observations: int = 2
@@ -60,7 +60,7 @@ class VariantAdmissionProfileV10:
             and 0 <= self.replacement_budget_fraction <= 0.05
         ):
             raise ValueError("materialization/replacement budgets must be within 5%")
-        if self.replacement_policy != "value_density_v1_full_scope_only":
+        if self.replacement_policy != "per_content_variant_lru_full_scope_only":
             raise ValueError("schema10 replacement policy changed")
         if not 1 <= self.max_variants_per_content <= 16:
             raise ValueError("schema10 supports 1-16 Variants per content")

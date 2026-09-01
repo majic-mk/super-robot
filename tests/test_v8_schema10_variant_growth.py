@@ -183,6 +183,42 @@ class Schema10VariantStateTests(unittest.TestCase):
         self.assertIs(row.maturity, SourceVariantMaturity.VERIFIED)
         self.assertFalse(row.probation_protected)
 
+    def test_per_segment_replacement_is_lru_by_real_source_use(self) -> None:
+        profile = _variant_profile(
+            max_variants_per_content=3,
+            max_protected_probation_per_content=2,
+        )
+        pool = Schema10SourcePool(profile=profile)
+        pool.activate_namespace("model")
+        rows = [
+            pool.register_variant(
+                _identity(i),
+                canonical_source_state_digest=f"s{i}",
+                summary_digest=f"m{i}",
+            )
+            for i in range(3)
+        ]
+        for row in rows:
+            for _ in range(2):
+                pool.record_observation(
+                    "model", "content", row.source_variant_id,
+                    lookup_hit=True, compared=True,
+                )
+        # Selecting Source 0 is a true use; comparing Source 1 again is not.
+        pool.record_observation(
+            "model", "content", rows[0].source_variant_id,
+            lookup_hit=True, compared=True, selected=True,
+        )
+        source1_use_epoch = rows[1].last_request_use_epoch
+        pool.record_observation(
+            "model", "content", rows[1].source_variant_id,
+            lookup_hit=True, compared=True,
+        )
+        self.assertEqual(rows[1].last_request_use_epoch, source1_use_epoch)
+        victim = pool.plan_variant_replacement("model", "content")
+        self.assertIsNotNone(victim)
+        self.assertEqual(victim.source_variant_id, rows[1].source_variant_id)
+
 
 class Schema10MaterializationTests(unittest.TestCase):
     def setUp(self) -> None:

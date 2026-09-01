@@ -4,7 +4,7 @@ from typing import Mapping, Optional
 
 from .contracts import KVLocation
 from .global_source_pool import ModelServingMode
-from .v7_source_pool import V7SourcePool
+from .v7_source_pool import StoredSourceVariant, V7SourcePool
 from .v8_schema10_profile import VariantAdmissionProfileV10
 from .v8_schema10_contracts import VariantMaterializationReasonV10
 
@@ -56,4 +56,39 @@ class Schema10SourcePool(V7SourcePool):
                 reuse_content_key,
                 include_unavailable=True,
             )
+        )
+
+    def plan_variant_replacement(
+        self,
+        model_math_signature: str,
+        reuse_content_key: str,
+    ) -> Optional[StoredSourceVariant]:
+        """Select the least recently request-used Variant within one Segment.
+
+        Candidate comparison alone does not refresh this epoch. Probation,
+        lease, copy and execution protection remain stronger than LRU.
+        Cross-content capacity policy remains independent.
+        """
+        siblings = self.variants_for_content(
+            model_math_signature,
+            reuse_content_key,
+            include_unavailable=True,
+        )
+        if len(siblings) < self.max_variants_per_content:
+            return None
+        eligible = tuple(
+            row
+            for row in siblings
+            if not any(replica.busy for replica in row.replicas.values())
+            and not self._probation_protected(row)
+        )
+        if not eligible:
+            raise MemoryError("all per-Segment Source Variants are protected")
+        return min(
+            eligible,
+            key=lambda row: (
+                row.last_request_use_epoch,
+                row.registered_order,
+                row.source_variant_id,
+            ),
         )

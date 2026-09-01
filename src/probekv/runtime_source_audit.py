@@ -597,7 +597,12 @@ def audit_v8_schema10_runtime_sources(repo: Path) -> Dict[str, Any]:
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_pool.py",
-            ("class Schema10SourcePool", "finish_content_lookup"),
+            (
+                "class Schema10SourcePool",
+                "finish_content_lookup",
+                "plan_variant_replacement",
+                "last_request_use_epoch",
+            ),
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_profile.py",

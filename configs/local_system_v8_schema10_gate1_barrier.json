@@ -31,7 +31,7 @@
   "materialize_on_budget_truncated_exploration": true,
   "require_full_candidate_coverage_for_mismatch": true,
   "variant_materialization_budget_fraction": 0.02,
-  "variant_replacement_policy": "value_density_v1_full_scope_only",
+  "variant_replacement_policy": "per_content_variant_lru_full_scope_only",
   "variant_replacement_budget_fraction": 0.01,
   "exploration_quota_per_content": 2,
   "probation_comparison_observations": 2,

@@ -139,7 +139,7 @@ class ExperimentConfig:
     materialize_on_complete_residual_mismatch: bool = False
     require_full_candidate_coverage_for_mismatch: bool = True
     variant_materialization_budget_fraction: float = 0.02
-    variant_replacement_policy: str = "value_density_v1_full_scope_only"
+    variant_replacement_policy: str = "per_content_variant_lru_full_scope_only"
     variant_replacement_budget_fraction: float = 0.01
     canonical_variant_provenance: str = "dense_exact"
     source_residual_trim_ratio: float = 0.15
@@ -473,7 +473,7 @@ class ExperimentConfig:
             variant_replacement_policy=str(
                 raw.get(
                     "variant_replacement_policy",
-                    "value_density_v1_full_scope_only",
+                    "per_content_variant_lru_full_scope_only",
                 )
             ),
             variant_replacement_budget_fraction=float(
@@ -1239,7 +1239,7 @@ class ExperimentConfig:
             raise ValueError("schema10 materialization budget must be within 5%")
         if (
             self.variant_replacement_policy
-            != "value_density_v1_full_scope_only"
+            != "per_content_variant_lru_full_scope_only"
             or not 0 <= self.variant_replacement_budget_fraction <= 0.05
         ):
             raise ValueError("schema10 replacement policy/budget is invalid")
