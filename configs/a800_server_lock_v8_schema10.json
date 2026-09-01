@@ -1,0 +1,40 @@
+{
+  "schema_version": 10,
+  "protocol_version": 8,
+  "purpose": "non-paper dynamic Variant growth and Gate1 counterfactual qualification",
+  "paper_evidence": false,
+  "locked_test_accessed": false,
+  "gpu": {
+    "count": 1,
+    "name_regex": "^NVIDIA A800.*80GB$",
+    "minimum_memory_mib": 80000,
+    "compute_capability": "8.0"
+  },
+  "stack": {
+    "pytorch": "2.2.1",
+    "pytorch_cuda": "12.1",
+    "xformers": "0.0.25",
+    "vllm": "0.4.1",
+    "transformers": "4.40.2",
+    "cacheblend_commit": "b72d7945e6d6306f12be66520196e0f081fa2b0c",
+    "cacheblend_patch_mode": "probekv_v8_variant_growth_counterfactual"
+  },
+  "runtime": {
+    "backend": "cacheblend_v8_schema10_variant_growth_counterfactual",
+    "source_selection_completed_depths": [1, 2],
+    "source_residual_trim_ratio_grid": [0.10, 0.15, 0.20, 0.25, 0.30],
+    "canonical_variant_provenance": "dense_exact",
+    "bounded_probation": true,
+    "controlled_budget_truncated_exploration": true,
+    "max_variants_per_content": 16,
+    "replacement_policy": "value_density_v1_full_scope_only",
+    "replacement_budget_fraction": 0.01,
+    "gate1_counterfactual": true,
+    "atomic_preparation_reservation_required": true,
+    "final_commit_gamma": 0.8,
+    "variant_admission_profile_frozen": false,
+    "preparation_policy_profile_frozen": false,
+    "run_qualification": false,
+    "run_h1": false
+  }
+}

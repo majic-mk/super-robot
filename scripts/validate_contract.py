@@ -41,6 +41,10 @@ def main() -> int:
         "--v8-schema9-contract",
         default="configs/experiment_contract_v8_schema9.yaml",
     )
+    parser.add_argument(
+        "--v8-schema10-contract",
+        default="configs/experiment_contract_v8_schema10.yaml",
+    )
     args = parser.parse_args()
     contract_path = Path(args.contract)
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
@@ -54,6 +58,8 @@ def main() -> int:
     v8_schema8 = yaml.safe_load(v8_schema8_path.read_text(encoding="utf-8"))
     v8_schema9_path = Path(args.v8_schema9_contract)
     v8_schema9 = yaml.safe_load(v8_schema9_path.read_text(encoding="utf-8"))
+    v8_schema10_path = Path(args.v8_schema10_contract)
+    v8_schema10 = yaml.safe_load(v8_schema10_path.read_text(encoding="utf-8"))
     errors = []
     if contract.get("schema_version") != 7:
         errors.append("current experiment contract must use schema version 7")
@@ -313,6 +319,28 @@ def main() -> int:
         or capacity9.get("no_safe_victim_action") != "reject_materialization"
     ):
         errors.append("schema9 capacity and tiering contracts are conflated")
+    if (v8_schema10.get("protocol_version"), v8_schema10.get("schema_version")) != (8, 10):
+        errors.append("dynamic Variant growth contract must use schema10")
+    if v8_schema10.get("runtime_patch_mode") != "probekv_v8_variant_growth_counterfactual":
+        errors.append("schema10 contract uses another runtime patch mode")
+    selection10 = v8_schema10.get("source_selection", {})
+    admission10 = v8_schema10.get("variant_admission", {})
+    preparation10 = v8_schema10.get("preparation", {})
+    if (
+        selection10.get("source_residual_trim_ratio_candidates")
+        != [0.10, 0.15, 0.20, 0.25, 0.30]
+        or admission10.get("canonical_provenance") != "DENSE_EXACT_CANONICAL"
+        or admission10.get("budget_truncated_exploration_materialization") is not True
+        or admission10.get("exploration_claims_context_novelty") is not False
+        or admission10.get("max_protected_probation_per_content") != 2
+        or admission10.get("replacement_policy")
+        != "value_density_v1_full_scope_only"
+        or admission10.get("replacement_budget_fraction") != 0.01
+        or preparation10.get("atomic_preparation_reservation_required") is not True
+        or preparation10.get("final_commit_admission_required") is not True
+        or preparation10.get("final_commit_gamma") != 0.8
+    ):
+        errors.append("schema10 admission/preparation contract is incomplete")
     try:
         schema6_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema6.json").read_text(
@@ -435,6 +463,25 @@ def main() -> int:
             or local_v8_schema9.canonical_variant_provenance != "dense_exact"
         ):
             errors.append("v8 schema9 config did not freeze admission provenance")
+    for schema10_config in (
+        "configs/local_system_v8_schema10_gate1_barrier.json",
+        "configs/local_system_v8_schema10_gate1_counterfactual.json",
+    ):
+        try:
+            local_v8_schema10 = load_config(schema10_config)
+        except (OSError, ValueError) as error:
+            errors.append("v8 schema10 config is invalid: %s" % error)
+        else:
+            if (
+                local_v8_schema10.v8_schema_version != 10
+                or tuple(local_v8_schema10.source_residual_trim_ratio_candidates)
+                != (0.10, 0.15, 0.20, 0.25, 0.30)
+                or not local_v8_schema10.materialize_on_budget_truncated_exploration
+                or local_v8_schema10.variant_replacement_policy
+                != "value_density_v1_full_scope_only"
+                or local_v8_schema10.variant_replacement_budget_fraction != 0.01
+            ):
+                errors.append("v8 schema10 config did not freeze Variant growth")
     try:
         schema7_patches = patch_files_for_mode(
             Path("patches/cacheblend/manifest.json"),
@@ -465,6 +512,16 @@ def main() -> int:
     else:
         if len(schema9_patches) != 8:
             errors.append("schema9 CacheBlend patchset must contain eight patches")
+    try:
+        schema10_patches = patch_files_for_mode(
+            Path("patches/cacheblend/manifest.json"),
+            "probekv_v8_variant_growth_counterfactual",
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors.append("schema10 CacheBlend patch contract is invalid: %s" % error)
+    else:
+        if len(schema10_patches) != 8:
+            errors.append("schema10 CacheBlend patchset must contain eight patches")
     try:
         schema7_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema7.json").read_text(
@@ -528,6 +585,27 @@ def main() -> int:
             or runtime9.get("run_h1") is not False
         ):
             errors.append("schema9 server lock crosses its no-GPU stop boundary")
+    try:
+        schema10_lock = json.loads(
+            Path("configs/a800_server_lock_v8_schema10.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append("schema10 server lock is invalid: %s" % error)
+    else:
+        runtime10 = schema10_lock.get("runtime", {})
+        if (
+            schema10_lock.get("schema_version") != 10
+            or schema10_lock.get("stack", {}).get("cacheblend_patch_mode")
+            != "probekv_v8_variant_growth_counterfactual"
+            or runtime10.get("variant_admission_profile_frozen") is not False
+            or runtime10.get("preparation_policy_profile_frozen") is not False
+            or runtime10.get("replacement_policy")
+            != "value_density_v1_full_scope_only"
+            or runtime10.get("replacement_budget_fraction") != 0.01
+            or runtime10.get("run_qualification") is not False
+            or runtime10.get("run_h1") is not False
+        ):
+            errors.append("schema10 server lock crosses its no-GPU stop boundary")
     main_checkpoints = contract["probe_policy"]["main_32_layer_checkpoints"]
     if main_checkpoints != list(range(1, 9)):
         errors.append("32-layer main probe policy must inspect every layer 1-8")
@@ -568,6 +646,7 @@ def main() -> int:
         "v8_schema7_contract": str(v8_schema7_path.resolve()),
         "v8_schema8_contract": str(v8_schema8_path.resolve()),
         "v8_schema9_contract": str(v8_schema9_path.resolve()),
+        "v8_schema10_contract": str(v8_schema10_path.resolve()),
         "valid": not errors,
         "errors": errors,
         "matrix_counts": matrix_counts,

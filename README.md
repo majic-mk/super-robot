@@ -129,6 +129,11 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
   conditional d1/d2 fast-path qualification, and the preserved independently
   qualified legacy multi-checkpoint/three-gate fallback. Earlier H1-H5 text is
   retained only for the schema version that produced it.
+- `docs/PROBEKV_V8_SCHEMA10_PLAN.md`: schema10 dynamic Variant growth,
+  materialization-quality metrics, bounded probation, Gate1 counterfactual and
+  the reorganized H1-H5 protocol.
+- `docs/PROBEKV_V8_SCHEMA10_NO_GPU_HANDOFF.md`: exact no-GPU validation and
+  model-specific A800 Profile-freeze stop boundary.
 - `docs/A800_V6_RENTAL_CHECKLIST.md`: final no-GPU artifact gate, pinned server
   installation, model audit and mandatory A800 runtime-qualification boundary.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.

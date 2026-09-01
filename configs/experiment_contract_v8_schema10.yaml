@@ -1,0 +1,71 @@
+protocol_version: 8
+schema_version: 10
+stage: no_gpu_dynamic_variant_growth_and_gate1_counterfactual
+runtime_patch_mode: probekv_v8_variant_growth_counterfactual
+
+source_selection:
+  method: training_free_current_state_residual_k
+  online_depths: [1, 2]
+  source_residual_trim_ratio_candidates: [0.10, 0.15, 0.20, 0.25, 0.30]
+  absolute_residual_admission_required: true
+  source_freeze_is_final: true
+
+variant_admission:
+  profile: VariantAdmissionProfile
+  canonical_provenance: DENSE_EXACT_CANONICAL
+  maturity_states: [PROBATION, VERIFIED, EXPIRED]
+  lifecycle_states: [ACTIVE, RETIRED, EVICTED]
+  content_miss_materialization: true
+  complete_scope_absolute_mismatch_materialization: true
+  budget_truncated_exploration_materialization: true
+  exploration_claims_context_novelty: false
+  exploration_replacement_at_k16: false
+  max_variants_per_content: 16
+  replacement_policy: value_density_v1_full_scope_only
+  replacement_budget_fraction: 0.01
+  exploration_quota_per_content: 2
+  probation_comparison_observations: 2
+  probation_lookup_opportunities: 2
+  max_protected_probation_per_content: 2
+  selective_repair_promotion: false
+  r1_repair_promotion: false
+
+preparation:
+  profile: PreparationPolicyProfile
+  gate1_modes: [explicit_barrier, fused_advisory]
+  gate1_decision_basis: counterfactual_wasted_preparation
+  atomic_preparation_reservation_required: true
+  final_commit_admission_required: true
+  final_commit_gamma: 0.8
+
+materialization_metrics:
+  novelty_precision_full_candidate_only: true
+  exploration_yield_window: 32
+  useful_materialization_precision_window: 32
+  track_write_amplification: true
+
+growth_experiment:
+  initial_k: 1
+  maximum_k: 16
+  policies:
+    - single_variant_no_growth
+    - complete_mismatch_growth_only
+    - schema10_controlled_exploration
+    - deep_oracle_growth
+
+compatibility:
+  schema9_profiles_unlock_schema10: false
+  schema9_gates_unlock_schema10: false
+  schema9_results_read_only: true
+  locked_test_accessed: false
+  paper_evidence: false
+
+no_gpu_gate:
+  schema10_local_implementation_complete: true
+  artifact_preparation_ready: true
+  gpu_rental_ready_for_schema10_profile_freeze: true
+  variant_admission_profile_frozen: false
+  preparation_policy_profile_frozen: false
+  gpu_runtime_qualified: false
+  h1_h2_execution_allowed: false
+  failures: []

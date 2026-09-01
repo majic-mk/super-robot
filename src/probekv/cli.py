@@ -22,6 +22,7 @@ from .v8_simulation import run_v8_local_simulation
 from .v8_schema7_simulation import run_v8_schema7_local_simulation
 from .v8_schema8_simulation import run_v8_schema8_local_simulation
 from .v8_schema9_simulation import run_v8_schema9_local_simulation
+from .v8_schema10_simulation import run_v8_schema10_local_simulation
 from .v6_manifest import (
     request_case_from_mapping,
     request_manifest_digest,
@@ -34,7 +35,9 @@ def _simulate(config_path: str, output_override: str = None) -> int:
     if config.evidence_class != "local_simulation":
         raise ValueError("simulate command only accepts local_simulation configs")
     if config.protocol_version == 8:
-        if config.v8_schema_version == 9:
+        if config.v8_schema_version == 10:
+            result = run_v8_schema10_local_simulation(config)
+        elif config.v8_schema_version == 9:
             result = run_v8_schema9_local_simulation(config)
         elif config.v8_schema_version == 8:
             result = run_v8_schema8_local_simulation(config)

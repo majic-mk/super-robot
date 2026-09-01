@@ -139,7 +139,24 @@ class ExperimentConfig:
     materialize_on_complete_residual_mismatch: bool = False
     require_full_candidate_coverage_for_mismatch: bool = True
     variant_materialization_budget_fraction: float = 0.02
+    variant_replacement_policy: str = "value_density_v1_full_scope_only"
+    variant_replacement_budget_fraction: float = 0.01
     canonical_variant_provenance: str = "dense_exact"
+    source_residual_trim_ratio: float = 0.15
+    source_residual_trim_ratio_candidates: Tuple[float, ...] = (
+        0.10, 0.15, 0.20, 0.25, 0.30,
+    )
+    materialize_on_budget_truncated_exploration: bool = False
+    exploration_quota_per_content: int = 0
+    probation_comparison_observations: int = 2
+    probation_lookup_opportunities: int = 2
+    max_protected_probation_per_content: int = 2
+    preparation_policy_profile_status: str = "legacy"
+    preparation_policy_profile_sha256: str = ""
+    gate1_mode: str = "explicit_barrier"
+    atomic_preparation_reservation_required: bool = True
+    final_commit_admission_required: bool = True
+    legacy_source_score_trim_ratio_present: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
@@ -453,8 +470,59 @@ class ExperimentConfig:
             variant_materialization_budget_fraction=float(
                 raw.get("variant_materialization_budget_fraction", 0.02)
             ),
+            variant_replacement_policy=str(
+                raw.get(
+                    "variant_replacement_policy",
+                    "value_density_v1_full_scope_only",
+                )
+            ),
+            variant_replacement_budget_fraction=float(
+                raw.get("variant_replacement_budget_fraction", 0.01)
+            ),
             canonical_variant_provenance=str(
                 raw.get("canonical_variant_provenance", "dense_exact")
+            ),
+            source_residual_trim_ratio=float(
+                raw.get("source_residual_trim_ratio", 0.15)
+            ),
+            source_residual_trim_ratio_candidates=tuple(
+                float(value)
+                for value in raw.get(
+                    "source_residual_trim_ratio_candidates",
+                    [0.10, 0.15, 0.20, 0.25, 0.30],
+                )
+            ),
+            materialize_on_budget_truncated_exploration=bool(
+                raw.get("materialize_on_budget_truncated_exploration", False)
+            ),
+            exploration_quota_per_content=int(
+                raw.get("exploration_quota_per_content", 0)
+            ),
+            probation_comparison_observations=int(
+                raw.get("probation_comparison_observations", 2)
+            ),
+            probation_lookup_opportunities=int(
+                raw.get("probation_lookup_opportunities", 2)
+            ),
+            max_protected_probation_per_content=int(
+                raw.get("max_protected_probation_per_content", 2)
+            ),
+            preparation_policy_profile_status=str(
+                raw.get("preparation_policy_profile_status", "legacy")
+            ),
+            preparation_policy_profile_sha256=str(
+                raw.get("preparation_policy_profile_sha256", "")
+            ),
+            gate1_mode=str(raw.get("gate1_mode", "explicit_barrier")),
+            atomic_preparation_reservation_required=bool(
+                raw.get("atomic_preparation_reservation_required", True)
+            ),
+            final_commit_admission_required=bool(
+                raw.get("final_commit_admission_required", True)
+            ),
+            legacy_source_score_trim_ratio_present=(
+                "source_score_trim_ratio" in raw
+                or "source_score_trim_ratio_candidates" in raw
             ),
         )
         result.validate()
@@ -730,8 +798,8 @@ class ExperimentConfig:
             raise ValueError("v7 server runs require the explicit v7 runtime")
 
     def _validate_v8(self) -> None:
-        if self.v8_schema_version not in {5, 6, 7, 8, 9}:
-            raise ValueError("v8 runtime schema must be 5, 6, 7, 8 or 9")
+        if self.v8_schema_version not in {5, 6, 7, 8, 9, 10}:
+            raise ValueError("v8 runtime schema must be 5, 6, 7, 8, 9 or 10")
         if self.legacy_online_kmax_present:
             raise ValueError("v8 forbids legacy online_kmax")
         if self.selector_policy is not SelectorPolicy.RESIDUAL_K_DRIFT_ARGMIN:
@@ -783,7 +851,7 @@ class ExperimentConfig:
             SelectionExecutionPolicy.CAUSAL_COMMIT_WAIT,
             SelectionExecutionPolicy.IMMEDIATE_STAGGERED_CLOSED_LOOP,
         }
-        if self.v8_schema_version in {8, 9}:
+        if self.v8_schema_version in {8, 9, 10}:
             allowed_execution_policies.add(
                 SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
             )
@@ -842,20 +910,26 @@ class ExperimentConfig:
             self._validate_v8_schema8()
         if self.v8_schema_version == 9:
             self._validate_v8_schema9()
+        if self.v8_schema_version == 10:
+            self._validate_v8_schema10()
         if self.evidence_class != "local_simulation":
             required_backend = (
                 "cacheblend_v8_schema7_gradual_streaming"
                 if self.v8_schema_version == 7
                 else (
-                    "cacheblend_v8_schema9_absolute_variant_admission"
-                    if self.v8_schema_version == 9
+                    "cacheblend_v8_schema10_variant_growth_counterfactual"
+                    if self.v8_schema_version == 10
                     else (
-                        "cacheblend_v8_schema8_gradual_barrier"
-                        if self.v8_schema_version == 8
+                        "cacheblend_v8_schema9_absolute_variant_admission"
+                        if self.v8_schema_version == 9
                         else (
-                            "cacheblend_v8_schema6_joint"
-                            if self.v8_schema_version == 6
-                            else "cacheblend_v8_training_free"
+                            "cacheblend_v8_schema8_gradual_barrier"
+                            if self.v8_schema_version == 8
+                            else (
+                                "cacheblend_v8_schema6_joint"
+                                if self.v8_schema_version == 6
+                                else "cacheblend_v8_training_free"
+                            )
                         )
                     )
                 )
@@ -1124,6 +1198,89 @@ class ExperimentConfig:
                 raise ValueError("frozen schema9 %s Profile requires SHA256" % name)
             if status != "frozen" and sha256:
                 raise ValueError("unfrozen schema9 %s Profile cannot carry SHA" % name)
+
+    def _validate_v8_schema10(self) -> None:
+        if self.runtime_patch_mode != "probekv_v8_variant_growth_counterfactual":
+            raise ValueError("schema10 requires its explicit runtime patch mode")
+        if self.source_selection_metric != "residual_k_pre_rope":
+            raise ValueError("schema10 Source selection must use pre-RoPE Residual-K")
+        if self.source_selection_depth_policy not in {"d1_only", "d1_d2_rescue"}:
+            raise ValueError("schema10 online main path is limited to d1/d2")
+        expected = (1,) if self.source_selection_depth_policy == "d1_only" else (1, 2)
+        if self.probe_checkpoints != expected:
+            raise ValueError("schema10 checkpoints differ from its d1/d2 policy")
+        if (
+            self.selection_execution_policy
+            is not SelectionExecutionPolicy.DENSE_SELECTION_BARRIER
+        ):
+            raise ValueError("schema10 preserves the dense selection barrier")
+        if not self.absolute_residual_admission_enabled:
+            raise ValueError("schema10 requires absolute residual admission")
+        thresholds = tuple(self.absolute_residual_threshold_by_depth)
+        if set(depth for depth, _ in thresholds) != set(expected) or any(
+            depth not in {1, 2} or value < 0 for depth, value in thresholds
+        ):
+            raise ValueError("schema10 absolute residual thresholds are invalid")
+        expected_grid = (0.10, 0.15, 0.20, 0.25, 0.30)
+        if self.legacy_source_score_trim_ratio_present:
+            raise ValueError("schema10 rejects schema9 source_score_trim_ratio fields")
+        if tuple(self.source_residual_trim_ratio_candidates) != expected_grid:
+            raise ValueError("schema10 residual trim grid changed")
+        if self.source_residual_trim_ratio not in expected_grid:
+            raise ValueError("schema10 residual trim ratio is outside its grid")
+        if not (
+            self.materialize_on_content_miss
+            and self.materialize_on_complete_residual_mismatch
+            and self.require_full_candidate_coverage_for_mismatch
+            and self.materialize_on_budget_truncated_exploration
+        ):
+            raise ValueError("schema10 materialization policy is incomplete")
+        if not 0 <= self.variant_materialization_budget_fraction <= 0.05:
+            raise ValueError("schema10 materialization budget must be within 5%")
+        if (
+            self.variant_replacement_policy
+            != "value_density_v1_full_scope_only"
+            or not 0 <= self.variant_replacement_budget_fraction <= 0.05
+        ):
+            raise ValueError("schema10 replacement policy/budget is invalid")
+        if self.canonical_variant_provenance != "dense_exact":
+            raise ValueError("schema10 canonical Variant must be exact dense")
+        if not 0 < self.exploration_quota_per_content <= 16:
+            raise ValueError("schema10 exploration quota is invalid")
+        if min(
+            self.probation_comparison_observations,
+            self.probation_lookup_opportunities,
+            self.max_protected_probation_per_content,
+        ) <= 0:
+            raise ValueError("schema10 probation controls must be positive")
+        if self.gate1_mode not in {"explicit_barrier", "fused_advisory"}:
+            raise ValueError("schema10 Gate1 mode is invalid")
+        if not (
+            self.atomic_preparation_reservation_required
+            and self.final_commit_admission_required
+        ):
+            raise ValueError("schema10 cannot bypass reservation/final admission")
+        if self.gate1_gamma != 1.0 or self.gamma != 0.8:
+            raise ValueError("schema10 freezes Gate1=1.0 and final admission=0.8")
+        if (
+            self.selection_runtime_fallback_policy
+            != "legacy_multicheckpoint_three_gate"
+            or not self.legacy_fallback_gate_required
+        ):
+            raise ValueError("schema10 must preserve the schema8 legacy fallback")
+        for name, status, sha256 in (
+            ("variant-admission", self.variant_admission_profile_status, self.variant_admission_profile_sha256),
+            ("preparation-policy", self.preparation_policy_profile_status, self.preparation_policy_profile_sha256),
+            ("selection-depth", self.selection_depth_profile_status, self.selection_depth_profile_sha256),
+            ("repair-policy", self.repair_policy_profile_status, self.repair_policy_profile_sha256),
+            ("runtime-cost", self.runtime_cost_profile_status, self.runtime_cost_profile_sha256),
+        ):
+            if status not in {"unfrozen", "frozen"}:
+                raise ValueError("invalid schema10 %s Profile status" % name)
+            if status == "frozen" and len(sha256) != 64:
+                raise ValueError("frozen schema10 %s Profile requires SHA256" % name)
+            if status != "frozen" and sha256:
+                raise ValueError("unfrozen schema10 %s Profile cannot carry SHA" % name)
 
 
 def load_config(path: str) -> ExperimentConfig:

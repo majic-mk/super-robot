@@ -199,6 +199,8 @@ for admission; nominal repair ratio is never treated as a speedup estimate.
 | v8 schema-v8 backing policy | `v8_schema8_storage.py` | one CPU-preferred backing; CPU LRU demotes to SSD and SSD LRU deletes an idle Source, with busy state derived from the authoritative lease graph |
 | v8 schema-v8 ratio scope | `v8_schema8_repair.py` | the main I/O-balanced policy uses one request/layer ratio for all active Segments; fixed/static and legacy per-Segment-vector policies remain explicit ablations |
 | v8 schema-v8 Profiles/Gate | `v8_schema8_profile.py`, `v8_schema8_qualification.py` | independent selection-depth, repair-policy and runtime-cost identities; Gate1 is optimistic Segment-marginal feasibility, uniform I/O balance is Profile-bound, and only exact schema-v8 real-GPU evidence can unlock H1/H2 |
+| v8 schema10 Variant growth | `v8_schema10_materialization.py`, `v8_schema10_metrics.py` | exact-dense canonical provenance, bounded probation, controlled budget-truncated exploration, materialization quality and pool-growth traces |
+| v8 schema10 preparation policy | `v8_schema10_preparation.py`, `v8_schema10_profile.py` | side-effect-free Gate1 counterfactual, independent PreparationPolicyProfile, mandatory atomic reservation and FinalCommitAdmission |
 | v6 request contracts | `v6_contracts.py`, `v6_manifest.py` | ordered regions, all-segment assignment and split isolation |
 | v6 candidate budget | `candidate_budget.py`, `multisegment_selector.py` | linear all-within-budget comparison and independent early Source lock |
 | Probe selector | `selector.py` | strict early exit plus explicit final policies |

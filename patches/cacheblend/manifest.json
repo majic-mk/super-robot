@@ -86,6 +86,16 @@
       "0006-probekv-v7-conservative-repair-rounding.patch",
       "0007-probekv-schema6-cfo-post-rope-hook.patch",
       "0008-probekv-resumable-active-kv-writeback.patch"
+    ],
+    "probekv_v8_variant_growth_counterfactual": [
+      "0001-cb0-fix-suffix-length.patch",
+      "0002-probekv-segment-repair-mask.patch",
+      "0003-probekv-multiregion-union-mask.patch",
+      "0004-probekv-staggered-resumable-dual-model.patch",
+      "0005-probekv-native-prefix-shadow.patch",
+      "0006-probekv-v7-conservative-repair-rounding.patch",
+      "0007-probekv-schema6-cfo-post-rope-hook.patch",
+      "0008-probekv-resumable-active-kv-writeback.patch"
     ]
   },
   "runtime_modes": {
@@ -222,6 +232,18 @@
       "status": "no_gpu_complete_requires_schema9_profile_freeze_and_a800_qualification",
       "paper_evidence": false,
       "purpose": "schema9 absolute Source compatibility and audited online Variant growth"
+    },
+    "variant_growth_counterfactual_runtime_v8": {
+      "patch_mode": "probekv_v8_variant_growth_counterfactual",
+      "inherits": "absolute_residual_variant_admission_runtime_v8",
+      "bounded_variant_probation": true,
+      "budget_truncated_exploration": true,
+      "gate1_counterfactual": true,
+      "atomic_preparation_reservation": true,
+      "final_commit_admission": true,
+      "status": "no_gpu_complete_requires_schema10_profile_freeze_and_a800_qualification",
+      "paper_evidence": false,
+      "purpose": "schema10 dynamic Variant growth, materialization quality, and Gate1 counterfactual audit"
     }
   },
   "innovation_claim": false,
@@ -234,5 +256,6 @@
   "v8_source_selection_policy": "training-free residual K with K-only SelectionState",
   "v8_schema7_repair_policy": "winner-specific fixed15 fallback plus profiled gradual no-reentry candidates",
   "v8_schema8_main_policy": "dense d1/d2 selection barrier, CPU-preferred single backing, tier LRU, and explicit ratio scope",
-  "v8_schema9_main_policy": "schema8 runtime plus absolute residual admission and exact-dense online Variant growth"
+  "v8_schema9_main_policy": "schema8 runtime plus absolute residual admission and exact-dense online Variant growth",
+  "v8_schema10_main_policy": "schema9 runtime plus bounded probation, controlled exploration, materialization quality, and Gate1 counterfactual audit"
 }

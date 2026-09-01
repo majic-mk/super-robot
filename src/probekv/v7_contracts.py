@@ -69,6 +69,20 @@ class SourceVariantState(str, Enum):
     EVICTED = "evicted"
 
 
+class CanonicalVariantProvenance(str, Enum):
+    """Correctness provenance, independent from value maturity/lifecycle."""
+
+    DENSE_EXACT_CANONICAL = "dense_exact_canonical"
+
+
+class SourceVariantMaturity(str, Enum):
+    """How much online value evidence exists for a canonical Variant."""
+
+    PROBATION = "probation"
+    VERIFIED = "verified"
+    EXPIRED = "expired"
+
+
 class ArtifactState(str, Enum):
     CREATING = "creating"
     HEALTHY = "healthy"

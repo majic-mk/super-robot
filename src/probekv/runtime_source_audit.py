@@ -428,7 +428,7 @@ def audit_v8_schema8_runtime_sources(repo: Path) -> Dict[str, Any]:
                 "configure_dense_selection_barrier",
                 "measured_repair_positions",
                 "authorize_final_commit",
-                "runtime_schema_version in {8, 9}",
+                "runtime_schema_version in {8, 9, 10}",
                 "online immutable execution requires the Artifact-creation digest",
             ),
         ),
@@ -545,6 +545,90 @@ def audit_v8_schema9_runtime_sources(repo: Path) -> Dict[str, Any]:
         "dense_exact_variant_materialization": True,
         "full_candidate_coverage_for_mismatch": True,
         "schema8_fallback_preserved": True,
+        "gpu_runtime_qualified": False,
+        "failures": failures,
+    }
+
+
+def audit_v8_schema10_runtime_sources(repo: Path) -> Dict[str, Any]:
+    """Static no-GPU audit for dynamic Variant growth and Gate1 shadowing."""
+    repo = repo.resolve()
+    failures = []
+    try:
+        paths = patch_files_for_mode(
+            repo / "patches" / "cacheblend" / "manifest.json",
+            "probekv_v8_variant_growth_counterfactual",
+        )
+    except (OSError, ValueError) as error:
+        paths = ()
+        failures.append("schema10 patch manifest invalid: %s" % error)
+    checks = (
+        (
+            repo / "src" / "probekv" / "v8_schema10_selector.py",
+            ("class Schema10D1D2Selector", "BUDGET_TRUNCATED_EXPLORATION"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_materialization.py",
+            (
+                "class VariantMaterializationControllerV10",
+                "exploration_cannot_replace_at_variant_limit",
+                "canonical_source_requires_exact_dense_prefill",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_preparation.py",
+            (
+                "evaluate_gate1_counterfactual",
+                "AtomicPreparationReservation",
+                "FinalCommitAdmission",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_runtime.py",
+            (
+                "class Schema10VariantGrowthRequestController",
+                "apply_atomic_preparation_reservation",
+                "materialize_after_exact_dense",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_metrics.py",
+            ("materialization_quality_metrics", "summarize_variant_growth"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_pool.py",
+            ("class Schema10SourcePool", "finish_content_lookup"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_profile.py",
+            ("class VariantAdmissionProfileV10", "class PreparationPolicyProfile"),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_qualification.py",
+            ("evaluate_schema10_runtime_qualification", "validate_schema10_h1_gate"),
+        ),
+    )
+    for path, markers in checks:
+        if not path.is_file():
+            failures.append("missing schema10 runtime source %s" % path.name)
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append("%s lacks %s" % (path.name, marker))
+    return {
+        "protocol_version": 8,
+        "schema_version": 10,
+        "patch_mode": "probekv_v8_variant_growth_counterfactual",
+        "patch_files": [path.name for path in paths],
+        "runtime_source_ready": not failures,
+        "dense_exact_variant_materialization": True,
+        "bounded_probation": True,
+        "controlled_budget_truncated_exploration": True,
+        "gate1_counterfactual": True,
+        "atomic_preparation_reservation": True,
+        "final_commit_admission": True,
+        "schema9_read_only_compatibility": True,
         "gpu_runtime_qualified": False,
         "failures": failures,
     }

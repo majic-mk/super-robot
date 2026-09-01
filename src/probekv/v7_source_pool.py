@@ -17,7 +17,9 @@ from .v7_contracts import (
     PhysicalReplica,
     ReplicaLocator,
     ReplicaState,
+    CanonicalVariantProvenance,
     SourceVariantIdentity,
+    SourceVariantMaturity,
     SourceVariantState,
 )
 
@@ -54,6 +56,13 @@ class StoredSourceVariant:
     artifact: Optional[CanonicalKVArtifact] = None
     replicas: Dict[str, PhysicalReplica] = field(default_factory=dict)
     stats: SourceValueStats = field(default_factory=SourceValueStats)
+    canonical_provenance: CanonicalVariantProvenance = (
+        CanonicalVariantProvenance.DENSE_EXACT_CANONICAL
+    )
+    maturity: SourceVariantMaturity = SourceVariantMaturity.PROBATION
+    probation_protected: bool = True
+    content_lookup_opportunities_since_registration: int = 0
+    materialization_reason: str = ""
 
     @property
     def source_variant_id(self) -> str:
@@ -105,11 +114,18 @@ class V7SourcePool:
         tier_capacity_bytes: Optional[Mapping[KVLocation, int]] = None,
         probation_observations: int = 2,
         prior_saved_ms: float = 1.0,
+        bounded_probation: bool = False,
+        max_protected_probation_per_content: int = 2,
+        probation_lookup_opportunities: int = 2,
     ) -> None:
         if not 1 <= max_variants_per_content <= 16:
             raise ValueError("v7 supports 1-16 Source Variants per content")
         if probation_observations < 0 or prior_saved_ms < 0:
             raise ValueError("invalid value-density parameters")
+        if max_protected_probation_per_content < 0:
+            raise ValueError("protected probation count must be non-negative")
+        if probation_lookup_opportunities <= 0:
+            raise ValueError("probation lookup window must be positive")
         self.serving_mode = ModelServingMode(serving_mode)
         self.max_variants_per_content = max_variants_per_content
         self.tier_capacity_bytes = {
@@ -120,6 +136,11 @@ class V7SourcePool:
             raise ValueError("tier capacities must be non-negative")
         self.probation_observations = probation_observations
         self.prior_saved_ms = prior_saved_ms
+        self.bounded_probation = bool(bounded_probation)
+        self.max_protected_probation_per_content = (
+            max_protected_probation_per_content
+        )
+        self.probation_lookup_opportunities = probation_lookup_opportunities
         self._clock = 0
         self._placement_epoch = 0
         self._replica_generation = 0
@@ -186,6 +207,8 @@ class V7SourcePool:
         canonical_source_state_digest: str,
         summary_digest: str,
         expected_replacement_source_variant_id: Optional[str] = None,
+        allow_implicit_replacement: bool = True,
+        materialization_reason: str = "",
     ) -> StoredSourceVariant:
         model = identity.model_math_signature
         namespace = self._namespaces.get(model)
@@ -200,12 +223,22 @@ class V7SourcePool:
                 existing.canonical_source_state_digest
                 != canonical_source_state_digest
                 or existing.summary_digest != summary_digest
+                or (
+                    materialization_reason
+                    and existing.materialization_reason
+                    and existing.materialization_reason != materialization_reason
+                )
             ):
                 raise ValueError("Source Variant identity collision")
             existing.last_access_order = self._tick()
             return existing
         siblings = self.variants_for_content(model, identity.reuse_content_key, include_unavailable=True)
         if len(siblings) >= self.max_variants_per_content:
+            if (
+                expected_replacement_source_variant_id is None
+                and not allow_implicit_replacement
+            ):
+                raise RuntimeError("Source Variant capacity changed after admission")
             victim = self._lowest_value_variant(siblings)
             if (
                 expected_replacement_source_variant_id is not None
@@ -223,8 +256,11 @@ class V7SourcePool:
             summary_digest=summary_digest,
             registered_order=order,
             last_access_order=order,
+            materialization_reason=str(materialization_reason),
         )
         self._variants[key] = stored
+        if self.bounded_probation:
+            self._bound_probation_protection(model, identity.reuse_content_key)
         self._emit(
             "source_variant_registered",
             model,
@@ -385,7 +421,78 @@ class V7SourcePool:
         variant.stats.admissions += int(admitted)
         if admitted:
             variant.stats.realized_saved_ms_sum += realized_saved_ms
+        if variant.stats.observations >= self.probation_observations:
+            variant.maturity = SourceVariantMaturity.VERIFIED
+            variant.probation_protected = False
         variant.last_access_order = self._tick()
+
+    def record_content_lookup_opportunity(
+        self,
+        model_math_signature: str,
+        reuse_content_key: str,
+    ) -> None:
+        """Advance bounded probation without treating migration as a request use."""
+        if not self.bounded_probation:
+            return
+        for variant in self.variants_for_content(
+            model_math_signature,
+            reuse_content_key,
+            include_unavailable=True,
+        ):
+            if variant.maturity is not SourceVariantMaturity.PROBATION:
+                continue
+            variant.content_lookup_opportunities_since_registration += 1
+            if (
+                variant.stats.observations < self.probation_observations
+                and variant.content_lookup_opportunities_since_registration
+                >= self.probation_lookup_opportunities
+            ):
+                variant.maturity = SourceVariantMaturity.EXPIRED
+                variant.probation_protected = False
+                self._emit(
+                    "source_variant_probation_expired",
+                    model_math_signature,
+                    reuse_content_key=reuse_content_key,
+                    source_variant_id=variant.source_variant_id,
+                )
+
+    def _bound_probation_protection(
+        self,
+        model_math_signature: str,
+        reuse_content_key: str,
+    ) -> None:
+        rows = [
+            variant
+            for variant in self.variants_for_content(
+                model_math_signature,
+                reuse_content_key,
+                include_unavailable=True,
+            )
+            if variant.maturity is SourceVariantMaturity.PROBATION
+        ]
+        rows.sort(key=lambda item: item.registered_order, reverse=True)
+        protected_ids = {
+            variant.source_variant_id
+            for variant in rows[: self.max_protected_probation_per_content]
+        }
+        for variant in rows:
+            was_protected = variant.probation_protected
+            variant.probation_protected = variant.source_variant_id in protected_ids
+            if was_protected and not variant.probation_protected:
+                self._emit(
+                    "source_variant_probation_protection_released",
+                    model_math_signature,
+                    reuse_content_key=reuse_content_key,
+                    source_variant_id=variant.source_variant_id,
+                )
+
+    def _probation_protected(self, variant: StoredSourceVariant) -> bool:
+        if self.bounded_probation:
+            return (
+                variant.maturity is SourceVariantMaturity.PROBATION
+                and variant.probation_protected
+            )
+        return variant.stats.observations < self.probation_observations
 
     def relocate_replica(
         self,
@@ -603,7 +710,7 @@ class V7SourcePool:
                 and not replica.busy
                 and (
                     not replica.is_backing
-                    or variant.stats.observations >= self.probation_observations
+                    or not self._probation_protected(variant)
                 )
             ]
             if not candidates:
@@ -627,7 +734,7 @@ class V7SourcePool:
             variant
             for variant in variants
             if not any(r.busy for r in variant.replicas.values())
-            and variant.stats.observations >= self.probation_observations
+            and not self._probation_protected(variant)
         ]
         if not eligible:
             raise MemoryError("all Source Variants are busy or in probation")
