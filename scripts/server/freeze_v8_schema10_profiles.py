@@ -50,6 +50,7 @@ def main() -> int:
     parser.add_argument("--tokenizer-hash", required=True)
     parser.add_argument("--runtime-policy", default="dense_selection_barrier")
     parser.add_argument("--development-partition-sha256", required=True)
+    parser.add_argument("--development-case-manifest-sha256", required=True)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
 
@@ -67,6 +68,7 @@ def main() -> int:
         "tokenizer_hash": args.tokenizer_hash,
         "runtime_policy": args.runtime_policy,
         "development_partition_sha256": args.development_partition_sha256,
+        "development_case_manifest_sha256": args.development_case_manifest_sha256,
     }
     mismatched = [
         name for name, expected in expected_provenance.items()
@@ -133,6 +135,7 @@ def main() -> int:
         source_residual_trim_ratio=selected_ratio,
         metrics=dict(selected["metrics"]),
         development_partition_sha256=args.development_partition_sha256,
+        development_case_manifest_sha256=args.development_case_manifest_sha256,
         measurement_sha256=measurement_sha,
         gpu_uuid=gpu_uuid,
         frozen=True,
@@ -154,6 +157,7 @@ def main() -> int:
         probation_lookup_opportunities=2,
         max_protected_probation_per_content=2,
         development_partition_sha256=args.development_partition_sha256,
+        development_case_manifest_sha256=args.development_case_manifest_sha256,
         frozen=True,
     )
 
@@ -192,6 +196,7 @@ def main() -> int:
         quality_tail_rate_1pct_certified=False,
         ratio_grid=SCHEMA10_REPAIR_RATIO_GRID,
         development_partition_sha256=args.development_partition_sha256,
+        development_case_manifest_sha256=args.development_case_manifest_sha256,
         measurement_sha256=measurement_sha,
         gpu_uuid=gpu_uuid,
         frozen=True,
@@ -211,6 +216,7 @@ def main() -> int:
         joint_anchor_measurements=tuple(runtime_row["joint_anchor_measurements"]),
         factorized=True,
         cartesian_product_used=False,
+        development_case_manifest_sha256=args.development_case_manifest_sha256,
         measurement_sha256=measurement_sha,
         gpu_uuid=gpu_uuid,
         frozen=True,
@@ -247,6 +253,7 @@ def main() -> int:
         paired_mean_error_fraction=summary.paired_mean_absolute_error_fraction,
         paired_p95_error_fraction=summary.paired_p95_absolute_error_fraction,
         development_partition_sha256=args.development_partition_sha256,
+        development_case_manifest_sha256=args.development_case_manifest_sha256,
         frozen=True,
     )
 
@@ -289,6 +296,7 @@ def main() -> int:
         "config_sha256",
         "contract_sha256",
         "handoff_sha256",
+        "development_case_manifest_sha256",
     )
     missing_provenance = [name for name in provenance_names if not payload.get(name)]
     if missing_provenance:

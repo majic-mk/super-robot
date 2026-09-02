@@ -425,9 +425,10 @@ def build_schema10_no_gpu_handoff(
     contract_sha256: str,
     server_lock_sha256: str,
     development_partition_sha256: str,
+    development_case_manifest_sha256: str,
     repo_root: str = "",
 ) -> Mapping[str, object]:
-    if not all((code_commit, model_revision, tokenizer_hash, cacheblend_patch_sha256, cacheblend_tree, config_sha256, contract_sha256, server_lock_sha256, development_partition_sha256)):
+    if not all((code_commit, model_revision, tokenizer_hash, cacheblend_patch_sha256, cacheblend_tree, config_sha256, contract_sha256, server_lock_sha256, development_partition_sha256, development_case_manifest_sha256)):
         raise ValueError("schema10 handoff provenance is incomplete")
     profile_jobs = build_schema10_profile_jobs(model_key)
     hypotheses = build_schema10_h1_h5_manifests(model_key)
@@ -448,6 +449,7 @@ def build_schema10_no_gpu_handoff(
         "contract_sha256": contract_sha256,
         "server_lock_sha256": server_lock_sha256,
         "development_partition_sha256": development_partition_sha256,
+        "development_case_manifest_sha256": development_case_manifest_sha256,
         "profile_jobs": list(profile_jobs),
         "h1_h5_manifests": hypotheses,
         "profiles_frozen": False,

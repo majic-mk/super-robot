@@ -140,7 +140,12 @@ def main() -> int:
     ):
         raise ValueError("schema10 Profile requires exactly 90 isolated development cases")
     wanted = {str(row["case_id"]): row for row in development}
-    all_cases = [manifest_case_from_row(row) for row in _jsonl(Path(args.case_manifest).resolve())]
+    case_manifest_path = Path(args.case_manifest).resolve()
+    if sha256_file(case_manifest_path) != handoff.get(
+        "development_case_manifest_sha256"
+    ):
+        raise ValueError("development case manifest differs from schema10 handoff")
+    all_cases = [manifest_case_from_row(row) for row in _jsonl(case_manifest_path)]
     cases = [case for case in all_cases if case.case_id in wanted]
     if len(cases) != 90 or {case.case_id for case in cases} != set(wanted):
         raise ValueError("case manifest does not cover the development partition")
@@ -644,6 +649,7 @@ def main() -> int:
         "gpu_uuid": provenance["gpu_uuid"],
         "runtime_environment_hash": _digest(provenance),
         "development_partition_sha256": sha256_file(development_path),
+        "development_case_manifest_sha256": sha256_file(case_manifest_path),
         "config_sha256": sha256_file(Path(args.config).resolve()),
         "contract_sha256": sha256_file(Path(args.contract).resolve()),
         "handoff_sha256": sha256_file(handoff_path),

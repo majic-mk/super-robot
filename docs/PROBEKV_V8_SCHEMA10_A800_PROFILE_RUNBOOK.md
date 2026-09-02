@@ -5,7 +5,8 @@ must not run runtime qualification, H1-H5, or the locked test.
 
 The server checkout must be clean and equal the handoff `code_commit`. Model
 revision, tokenizer hash, CacheBlend patch/tree and development partition must
-match. The runner accepts one A800 80GB, at most four hours, and a declared
+match, including the exact tokenized development case manifest hash. The runner
+accepts one A800 80GB, at most four hours, and a declared
 price no greater than 7.5 CNY/hour.
 
 ```bash
@@ -48,6 +49,7 @@ python scripts/server/freeze_v8_schema10_profiles.py \
   --model-key mistral --model-id mistralai/Mistral-7B-Instruct-v0.3 \
   --model-revision '<revision>' --tokenizer-hash '<tokenizer-sha256>' \
   --development-partition-sha256 '<partition-sha256>' \
+  --development-case-manifest-sha256 '<case-manifest-sha256>' \
   --output-dir results/schema10/mistral-profile-attempt-001/frozen
 ```
 

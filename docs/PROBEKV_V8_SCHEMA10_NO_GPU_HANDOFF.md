@@ -33,8 +33,8 @@ and Qwen use independent model, tokenizer and Variant namespaces.
 
 The handoff must bind the exact SHA256 of the schema10 config, experiment
 contract, `configs/a800_server_lock_v8_schema10.json`, and the isolated
-90-request development partition. A handoff without any one of these four
-hashes cannot start the Profile runner.
+90-request development partition and its exact tokenized case manifest. A
+handoff without any one of these five hashes cannot start the Profile runner.
 
 Expected stop state:
 

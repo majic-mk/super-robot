@@ -45,6 +45,7 @@ preparation:
 
 profile_freeze:
   development_request_units_per_model: 90
+  development_case_manifest_sha256_required: true
   freezes_quality_tail_rate_1pct: false
   order:
     - reference_runtime

@@ -542,12 +542,16 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             model_id="model", model_revision="rev", tokenizer_hash="b" * 64,
             source_residual_trim_ratio=0.15,
             thresholds=(AbsoluteResidualThreshold(1, 0.2), AbsoluteResidualThreshold(2, 0.25)),
-            development_partition_sha256="c" * 64, frozen=True,
+            development_partition_sha256="c" * 64,
+            development_case_manifest_sha256="e" * 64,
+            frozen=True,
         )
         preparation = build_preparation_policy_profile(
             code_commit="commit", model_id="model", runtime_policy="dense_selection_barrier",
             gate1_mode=Gate1Mode.EXPLICIT_BARRIER,
-            development_partition_sha256="d" * 64, frozen=True,
+            development_partition_sha256="d" * 64,
+            development_case_manifest_sha256="f" * 64,
+            frozen=True,
         )
         self.assertEqual(len(variant.profile_sha256), 64)
         self.assertEqual(len(preparation.profile_sha256), 64)
@@ -592,10 +596,12 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             contract_sha256="d" * 64,
             server_lock_sha256="e" * 64,
             development_partition_sha256="f" * 64,
+            development_case_manifest_sha256="1" * 64,
             repo_root=str(ROOT),
         )
         self.assertEqual(handoff["server_lock_sha256"], "e" * 64)
         self.assertEqual(handoff["development_partition_sha256"], "f" * 64)
+        self.assertEqual(handoff["development_case_manifest_sha256"], "1" * 64)
         self.assertTrue(handoff["gpu_rental_ready_for_schema10_profile_freeze"])
 
     def test_profile_does_not_mislabel_ninety_cases_as_one_percent_certification(self) -> None:
@@ -620,6 +626,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             model_revision="revision", tokenizer_hash="b" * 64,
             source_residual_trim_ratio=0.15, thresholds=selected,
             threshold_table=table, development_partition_sha256="c" * 64,
+            development_case_manifest_sha256="d" * 64,
             frozen=True,
         )
         self.assertEqual(profile.threshold_for_depth(8, 0.30), 0.28)
@@ -643,6 +650,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
                 concurrency=1,
                 joint_path_measured=True,
             ),),
+            development_case_manifest_sha256="d" * 64,
             measurement_sha256="c" * 64, gpu_uuid="GPU-test", frozen=True,
         )
         self.assertTrue(profile.factorized)
@@ -710,6 +718,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             "tokenizer_hash": "b" * 64,
             "runtime_policy": "dense_selection_barrier",
             "development_partition_sha256": "c" * 64,
+            "development_case_manifest_sha256": "2" * 64,
             "gpu_uuid": "GPU-test",
             "cacheblend_tree": "tree-test",
             "runtime_environment_hash": "environment-test",
@@ -798,6 +807,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
                     "--model-id", "model", "--model-revision", "revision",
                     "--tokenizer-hash", "b" * 64,
                     "--development-partition-sha256", "c" * 64,
+                    "--development-case-manifest-sha256", "2" * 64,
                     "--output-dir", str(output),
                 ],
                 cwd=str(ROOT), check=True, capture_output=True, text=True,

@@ -292,6 +292,9 @@ def main() -> int:
         "tokenizer_hash": audit["tokenizer_hash"],
         "runtime_policy": "dense_selection_barrier",
         "development_partition_sha256": audit["development_partition_sha256"],
+        "development_case_manifest_sha256": audit[
+            "development_case_manifest_sha256"
+        ],
         "gpu_uuid": audit["gpu_uuid"],
         "runtime_environment_hash": audit["runtime_environment_hash"],
         "server_lock_sha256": audit["server_lock_sha256"],

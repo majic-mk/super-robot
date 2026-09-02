@@ -61,6 +61,7 @@ class VariantAdmissionProfileV10:
     max_variants_per_content: int = 16
     canonical_source_provenance: str = "dense_exact"
     development_partition_sha256: str = ""
+    development_case_manifest_sha256: str = ""
     frozen: bool = False
     profile_sha256: str = ""
 
@@ -155,7 +156,12 @@ class VariantAdmissionProfileV10:
         if self.canonical_source_provenance != "dense_exact":
             raise ValueError("canonical Sources require exact dense prefill")
         if self.frozen:
-            if not self.development_partition_sha256:
+            if not all(
+                (
+                    self.development_partition_sha256,
+                    self.development_case_manifest_sha256,
+                )
+            ):
                 raise ValueError("frozen Profile needs development provenance")
             if self.profile_sha256 != _digest(self.payload(include_sha=False)):
                 raise ValueError("VariantAdmissionProfile SHA differs")
@@ -198,6 +204,7 @@ class VariantAdmissionProfileV10:
             "max_variants_per_content": self.max_variants_per_content,
             "canonical_source_provenance": self.canonical_source_provenance,
             "development_partition_sha256": self.development_partition_sha256,
+            "development_case_manifest_sha256": self.development_case_manifest_sha256,
             "frozen": self.frozen,
         }
         if include_sha:
@@ -222,6 +229,7 @@ class PreparationPolicyProfile:
     paired_mean_error_fraction: float = 0.0
     paired_p95_error_fraction: float = 0.0
     development_partition_sha256: str = ""
+    development_case_manifest_sha256: str = ""
     frozen: bool = False
     profile_sha256: str = ""
 
@@ -253,7 +261,12 @@ class PreparationPolicyProfile:
         ):
             raise ValueError("fused Gate1 lacks calibrated paired A/B evidence")
         if self.frozen:
-            if not self.development_partition_sha256:
+            if not all(
+                (
+                    self.development_partition_sha256,
+                    self.development_case_manifest_sha256,
+                )
+            ):
                 raise ValueError("frozen preparation Profile needs development data")
             if self.profile_sha256 != _digest(self.payload(include_sha=False)):
                 raise ValueError("PreparationPolicyProfile SHA differs")
@@ -277,6 +290,7 @@ class PreparationPolicyProfile:
             "paired_mean_error_fraction": self.paired_mean_error_fraction,
             "paired_p95_error_fraction": self.paired_p95_error_fraction,
             "development_partition_sha256": self.development_partition_sha256,
+            "development_case_manifest_sha256": self.development_case_manifest_sha256,
             "frozen": self.frozen,
         }
         if include_sha:
@@ -317,6 +331,7 @@ class SelectionDepthProfileV10:
     reference_gate1_mode: str = "explicit_barrier"
     metrics: Mapping[str, float | int] = None  # type: ignore[assignment]
     development_partition_sha256: str = ""
+    development_case_manifest_sha256: str = ""
     measurement_sha256: str = ""
     gpu_uuid: str = ""
     frozen: bool = False
@@ -339,7 +354,12 @@ class SelectionDepthProfileV10:
         if expected is not None and self.allowed_completed_depths != expected:
             raise ValueError("fast dispatch and completed depths disagree")
         if self.frozen and not all(
-            (self.development_partition_sha256, self.measurement_sha256, self.gpu_uuid)
+            (
+                self.development_partition_sha256,
+                self.development_case_manifest_sha256,
+                self.measurement_sha256,
+                self.gpu_uuid,
+            )
         ):
             raise ValueError("frozen selection Profile requires real GPU provenance")
         if self.frozen and self.profile_sha256 != _digest(self.payload(include_sha=False)):
@@ -361,6 +381,7 @@ class SelectionDepthProfileV10:
             "reference_gate1_mode": self.reference_gate1_mode,
             "metrics": dict(self.metrics),
             "development_partition_sha256": self.development_partition_sha256,
+            "development_case_manifest_sha256": self.development_case_manifest_sha256,
             "measurement_sha256": self.measurement_sha256,
             "gpu_uuid": self.gpu_uuid,
             "frozen": self.frozen,
@@ -387,6 +408,7 @@ class RepairPolicyProfileV10:
     quality_tail_rate_1pct_certified: bool = False
     ratio_grid: Tuple[float, ...] = SCHEMA10_REPAIR_RATIO_GRID
     development_partition_sha256: str = ""
+    development_case_manifest_sha256: str = ""
     measurement_sha256: str = ""
     gpu_uuid: str = ""
     frozen: bool = False
@@ -412,7 +434,14 @@ class RepairPolicyProfileV10:
             raise ValueError("gradual repair failed the no-reentry recall Gate")
         if any(float(value) not in self.ratio_grid for value in self.shared_ratio_by_age.values()):
             raise ValueError("repair schedule uses an unprofiled ratio")
-        if self.frozen and not all((self.development_partition_sha256, self.measurement_sha256, self.gpu_uuid)):
+        if self.frozen and not all(
+            (
+                self.development_partition_sha256,
+                self.development_case_manifest_sha256,
+                self.measurement_sha256,
+                self.gpu_uuid,
+            )
+        ):
             raise ValueError("frozen repair Profile requires real GPU provenance")
         if self.frozen and self.profile_sha256 != _digest(self.payload(include_sha=False)):
             raise ValueError("RepairPolicyProfile SHA differs")
@@ -436,6 +465,7 @@ class RepairPolicyProfileV10:
             "quality_tail_rate_1pct_certified": False,
             "ratio_grid": list(self.ratio_grid),
             "development_partition_sha256": self.development_partition_sha256,
+            "development_case_manifest_sha256": self.development_case_manifest_sha256,
             "measurement_sha256": self.measurement_sha256,
             "gpu_uuid": self.gpu_uuid,
             "frozen": self.frozen,
@@ -456,6 +486,7 @@ class RuntimeCostProfileV10:
     joint_anchor_measurements: Tuple[Mapping[str, Any], ...]
     factorized: bool = True
     cartesian_product_used: bool = False
+    development_case_manifest_sha256: str = ""
     measurement_sha256: str = ""
     gpu_uuid: str = ""
     frozen: bool = False
@@ -502,7 +533,13 @@ class RuntimeCostProfileV10:
             raise ValueError(
                 "frozen RuntimeCostProfile joint anchors lack real path/contention evidence"
             )
-        if self.frozen and not all((self.measurement_sha256, self.gpu_uuid)):
+        if self.frozen and not all(
+            (
+                self.development_case_manifest_sha256,
+                self.measurement_sha256,
+                self.gpu_uuid,
+            )
+        ):
             raise ValueError("frozen RuntimeCostProfile requires measurement provenance")
         if self.frozen and self.profile_sha256 != _digest(self.payload(include_sha=False)):
             raise ValueError("RuntimeCostProfile SHA differs")
@@ -522,6 +559,7 @@ class RuntimeCostProfileV10:
                 key: list(rows) for key, rows in self.category_measurements.items()
             },
             "joint_anchor_measurements": list(self.joint_anchor_measurements),
+            "development_case_manifest_sha256": self.development_case_manifest_sha256,
             "measurement_sha256": self.measurement_sha256,
             "gpu_uuid": self.gpu_uuid,
             "frozen": self.frozen,
