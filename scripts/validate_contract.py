@@ -331,14 +331,28 @@ def main() -> int:
         != [0.10, 0.15, 0.20, 0.25, 0.30]
         or admission10.get("canonical_provenance") != "DENSE_EXACT_CANONICAL"
         or admission10.get("budget_truncated_exploration_materialization") is not True
-        or admission10.get("exploration_claims_context_novelty") is not False
-        or admission10.get("max_protected_probation_per_content") != 2
+        or admission10.get(
+            "budget_truncated_exploration_sets_no_compatible_stored_variant_proven"
+        ) is not False
+        or admission10.get("probation_grace_capacity_per_content") != 2
+        or admission10.get("probation_grace_lookup_opportunities") != 2
+        or admission10.get("verification_comparisons") != 2
+        or admission10.get("post_grace_policy") != "ordinary_per_content_lru"
         or admission10.get("replacement_policy")
         != "per_content_variant_lru_full_scope_only"
         or admission10.get("replacement_budget_fraction") != 0.01
         or preparation10.get("atomic_preparation_reservation_required") is not True
         or preparation10.get("final_commit_admission_required") is not True
         or preparation10.get("final_commit_gamma") != 0.8
+        or v8_schema10.get("profile_freeze", {}).get("repair_ratio_grid")
+        != [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.00]
+        or v8_schema10.get("profile_freeze", {}).get("runtime_cost_factorized") is not True
+        or v8_schema10.get("quality_certification", {}).get(
+            "unique_request_units_per_model_minimum"
+        ) != 300
+        or v8_schema10.get("coverage", {}).get(
+            "operational_requires_causal_trace_replay"
+        ) is not True
     ):
         errors.append("schema10 admission/preparation contract is incomplete")
     try:

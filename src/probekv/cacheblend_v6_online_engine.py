@@ -228,24 +228,32 @@ class TorchLayerwiseSourceLoader:
             start_event = self.torch.cuda.Event(enable_timing=True)
             start_event.record(self.stream)
             for layer, (key, value) in enumerate(canonical_layers, start=1):
-                if key.device.type != "cpu" or value.device.type != "cpu":
-                    raise ValueError("canonical staging input must be CPU KV")
-                requested_bytes += key.numel() * key.element_size()
-                requested_bytes += value.numel() * value.element_size()
-                if self.require_pre_pinned and (not key.is_pinned() or not value.is_pinned()):
-                    raise RuntimeError(
-                        "schema-v7 formal CPU path requires pre-pinned backing/staging"
-                    )
-                pin_started = time.perf_counter()
-                host_key = key if key.is_pinned() else key.pin_memory()
-                host_value = value if value.is_pinned() else value.pin_memory()
-                if host_key is not key:
-                    pinning_copy_bytes += key.numel() * key.element_size()
-                if host_value is not value:
-                    pinning_copy_bytes += value.numel() * value.element_size()
-                pinning_host_ms += (time.perf_counter() - pin_started) * 1000.0
-                gpu_key = host_key.to(self.device, non_blocking=True)
-                gpu_value = host_value.to(self.device, non_blocking=True)
+                if key.device.type != value.device.type:
+                    raise ValueError("K/V Replica tensors must use one physical tier")
+                if key.device.type == "cuda":
+                    # A GPU-resident hot Replica is already prepared.  Record
+                    # a ready event without attributing an H2D transfer to the
+                    # current request.
+                    gpu_key, gpu_value = key, value
+                elif key.device.type == "cpu":
+                    requested_bytes += key.numel() * key.element_size()
+                    requested_bytes += value.numel() * value.element_size()
+                    if self.require_pre_pinned and (not key.is_pinned() or not value.is_pinned()):
+                        raise RuntimeError(
+                            "schema-v7 formal CPU path requires pre-pinned backing/staging"
+                        )
+                    pin_started = time.perf_counter()
+                    host_key = key if key.is_pinned() else key.pin_memory()
+                    host_value = value if value.is_pinned() else value.pin_memory()
+                    if host_key is not key:
+                        pinning_copy_bytes += key.numel() * key.element_size()
+                    if host_value is not value:
+                        pinning_copy_bytes += value.numel() * value.element_size()
+                    pinning_host_ms += (time.perf_counter() - pin_started) * 1000.0
+                    gpu_key = host_key.to(self.device, non_blocking=True)
+                    gpu_value = host_value.to(self.device, non_blocking=True)
+                else:
+                    raise ValueError("Source Replica must be CPU or CUDA resident")
                 event = self.torch.cuda.Event(enable_timing=True)
                 event.record(self.stream)
                 layer_tensors[layer] = (gpu_key, gpu_value)

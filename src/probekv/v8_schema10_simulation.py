@@ -114,7 +114,7 @@ def run_v8_schema10_local_simulation(config: ExperimentConfig) -> Dict[str, Any]
                 )
             )
             materialized = materialization.state.value == "admitted"
-            novelty = materialization.context_novelty_proven
+            novelty = materialization.no_compatible_stored_variant_proven
         counterfactual_rows.append(
             PreparationCostObservation(
                 request_id=f"schema10-local-{index:04d}",
@@ -145,7 +145,7 @@ def run_v8_schema10_local_simulation(config: ExperimentConfig) -> Dict[str, Any]
                     else None
                 ),
                 "dense_exact_variant_materialized": materialized,
-                "context_novelty_proven": novelty,
+                "no_compatible_stored_variant_proven": novelty,
                 "paper_evidence": False,
                 "locked_test_accessed": False,
             }

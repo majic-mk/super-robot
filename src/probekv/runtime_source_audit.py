@@ -593,7 +593,12 @@ def audit_v8_schema10_runtime_sources(repo: Path) -> Dict[str, Any]:
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_metrics.py",
-            ("materialization_quality_metrics", "summarize_variant_growth"),
+            (
+                "materialization_quality_metrics",
+                "summarize_variant_growth",
+                "one_sided_clopper_pearson_upper",
+                "replay_coverage_curve",
+            ),
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_pool.py",
@@ -606,7 +611,62 @@ def audit_v8_schema10_runtime_sources(repo: Path) -> Dict[str, Any]:
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_profile.py",
-            ("class VariantAdmissionProfileV10", "class PreparationPolicyProfile"),
+            (
+                "class VariantAdmissionProfileV10",
+                "class PreparationPolicyProfile",
+                "class SelectionDepthProfileV10",
+                "class RepairPolicyProfileV10",
+                "class RuntimeCostProfileV10",
+                "PROFILE_FREEZE_ORDER",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_profile_runtime.py",
+            (
+                "class Schema10DevelopmentCaseRuntime",
+                "residual_observations",
+                "selection_variants",
+            ),
+        ),
+        (
+            repo / "src" / "probekv" / "v8_schema10_profile_analysis.py",
+            (
+                "build_threshold_table",
+                "build_selection_candidates",
+                "select_dispatch",
+                "select_case_source",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "run_v8_schema10_a800_profile.py",
+            (
+                "correctness_sentinel",
+                "Schema6FullKVTransferAuthorizer",
+                "deterministic_replay_valid",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "aggregate_v8_schema10_profile.py",
+            (
+                "causal_replay_of_preexisting_historical_variants",
+                "dynamic_materialization_growth_certified",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "freeze_v8_schema10_profiles.py",
+            (
+                "build_selection_depth_profile_v10",
+                "build_repair_policy_profile_v10",
+                "build_runtime_cost_profile_v10",
+            ),
+        ),
+        (
+            repo / "scripts" / "server" / "combine_v8_schema10_profile_bundles.py",
+            (
+                "schema10_dual_model_profile_freeze_gate",
+                "runtime_qualification_jobs_total",
+                "quality_tail_rate_1pct_certified",
+            ),
         ),
         (
             repo / "src" / "probekv" / "v8_schema10_qualification.py",
@@ -631,6 +691,10 @@ def audit_v8_schema10_runtime_sources(repo: Path) -> Dict[str, Any]:
         "bounded_probation": True,
         "controlled_budget_truncated_exploration": True,
         "gate1_counterfactual": True,
+        "gate1_paired_ab_calibration": True,
+        "factorized_runtime_profile": True,
+        "causal_operational_coverage": True,
+        "quality_profile_not_tail_certification": True,
         "atomic_preparation_reservation": True,
         "final_commit_admission": True,
         "schema9_read_only_compatibility": True,

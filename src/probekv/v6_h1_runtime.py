@@ -113,10 +113,11 @@ class V6H1CaseRuntime:
         max_new_tokens: int = 64,
         instruction: str = DEFAULT_INSTRUCTION,
         repair_rounding_policy: str = "floor",
+        allowed_splits: Sequence[str] = ("pilot",),
     ) -> None:
         case.validate()
-        if case.split != "pilot":
-            raise ValueError("v6 H1 runtime accepts pilot cases only")
+        if case.split not in set(str(value) for value in allowed_splits):
+            raise ValueError("case split is outside the runtime evidence partition")
         if max_new_tokens < 1:
             raise ValueError("max_new_tokens must be positive")
         self.executor = executor

@@ -40,6 +40,32 @@ class PreparationCostObservation:
 
 
 @dataclass(frozen=True)
+class Gate1PairedABObservation:
+    request_id: str
+    dataset: str
+    dense_reference_total_ms: float
+    shadow_additional_overhead_ms: float
+    realized_additional_overhead_ms: float
+    gate1_enabled_wall_ms: float
+    gate1_bypassed_wall_ms: float
+    additional_transferred_bytes: int
+    final_commit_match: bool
+    correctness_match: bool
+
+    def __post_init__(self) -> None:
+        if not self.request_id or not self.dataset or self.dense_reference_total_ms <= 0:
+            raise ValueError("paired Gate1 A/B observation is incomplete")
+        if min(
+            self.shadow_additional_overhead_ms,
+            self.realized_additional_overhead_ms,
+            self.gate1_enabled_wall_ms,
+            self.gate1_bypassed_wall_ms,
+            self.additional_transferred_bytes,
+        ) < 0:
+            raise ValueError("paired Gate1 A/B costs must be non-negative")
+
+
+@dataclass(frozen=True)
 class Gate1CounterfactualSummary:
     observations: int
     gate1_pass_rate: float
@@ -50,6 +76,10 @@ class Gate1CounterfactualSummary:
     additional_transferred_bytes_fraction: float
     correctness_or_gamma_violations: int
     uncaught_invalid_paths: int
+    paired_observations: int
+    paired_mean_absolute_error_fraction: float
+    paired_p95_absolute_error_fraction: float
+    paired_final_commit_or_correctness_mismatches: int
     recommended_gate1_mode: Gate1Mode
     reasons: Tuple[str, ...]
 
@@ -70,6 +100,7 @@ def evaluate_gate1_counterfactual(
     *,
     total_winner_full_kv_bytes_with_gate1: int,
     profile: PreparationPolicyProfile,
+    paired_observations: Sequence[Gate1PairedABObservation] = (),
 ) -> Gate1CounterfactualSummary:
     """Pure audit: it performs no transfer, lease, reservation, or state mutation."""
     if not observations:
@@ -106,6 +137,27 @@ def evaluate_gate1_counterfactual(
         reasons.append("p95_preparation_overhead_exceeded")
     if byte_fraction > profile.transferred_bytes_limit_fraction:
         reasons.append("additional_transferred_bytes_exceeded")
+    paired_errors = [
+        abs(row.shadow_additional_overhead_ms - row.realized_additional_overhead_ms)
+        / row.dense_reference_total_ms
+        for row in paired_observations
+    ]
+    paired_mean_error = mean(paired_errors) if paired_errors else float("inf")
+    paired_p95_error = (
+        _linear_quantile(paired_errors, 0.95) if paired_errors else float("inf")
+    )
+    paired_mismatches = sum(
+        not row.final_commit_match or not row.correctness_match
+        for row in paired_observations
+    )
+    if len(paired_observations) < 18:
+        reasons.append("paired_gate1_ab_coverage_incomplete")
+    if paired_mean_error > profile.paired_mean_error_limit_fraction:
+        reasons.append("paired_gate1_mean_estimation_error_exceeded")
+    if paired_p95_error > profile.paired_p95_error_limit_fraction:
+        reasons.append("paired_gate1_p95_estimation_error_exceeded")
+    if paired_mismatches:
+        reasons.append("paired_gate1_outcome_mismatch")
     recommended = (
         Gate1Mode.FUSED_ADVISORY if not reasons else Gate1Mode.EXPLICIT_BARRIER
     )
@@ -126,6 +178,10 @@ def evaluate_gate1_counterfactual(
         additional_transferred_bytes_fraction=byte_fraction,
         correctness_or_gamma_violations=violations,
         uncaught_invalid_paths=uncaught,
+        paired_observations=len(paired_observations),
+        paired_mean_absolute_error_fraction=paired_mean_error,
+        paired_p95_absolute_error_fraction=paired_p95_error,
+        paired_final_commit_or_correctness_mismatches=paired_mismatches,
         recommended_gate1_mode=recommended,
         reasons=tuple(reasons),
     )

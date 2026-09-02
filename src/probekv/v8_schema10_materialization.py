@@ -81,7 +81,7 @@ class VariantMaterializationControllerV10:
                 state=state,
                 reason=reason,
                 selection_scope_complete=complete,
-                context_novelty_proven=novelty,
+                no_compatible_stored_variant_proven=novelty,
                 best_residual=request.best_residual,
                 absolute_threshold=request.absolute_threshold,
                 dense_kv_provenance=provenance,

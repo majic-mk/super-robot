@@ -27,9 +27,14 @@ git status --short
 
 Generate each model's immutable handoff with
 `scripts/server/build_v8_schema10_no_gpu_handoff.py`. The first A800 sessions
-freeze VariantAdmission, PreparationPolicy and SelectionDepth Profiles only;
-they do not run qualification or H1. Mistral and Qwen use independent model,
-tokenizer and Variant namespaces.
+freeze SelectionDepth, VariantAdmission, RepairPolicy, RuntimeCost and
+PreparationPolicy Profiles only; they do not run qualification or H1. Mistral
+and Qwen use independent model, tokenizer and Variant namespaces.
+
+The handoff must bind the exact SHA256 of the schema10 config, experiment
+contract, `configs/a800_server_lock_v8_schema10.json`, and the isolated
+90-request development partition. A handoff without any one of these four
+hashes cannot start the Profile runner.
 
 Expected stop state:
 
@@ -44,3 +49,15 @@ full_h1_started=false
 paper_evidence=false
 locked_test_accessed=false
 ```
+
+The revised Profile stage freezes five independent artifacts per model:
+SelectionDepth, VariantAdmission, RepairPolicy, RuntimeCost and
+PreparationPolicy. Run `run_v8_schema10_a800_profile.py`, aggregate with
+`aggregate_v8_schema10_profile.py`, and freeze only complete evidence with
+`freeze_v8_schema10_profiles.py`. Ninety-case selection and repair sweeps are
+stored as immutable six-case shards for bounded resume.
+
+The 90 development cases do not certify a 1% quality-tail violation rate.
+After both model Profile bundles freeze, runtime qualification remains 140 jobs
+per final model dispatch (280 total), while quality certification is a separate
+later set of at least 300 unique requests per model.

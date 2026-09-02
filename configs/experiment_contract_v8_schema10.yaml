@@ -5,8 +5,10 @@ runtime_patch_mode: probekv_v8_variant_growth_counterfactual
 
 source_selection:
   method: training_free_current_state_residual_k
-  online_depths: [1, 2]
+  online_depths_mistral: [1, 2, 4, 5, 8]
+  online_depths_qwen: [1, 2, 4, 5, 7]
   source_residual_trim_ratio_candidates: [0.10, 0.15, 0.20, 0.25, 0.30]
+  absolute_threshold_key: [model, completed_depth, source_residual_trim_ratio]
   absolute_residual_admission_required: true
   source_freeze_is_final: true
 
@@ -18,15 +20,16 @@ variant_admission:
   content_miss_materialization: true
   complete_scope_absolute_mismatch_materialization: true
   budget_truncated_exploration_materialization: true
-  exploration_claims_context_novelty: false
+  budget_truncated_exploration_sets_no_compatible_stored_variant_proven: false
   exploration_replacement_at_k16: false
   max_variants_per_content: 16
   replacement_policy: per_content_variant_lru_full_scope_only
   replacement_budget_fraction: 0.01
   exploration_quota_per_content: 2
-  probation_comparison_observations: 2
-  probation_lookup_opportunities: 2
-  max_protected_probation_per_content: 2
+  verification_comparisons: 2
+  probation_grace_lookup_opportunities: 2
+  probation_grace_capacity_per_content: 2
+  post_grace_policy: ordinary_per_content_lru
   selective_repair_promotion: false
   r1_repair_promotion: false
 
@@ -37,9 +40,43 @@ preparation:
   atomic_preparation_reservation_required: true
   final_commit_admission_required: true
   final_commit_gamma: 0.8
+  paired_ab_anchors_per_model: 18
+  paired_ab_datasets: [musique, 2wikimultihopqa, hotpotqa]
+
+profile_freeze:
+  development_request_units_per_model: 90
+  freezes_quality_tail_rate_1pct: false
+  order:
+    - reference_runtime
+    - selection_depth_profile
+    - variant_admission_profile
+    - repair_policy_profile
+    - runtime_cost_profile
+    - preparation_policy_profile
+    - final_consistency
+  reference_path:
+    repair_policy: fixed_15
+    gate1_mode: explicit_barrier
+    final_commit_gamma: 0.8
+  repair_ratio_grid: [0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.75, 1.00]
+  runtime_cost_factorized: true
+  runtime_cost_cartesian_product: false
+  joint_anchor_segments: [1, 5, 37]
+  profile_job_shard_cases: 6
+
+quality_certification:
+  separate_from_profile: true
+  unique_request_units_per_model_minimum: 300
+  runtime_qualification_rows_are_not_quality_units: true
+
+coverage:
+  k_values: [1, 2, 4, 8, 16]
+  operational_requires_causal_trace_replay: true
+  future_variant_visibility: false
+  oracle_is_explicit_upper_bound: true
 
 materialization_metrics:
-  novelty_precision_full_candidate_only: true
+  stored_pool_mismatch_precision_full_candidate_only: true
   exploration_yield_window: 32
   useful_materialization_precision_window: 32
   track_write_amplification: true
@@ -66,6 +103,9 @@ no_gpu_gate:
   gpu_rental_ready_for_schema10_profile_freeze: true
   variant_admission_profile_frozen: false
   preparation_policy_profile_frozen: false
+  selection_depth_profile_frozen: false
+  repair_policy_profile_frozen: false
+  runtime_cost_profile_frozen: false
   gpu_runtime_qualified: false
   h1_h2_execution_allowed: false
   failures: []

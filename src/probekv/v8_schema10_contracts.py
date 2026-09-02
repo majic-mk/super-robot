@@ -35,7 +35,7 @@ class VariantMaterializationDecisionV10:
     state: VariantMaterializationStateV10
     reason: VariantMaterializationReasonV10
     selection_scope_complete: bool
-    context_novelty_proven: bool
+    no_compatible_stored_variant_proven: bool
     best_residual: Optional[float]
     absolute_threshold: Optional[float]
     dense_kv_provenance: DenseKVProvenance
@@ -62,7 +62,7 @@ class VariantMaterializationDecisionV10:
             self.estimated_replacement_ms,
         ) < 0:
             raise ValueError("materialization costs must be non-negative")
-        if self.context_novelty_proven and self.reason not in {
+        if self.no_compatible_stored_variant_proven and self.reason not in {
             VariantMaterializationReasonV10.CONTENT_MISS,
             VariantMaterializationReasonV10.COMPLETE_SCOPE_ABSOLUTE_MISMATCH,
         }:
@@ -74,6 +74,16 @@ class VariantMaterializationDecisionV10:
                 raise ValueError("admitted materialization cannot have a rejection")
         elif not self.rejection_reason:
             raise ValueError("rejected materialization requires an audit reason")
+
+    @property
+    def context_novelty_proven(self) -> bool:
+        """Read-only compatibility for pre-Profile schema10 handoffs.
+
+        The old name overstated what a complete scan of the currently stored
+        pool proves.  New payloads must use
+        ``no_compatible_stored_variant_proven``.
+        """
+        return self.no_compatible_stored_variant_proven
 
 
 def schema10_no_gpu_gate(*, artifact_preparation_ready: bool) -> Mapping[str, object]:

@@ -134,6 +134,8 @@ claims require the pinned CacheBlend stack on the config-frozen A800.
   the reorganized H1-H5 protocol.
 - `docs/PROBEKV_V8_SCHEMA10_NO_GPU_HANDOFF.md`: exact no-GPU validation and
   model-specific A800 Profile-freeze stop boundary.
+- `docs/PROBEKV_V8_SCHEMA10_A800_PROFILE_RUNBOOK.md`: bounded dual-model
+  measurement, immutable resume, aggregation and five-Profile freeze workflow.
 - `docs/A800_V6_RENTAL_CHECKLIST.md`: final no-GPU artifact gate, pinned server
   installation, model audit and mandatory A800 runtime-qualification boundary.
 - `docs/LOCAL_E1E2.md`: complete local E1/E2 plumbing and artifacts.

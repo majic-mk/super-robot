@@ -7,16 +7,30 @@ from typing import Any, Dict, Mapping, Tuple
 
 from .runtime_source_audit import audit_v8_schema10_runtime_sources
 from .v8_schema10_contracts import schema10_no_gpu_gate
-from .v8_schema10_profile import SCHEMA10_TRIM_GRID
+from .v8_schema10_profile import (
+    SCHEMA10_MODEL_CHECKPOINTS,
+    SCHEMA10_REPAIR_RATIO_GRID,
+    SCHEMA10_TRIM_GRID,
+)
 
 
-def _job(kind: str, coordinates: Mapping[str, Any]) -> Dict[str, Any]:
+def _job(
+    kind: str,
+    coordinates: Mapping[str, Any],
+    *,
+    phase: str = "profile",
+    warmups: int = 0,
+    repeats: int = 1,
+) -> Dict[str, Any]:
     row = {
         "kind": kind,
         "coordinates": dict(coordinates),
         "paper_evidence": False,
         "locked_test_accessed": False,
         "requires_real_gpu": True,
+        "phase": phase,
+        "warmups": int(warmups),
+        "repeats": int(repeats),
     }
     row["job_id"] = "schema10-%s-%s" % (
         kind,
@@ -30,20 +44,72 @@ def _job(kind: str, coordinates: Mapping[str, Any]) -> Dict[str, Any]:
 def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
     if model_key not in {"mistral", "qwen"}:
         raise ValueError("schema10 supports only Mistral/Qwen")
-    jobs = []
-    for trim_ratio in SCHEMA10_TRIM_GRID:
-        for completed_depth in (1, 2):
-            jobs.append(
-                _job(
-                    "absolute_residual_threshold_freeze",
-                    {
-                        "model": model_key,
-                        "source_residual_trim_ratio": trim_ratio,
-                        "completed_depth": completed_depth,
-                        "candidate_coverage": "full_correctness_set",
-                    },
-                )
+    jobs = [
+        _job(
+            "correctness_sentinel",
+            {
+                "model": model_key,
+                "native_prefix_cache": True,
+                "completed_depth_hook": True,
+                "r1_dense_equivalence": True,
+                "source_and_artifact_digest": True,
+                "repair_mask_integrity": True,
+            },
+            phase="correctness",
+        ),
+        _job(
+            "reference_runtime",
+            {
+                "model": model_key,
+                "repair_policy": "fixed_15",
+                "gate1_mode": "explicit_barrier",
+                "final_commit_gamma": 0.8,
+            },
+            phase="reference",
+            warmups=2,
+            repeats=5,
+        )
+    ]
+    checkpoints = SCHEMA10_MODEL_CHECKPOINTS[model_key]
+    # Six-case immutable shards keep a four-hour GPU session resumable without
+    # treating a partially executed 90-case sweep as a successful job.
+    for case_start in range(0, 90, 6):
+        jobs.append(
+            _job(
+                "selection_admission_sweep",
+                {
+                    "model": model_key,
+                    "source_residual_trim_ratio_grid": list(SCHEMA10_TRIM_GRID),
+                    "completed_depths": list(checkpoints),
+                    "candidate_coverage": "full_correctness_set",
+                    "case_start": case_start,
+                    "case_count": 6,
+                    "reference_repair_policy": "fixed_15",
+                    "reference_gate1_mode": "explicit_barrier",
+                },
+                phase="selection_admission",
             )
+        )
+    # Selection cost is part of the Stage-A hard Gate, so these cells must be
+    # complete before any Stage-B repair sweep starts.
+    for compared_k in (1, 2, 4, 8, 16):
+        for token_count in (128, 512, 640):
+            for completed_depth in checkpoints:
+                jobs.append(
+                    _job(
+                        "factorized_selection",
+                        {
+                            "model": model_key,
+                            "compared_k": compared_k,
+                            "token_count": token_count,
+                            "completed_depth": completed_depth,
+                            "backing_tier": "pinned_cpu",
+                        },
+                        phase="selection_admission",
+                        warmups=2,
+                        repeats=5,
+                    )
+                )
     for policy in (
         "single_variant_no_growth",
         "complete_mismatch_growth_only",
@@ -54,24 +120,160 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
             _job(
                 "variant_growth_trace",
                 {"model": model_key, "policy": policy, "initial_k": 1, "max_k": 16},
+                phase="selection_admission",
             )
         )
-    jobs.extend(
-        (
-            _job(
-                "gate1_counterfactual",
-                {"model": model_key, "mode": "with_and_without_gate1"},
-            ),
-            _job(
-                "probation_lifecycle",
-                {
-                    "model": model_key,
-                    "comparison_observations": 2,
-                    "lookup_window": 2,
-                },
-            ),
+    jobs.append(
+        _job(
+            "probation_lifecycle",
+            {
+                "model": model_key,
+                "verification_comparisons": 2,
+                "grace_lookup_opportunities": 2,
+                "grace_capacity_per_content": 2,
+            },
+            phase="selection_admission",
         )
     )
+    jobs.append(
+        _job(
+            "gate1_counterfactual_shadow",
+            {"model": model_key, "cases": 90, "side_effect_free": True},
+            phase="runtime_repair_preparation",
+        )
+    )
+    for case_start in range(0, 90, 6):
+        jobs.append(
+            _job(
+                "repair_policy_development_sweep",
+                {
+                    "model": model_key,
+                    "case_start": case_start,
+                    "case_count": 6,
+                    "policies": [
+                        "fixed_15",
+                        "static_gradual",
+                        "load_recompute_aware_uniform",
+                    ],
+                    "repair_ratio_grid": list(SCHEMA10_REPAIR_RATIO_GRID),
+                },
+                phase="runtime_repair_preparation",
+            )
+        )
+    for dataset in ("musique", "2wikimultihopqa", "hotpotqa"):
+        for anchor_index in range(6):
+            jobs.append(
+                _job(
+                    "gate1_paired_ab",
+                    {
+                        "model": model_key,
+                        "dataset": dataset,
+                        "anchor_index": anchor_index,
+                        "modes": ["explicit_barrier", "bypassed_for_measurement"],
+                    },
+                    phase="runtime_repair_preparation",
+                )
+            )
+
+    # Remaining factorized cost cells: no Cartesian product across categories.
+    for bytes_count in (4 << 20, 16 << 20, 64 << 20):
+        for path in ("pinned_cpu_to_gpu", "ssd_staged_to_gpu"):
+            for concurrency in (1, 2, 4):
+                jobs.append(
+                    _job(
+                        "factorized_transfer",
+                        {
+                            "model": model_key,
+                            "bytes": bytes_count,
+                            "path": path,
+                            "concurrency": concurrency,
+                        },
+                        phase="runtime_repair_preparation",
+                        warmups=2,
+                        repeats=5,
+                    )
+                )
+    for active_rows in (128, 512, 2560, 18944):
+        for repair_ratio in SCHEMA10_REPAIR_RATIO_GRID:
+            jobs.append(
+                _job(
+                    "factorized_repair",
+                    {
+                        "model": model_key,
+                        "active_rows": active_rows,
+                        "repair_ratio": repair_ratio,
+                    },
+                    phase="runtime_repair_preparation",
+                    warmups=2,
+                    repeats=5,
+                )
+            )
+    for segment_count in (1, 2, 5, 10, 37):
+        for concurrency in (1, 2, 4):
+            jobs.append(
+                _job(
+                    "factorized_scheduler",
+                    {
+                        "model": model_key,
+                        "segment_count": segment_count,
+                        "concurrency": concurrency,
+                        "ready_state": "layerwise",
+                    },
+                    phase="runtime_repair_preparation",
+                    warmups=2,
+                    repeats=5,
+                )
+            )
+    for segment_count in (1, 5, 37):
+        for path in ("gpu_resident", "pinned_cpu_to_gpu", "ssd_staged_to_gpu"):
+            for repair_ratio in (0.15, 0.30):
+                anchor = segment_count == 5 and path == "pinned_cpu_to_gpu" and repair_ratio == 0.15
+                jobs.append(
+                    _job(
+                        "joint_anchor",
+                        {
+                            "model": model_key,
+                            "segment_count": segment_count,
+                            "path": path,
+                            "repair_ratio": repair_ratio,
+                            "concurrency": 1,
+                        },
+                        phase="runtime_repair_preparation",
+                        warmups=20 if anchor else 2,
+                        repeats=100 if anchor else 5,
+                    )
+                )
+    for segment_count in (5, 37):
+        for path in ("pinned_cpu_to_gpu", "ssd_staged_to_gpu"):
+            for concurrency in (2, 4):
+                jobs.append(
+                    _job(
+                        "joint_anchor",
+                        {
+                            "model": model_key,
+                            "segment_count": segment_count,
+                            "path": path,
+                            "repair_ratio": 0.15,
+                            "concurrency": concurrency,
+                        },
+                        phase="runtime_repair_preparation",
+                        warmups=2,
+                        repeats=5,
+                    )
+                )
+    jobs.append(
+        _job(
+            "final_profile_consistency",
+            {
+                "model": model_key,
+                "retune_on_failure": False,
+                "required_profile_count": 5,
+            },
+            phase="final_consistency",
+        )
+    )
+    if len({row["job_id"] for row in jobs}) != len(jobs):
+        raise RuntimeError("schema10 Profile jobs are not unique")
     return tuple(jobs)
 
 
@@ -153,7 +355,7 @@ def build_schema10_h1_h5_manifests(model_key: str) -> Mapping[str, object]:
                 "deep_oracle_growth",
             ],
             "metrics": [
-                "novelty_precision",
+                "stored_pool_mismatch_precision",
                 "exploration_yield_at_32",
                 "useful_materialization_precision_at_32",
                 "mean_variant_count",
@@ -165,6 +367,12 @@ def build_schema10_h1_h5_manifests(model_key: str) -> Mapping[str, object]:
                 "replacement_frequency",
                 "warmup_mean_ttft_ms",
                 "steady_state_mean_ttft_ms",
+                "compatible_coverage_k",
+                "selected_coverage_k",
+                "commit_coverage_k",
+                "marginal_coverage_gain_k",
+                "operational_near_saturation_k",
+                "oracle_near_saturation_k",
             ],
         },
         "H2": {
@@ -179,6 +387,7 @@ def build_schema10_h1_h5_manifests(model_key: str) -> Mapping[str, object]:
             **common,
             "purpose": "repair_and_io_balance",
             "policies": ["fixed_15", "static_gradual", "load_recompute_aware_uniform"],
+            "repair_ratio_grid": list(SCHEMA10_REPAIR_RATIO_GRID),
             "correctness_endpoint": "r1_dense_equivalence",
         },
         "H4": {
@@ -214,9 +423,11 @@ def build_schema10_no_gpu_handoff(
     cacheblend_tree: str,
     config_sha256: str,
     contract_sha256: str,
+    server_lock_sha256: str,
+    development_partition_sha256: str,
     repo_root: str = "",
 ) -> Mapping[str, object]:
-    if not all((code_commit, model_revision, tokenizer_hash, cacheblend_patch_sha256, cacheblend_tree, config_sha256, contract_sha256)):
+    if not all((code_commit, model_revision, tokenizer_hash, cacheblend_patch_sha256, cacheblend_tree, config_sha256, contract_sha256, server_lock_sha256, development_partition_sha256)):
         raise ValueError("schema10 handoff provenance is incomplete")
     profile_jobs = build_schema10_profile_jobs(model_key)
     hypotheses = build_schema10_h1_h5_manifests(model_key)
@@ -235,6 +446,8 @@ def build_schema10_no_gpu_handoff(
         "cacheblend_tree": cacheblend_tree,
         "config_sha256": config_sha256,
         "contract_sha256": contract_sha256,
+        "server_lock_sha256": server_lock_sha256,
+        "development_partition_sha256": development_partition_sha256,
         "profile_jobs": list(profile_jobs),
         "h1_h5_manifests": hypotheses,
         "profiles_frozen": False,

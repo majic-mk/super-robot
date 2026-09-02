@@ -18,6 +18,8 @@ def main() -> int:
     parser.add_argument("--cacheblend-tree", required=True)
     parser.add_argument("--config-sha256", required=True)
     parser.add_argument("--contract-sha256", required=True)
+    parser.add_argument("--server-lock-sha256", required=True)
+    parser.add_argument("--development-partition-sha256", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--jobs-output")
     args = parser.parse_args()
@@ -30,6 +32,8 @@ def main() -> int:
         cacheblend_tree=args.cacheblend_tree,
         config_sha256=args.config_sha256,
         contract_sha256=args.contract_sha256,
+        server_lock_sha256=args.server_lock_sha256,
+        development_partition_sha256=args.development_partition_sha256,
     )
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -866,6 +866,8 @@ class RealCacheBlendA800Executor:
         repair_metric: RepairMetric = RepairMetric.WINNER_V_ONLY,
         adaptive_repair_controller: Any = None,
         adaptive_candidates_by_layer: Mapping[int, Sequence[Any]] | None = None,
+        canonical_layers_by_segment: Mapping[int, Sequence[Tuple[Any, Any]]] | None = None,
+        source_replica_tier: KVLocation = KVLocation.PINNED_CPU,
     ) -> GenerationTrace:
         prefix_tokens = int(exact_prefix_tokens)
         if prefix_tokens < 0 or prefix_tokens > len(fixture.prompt_ids):
@@ -928,7 +930,11 @@ class RealCacheBlendA800Executor:
                 if not 0 <= winner_variant < len(variants):
                     raise ValueError("locked winner variant is unavailable")
                 source_id = "s%d-v%d" % (index, winner_variant)
-                canonical_layers = variants[winner_variant]
+                canonical_layers = tuple(
+                    (canonical_layers_by_segment or {}).get(
+                        index, variants[winner_variant]
+                    )
+                )
                 logical = ""
                 if self.protocol_version in {7, 8}:
                     try:
@@ -969,7 +975,7 @@ class RealCacheBlendA800Executor:
                         replica_id="replica-%s-cpu" % source_id,
                         artifact_id=artifact.artifact_id,
                         generation=1,
-                        tier=KVLocation.PINNED_CPU,
+                        tier=KVLocation(source_replica_tier),
                         logical_digest=logical,
                         bytes_digest=logical,
                         size_bytes=sum(
@@ -978,7 +984,13 @@ class RealCacheBlendA800Executor:
                             for tensor in (key, value)
                         ),
                         locator=ReplicaLocator(
-                            value="qualification-pinned-cpu",
+                            value=(
+                                "profile-gpu-resident"
+                                if KVLocation(source_replica_tier) is KVLocation.GPU
+                                else "profile-ssd-staged"
+                                if KVLocation(source_replica_tier) is KVLocation.SSD
+                                else "qualification-pinned-cpu"
+                            ),
                             layout_signature="contiguous-bf16",
                         ),
                     )
@@ -1744,6 +1756,70 @@ class RealCacheBlendA800Executor:
             "cuda_event_timing": True,
         }
 
+    def measure_schema10_selection_batch(
+        self,
+        *,
+        compared_k: int,
+        token_count: int,
+        completed_depth: int,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure pinned SelectionState H2D plus vectorized Residual-K.
+
+        The current request K is already resident after the dense probe. Only
+        the lightweight historical SelectionState is transferred; no full-KV
+        Artifact is touched by this method.
+        """
+
+        if self.runtime_schema_version != 10:
+            raise RuntimeError("schema10 selection profiling requires schema10 runtime")
+        if compared_k not in {1, 2, 4, 8, 16} or token_count < 2:
+            raise ValueError("unsupported schema10 selection cell")
+        if completed_depth not in self.model_spec.checkpoints:
+            raise ValueError("selection completed depth differs from the adapter")
+        shape = (
+            int(token_count),
+            int(self.model_spec.num_kv_heads),
+            int(self.inner_model.layers[0].self_attn.head_dim),
+        )
+        required = (compared_k + 1) * math.prod(shape) * 2
+        if required > int(self.selection_workspace_capacity_provider()):
+            raise MemoryError("selection cell exceeds elastic SelectionState workspace")
+        current = self.torch.randn(shape, device="cuda", dtype=self.torch.bfloat16)
+        source_host = self.torch.empty(
+            (compared_k,) + shape,
+            device="cpu",
+            dtype=self.torch.bfloat16,
+            pin_memory=True,
+        )
+        source_host.normal_()
+        source_gpu = self.torch.empty_like(source_host, device="cuda")
+
+        def operation() -> None:
+            source_gpu.copy_(source_host, non_blocking=True)
+            self._cuda_compare(current, source_gpu, residual_ratio=0.15)
+
+        for _ in range(warmups):
+            operation()
+        gpu_rows = []
+        host_rows = []
+        for _ in range(repeats):
+            gpu_ms, host_ms = self._timed_operation(operation)
+            gpu_rows.append(gpu_ms)
+            host_rows.append(host_ms)
+        return {
+            "measurements_ms": gpu_rows,
+            "host_measurements_ms": host_rows,
+            "workspace_bytes": required,
+            "selection_state_bytes_transferred": compared_k * math.prod(shape) * 2,
+            "selection_state_transfer_included": True,
+            "full_kv_bytes_transferred_for_selection": 0,
+            "backing_tier": "pinned_cpu",
+            "one_shot": True,
+            "cuda_event_timing": True,
+        }
+
     def measure_schema6_ssd_staged_transfer(
         self,
         *,
@@ -2003,6 +2079,152 @@ class RealCacheBlendA800Executor:
             "absolute_union_mask_verified": True,
         }
 
+    def measure_schema10_joint_anchor(
+        self,
+        *,
+        segment_count: int,
+        segment_token_count: int,
+        boundary: int,
+        repair_ratio: float,
+        source_path: str,
+        staging_directory: str,
+        warmups: int,
+        repeats: int,
+    ) -> Mapping[str, Any]:
+        """Measure a joint request with the requested physical Source path.
+
+        Unlike the generic schema-v6 joint helper, this method makes the
+        storage path part of the timed operation.  GPU-resident Sources are
+        prepared before warm-up; pinned Sources enter through the real
+        layer-wise H2D loader; SSD Sources are read into persistent pinned
+        staging and then use that same loader.
+        """
+
+        if self.runtime_schema_version != 10:
+            raise RuntimeError("schema10 joint anchors require schema10 runtime")
+        path_to_tier = {
+            "gpu_resident": KVLocation.GPU,
+            "pinned_cpu": KVLocation.PINNED_CPU,
+            "ssd_staged": KVLocation.SSD,
+        }
+        if source_path not in path_to_tier:
+            raise ValueError("unsupported schema10 joint Source path")
+        fixture = self._fixture(
+            int(segment_count), 1,
+            segment_token_count=int(segment_token_count),
+        )
+        base_layers = {
+            index: tuple(fixture.canonical_variants[index][0])
+            for index in range(len(fixture.segment_positions))
+        }
+        overrides: Dict[int, Tuple[Tuple[Any, Any], ...]] = {}
+        staged_views: list[memoryview] = []
+        staged_file: Path | None = None
+        if source_path == "gpu_resident":
+            overrides = {
+                index: tuple(
+                    (key.to("cuda"), value.to("cuda"))
+                    for key, value in layers
+                )
+                for index, layers in base_layers.items()
+            }
+            self.torch.cuda.synchronize()
+        else:
+            for index, layers in base_layers.items():
+                pinned = []
+                for key, value in layers:
+                    pinned_pair = []
+                    for tensor in (key, value):
+                        host = self.torch.empty_like(
+                            tensor, device="cpu", pin_memory=True
+                        )
+                        host.copy_(tensor)
+                        pinned_pair.append(host)
+                        staged_views.append(
+                            memoryview(host.view(self.torch.uint8).numpy()).cast("B")
+                        )
+                    pinned.append(tuple(pinned_pair))
+                overrides[index] = tuple(pinned)
+            if source_path == "ssd_staged":
+                directory = Path(staging_directory).resolve()
+                directory.mkdir(parents=True, exist_ok=True)
+                total_bytes = sum(len(view) for view in staged_views)
+                staged_file = directory / (
+                    "schema10-joint-%d-%d.bin"
+                    % (int(segment_count), int(segment_token_count))
+                )
+                # Rewrite outside the timed region for every fixture.  Reusing
+                # a same-sized file from another request/model would preserve
+                # timing but silently break Source Artifact identity.
+                with staged_file.open("wb") as handle:
+                    for view in staged_views:
+                        handle.write(view)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if staged_file.stat().st_size != total_bytes:
+                    raise IOError("schema10 joint SSD Artifact has the wrong size")
+
+        def operation() -> Tuple[float, GenerationTrace]:
+            host_started = time.perf_counter()
+            if staged_file is not None:
+                with staged_file.open("rb", buffering=0) as handle:
+                    if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+                        os.posix_fadvise(
+                            handle.fileno(), 0, staged_file.stat().st_size,
+                            os.POSIX_FADV_DONTNEED,
+                        )
+                    for view in staged_views:
+                        offset = 0
+                        while offset < len(view):
+                            count = handle.readinto(view[offset:])
+                            if not count:
+                                raise IOError("short SSD read during schema10 joint anchor")
+                            offset += int(count)
+            trace = self._reuse_generate(
+                fixture,
+                ratio=float(repair_ratio),
+                token_count=1,
+                probe_layer=int(boundary),
+                winner_variant=0,
+                force_nonpaper_measurement_admission=(repair_ratio < 1.0),
+                canonical_layers_by_segment=overrides,
+                source_replica_tier=path_to_tier[source_path],
+            )
+            return (time.perf_counter() - host_started) * 1000.0, trace
+
+        for _ in range(warmups):
+            operation()
+        wall_rows = []
+        gpu_rows = []
+        last: GenerationTrace | None = None
+        for _ in range(repeats):
+            wall_ms, last = operation()
+            wall_rows.append(float(wall_ms))
+            gpu_rows.append(float(last.gpu_ms))
+        if last is None or not all(
+            (
+                last.source_digests_unchanged,
+                last.artifact_digests_unchanged,
+                last.absolute_union_mask_verified,
+            )
+        ):
+            raise RuntimeError("schema10 joint anchor violated Source/mask integrity")
+        return {
+            "measurements_ms": wall_rows,
+            "cuda_measurements_ms": gpu_rows,
+            "timing_basis": "integrated_request_wall_clock",
+            "source_path": source_path,
+            "joint_path_measured": True,
+            "cuda_event_timing": True,
+            "prompt_token_count": len(fixture.prompt_ids),
+            "actual_segment_token_counts": [
+                len(positions) for positions in fixture.segment_positions
+            ],
+            "canonical_source_digests_unchanged": True,
+            "artifact_digests_unchanged": True,
+            "absolute_union_mask_verified": True,
+        }
+
     def measure_schema6_copy_interference(
         self,
         *,
@@ -2065,7 +2287,11 @@ class RealCacheBlendA800Executor:
     ) -> Mapping[str, Any]:
         """Measure CUDA-event polling and ready/resume synchronization overhead."""
 
-        if policy not in {"causal_commit_wait", "immediate_staggered_closed_loop"}:
+        if policy not in {
+            "causal_commit_wait",
+            "immediate_staggered_closed_loop",
+            "dense_selection_barrier",
+        }:
             raise ValueError("invalid scheduler policy")
         if concurrency < 1 or ready_resume_state not in {"prefetching", "ready"}:
             raise ValueError("invalid scheduler blocking cell")
