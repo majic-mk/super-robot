@@ -69,20 +69,21 @@ index 9f6f6933cd79e8a9327434540a48cd11b2683150..4397416f81bd4a59fd2afdf7b54de350
              imp_indices = cache_fuse_metadata["imp_indices"]
              #key_old[imp_indices] = key[imp_indices]
              #value_old[imp_indices] = value[imp_indices]
-@@ -547,12 +587,33 @@ class XFormersImpl(AttentionImpl):
+@@ -547,12 +587,34 @@ class XFormersImpl(AttentionImpl):
              if status in [1,2]:
 -                #import pdb
 -                #pdb.set_trace()
 +                partial_bias = cache_fuse_metadata["attn_bias"]
 +                # xFormers 0.0.25 can issue an illegal Cutlass access for a
-+                # materialized 5-D GQA bias when queries_per_kv is not one of
-+                # its aligned group sizes (Qwen2.5 uses 7). Flatten the
-+                # already-expanded GQA tensors to equivalent contiguous MHA
-+                # heads while preserving the bias's padded final stride.
++                # materialized 5-D GQA bias at valid but kernel-sensitive
++                # partial-query lengths. This occurs for both Mistral's
++                # 4-way GQA and Qwen2.5's 7-way GQA. Flatten the already-
++                # expanded tensors to mathematically equivalent contiguous
++                # MHA heads while preserving the bias's padded final stride.
 +                if (
 +                    cache_fuse_metadata.get("probekv_resumable")
 +                    and torch.is_tensor(partial_bias)
-+                    and self.num_queries_per_kv not in (1, 2, 4, 8)
++                    and self.num_queries_per_kv != 1
 +                ):
 +                    query = query.contiguous().view(
 +                        query.shape[0], query.shape[1],

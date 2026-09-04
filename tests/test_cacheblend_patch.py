@@ -192,9 +192,10 @@ class CacheBlendPatchTests(unittest.TestCase):
             "+        if self.model.cache_fuse_metadata.get(\"capture_logits\"",
             patch,
         )
-        self.assertIn("self.num_queries_per_kv not in (1, 2, 4, 8)", patch)
+        self.assertIn("self.num_queries_per_kv != 1", patch)
         self.assertIn("partial_bias = partial_bias.view(", patch)
-        self.assertIn("already-expanded GQA tensors", patch)
+        self.assertIn("expanded tensors to mathematically equivalent", patch)
+        self.assertIn("Mistral's", patch)
         self.assertEqual(
             patch_files_for_mode(MANIFEST, "probekv_v6_multiregion"),
             paths[:3],
