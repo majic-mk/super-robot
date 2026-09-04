@@ -162,15 +162,34 @@ class V6H1CaseRuntime:
             [None, None] for _ in range(executor.model_spec.num_layers)
         ]
         try:
-            executor.llm.generate(
-                prompt_token_ids=[list(int(value) for value in token_ids)],
-                sampling_params=executor.SamplingParams(temperature=0, max_tokens=1),
-                use_tqdm=False,
+            # Canonical Source creation must observe an exact dense full
+            # prefill.  Going through LLM.generate while native Prefix Cache
+            # is enabled can return only the uncached suffix to the patched
+            # K/V hook, especially because all RAG cases share an instruction
+            # prefix.  The executor's direct model path uses an explicit
+            # qualification block table and therefore cannot silently turn
+            # Source materialization into a cached-prefix partial prefill.
+            prompt = tuple(int(value) for value in token_ids)
+            fixture = RuntimeFixture(prompt, (), (), (), ())
+            tensors = executor._prepare(
+                fixture,
+                (),
+                is_prompt=True,
+                reuse=False,
+                request_id="canonical-dense-exact-collect",
             )
+            input_ids, positions, attention = tensors[:3]
+            with executor.torch.inference_mode():
+                executor.outer_model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    kv_caches=executor.kv_caches,
+                    attn_metadata=attention,
+                )
             result = []
             for layer in executor.inner_model.layers:
                 key, value = layer.self_attn.hack_kv
-                if key.shape[0] != len(token_ids):
+                if key.shape[0] != len(prompt) or value.shape[0] != len(prompt):
                     raise RuntimeError("collected KV does not cover the prompt")
                 result.append((key.detach().cpu().clone(), value.detach().cpu().clone()))
             return tuple(result)

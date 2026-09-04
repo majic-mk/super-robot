@@ -81,6 +81,13 @@ class V6H1ServerContractTests(unittest.TestCase):
         self.assertIn("stop_token_ids", parameters)
         self.assertIn("force_nonpaper_measurement_admission", parameters)
 
+    def test_canonical_collection_bypasses_native_prefix_scheduler(self):
+        source = inspect.getsource(V6H1CaseRuntime._collect_layers)
+        self.assertIn("executor._prepare", source)
+        self.assertIn("executor.outer_model", source)
+        self.assertIn('request_id="canonical-dense-exact-collect"', source)
+        self.assertNotIn("executor.llm.generate", source)
+
     def test_worker_uses_resumable_runtime_and_hard_failure_gate(self):
         root = Path(__file__).resolve().parents[1]
         text = (root / "scripts" / "server" / "run_v6_h1_pilot.py").read_text(
