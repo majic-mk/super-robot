@@ -137,3 +137,29 @@ class Schema10DevelopmentCaseRuntime(V8H1CaseRuntime):
             "paper_evidence": False,
             "locked_test_accessed": False,
         }
+
+    def _generate(
+        self, source_index: int, reuse_layer: int, ratio: float, *, teacher: bool
+    ) -> Any:
+        """Execute a development-only repair observation at the selected depth.
+
+        The deployable schema10 fast path remains restricted to d1/d2.  The
+        development sweep must also execute the frozen legacy checkpoint
+        candidate (including its r=1 endpoint) so that fallback selection is
+        backed by real A800 evidence rather than a synthetic extrapolation.
+        """
+
+        repair = self._repair_positions(source_index, reuse_layer, ratio)
+        return self.executor._reuse_generate(
+            self.fixture.runtime,
+            ratio=ratio,
+            token_count=(len(self.full.token_ids) if teacher else self.max_new_tokens),
+            probe_layer=reuse_layer - 1,
+            winner_variant=source_index,
+            teacher_tokens=(self.full.token_ids if teacher else ()),
+            boundary_by_segment={0: reuse_layer},
+            repair_positions_by_segment={0: repair},
+            model_signature=self.case.model_signature,
+            stop_token_ids=self.stop_token_ids,
+            force_nonpaper_measurement_admission=True,
+        )

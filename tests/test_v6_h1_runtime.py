@@ -79,6 +79,7 @@ class V6H1ServerContractTests(unittest.TestCase):
         self.assertIn("repair_positions_by_segment", parameters)
         self.assertIn("model_signature", parameters)
         self.assertIn("stop_token_ids", parameters)
+        self.assertIn("force_nonpaper_measurement_admission", parameters)
 
     def test_worker_uses_resumable_runtime_and_hard_failure_gate(self):
         root = Path(__file__).resolve().parents[1]

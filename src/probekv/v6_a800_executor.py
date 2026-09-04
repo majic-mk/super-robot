@@ -868,6 +868,7 @@ class RealCacheBlendA800Executor:
         adaptive_candidates_by_layer: Mapping[int, Sequence[Any]] | None = None,
         canonical_layers_by_segment: Mapping[int, Sequence[Tuple[Any, Any]]] | None = None,
         source_replica_tier: KVLocation = KVLocation.PINNED_CPU,
+        force_nonpaper_measurement_admission: bool = False,
     ) -> GenerationTrace:
         prefix_tokens = int(exact_prefix_tokens)
         if prefix_tokens < 0 or prefix_tokens > len(fixture.prompt_ids):
@@ -917,7 +918,11 @@ class RealCacheBlendA800Executor:
             if self.protocol_version == 8:
                 observed_k0 = engine.session.observe_pre_rope_k(0)
             first_probe = min(max(1, int(probe_layer)), self.model_spec.num_layers - 1)
-            if self.runtime_schema_version in {8, 9, 10} and first_probe not in {1, 2}:
+            if (
+                self.runtime_schema_version in {8, 9, 10}
+                and first_probe not in {1, 2}
+                and not force_nonpaper_measurement_admission
+            ):
                 raise ValueError("schema-v8 online selection is limited to d=1/d=2")
             engine.advance_to_layer(first_probe)
             if self.protocol_version == 8:
