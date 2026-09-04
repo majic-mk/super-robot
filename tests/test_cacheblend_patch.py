@@ -219,6 +219,13 @@ class CacheBlendPatchTests(unittest.TestCase):
         self.assertIn("probekv_v8_absolute_residual_variant_admission", prepare)
         self.assertIn("probekv_v8_variant_growth_counterfactual", prepare)
 
+    def test_patch_verifier_accepts_schema9_and_schema10_runtime_modes(self):
+        verifier = (
+            ROOT / "scripts/server/verify_cacheblend_patch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("probekv_v8_absolute_residual_variant_admission", verifier)
+        self.assertIn("probekv_v8_variant_growth_counterfactual", verifier)
+
     def test_schema6_r1_endpoint_uses_exact_dense_attention_path(self):
         patch = patch_files_for_mode(
             MANIFEST, "probekv_v8_schema6_joint_cfo"

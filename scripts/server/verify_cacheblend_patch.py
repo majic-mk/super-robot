@@ -52,6 +52,8 @@ def main() -> int:
             "probekv_v8_schema6_joint_cfo",
             "probekv_v8_winner_gradual_streaming",
             "probekv_v8_gradual_barrier_tiered_lru",
+            "probekv_v8_absolute_residual_variant_admission",
+            "probekv_v8_variant_growth_counterfactual",
         ),
     )
     parser.add_argument("--manifest")

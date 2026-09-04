@@ -78,6 +78,9 @@ def load_patch_manifest(path: Path) -> Dict[str, Any]:
         "probekv_v8_training_free_residual_k",
         "probekv_v8_schema6_joint_cfo",
         "probekv_v8_winner_gradual_streaming",
+        "probekv_v8_gradual_barrier_tiered_lru",
+        "probekv_v8_absolute_residual_variant_admission",
+        "probekv_v8_variant_growth_counterfactual",
     }
     if not isinstance(modes, dict) or not required_modes.issubset(modes):
         raise ValueError(
