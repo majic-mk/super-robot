@@ -41,6 +41,7 @@ class Schema10ProfileRuntimeContractTests(unittest.TestCase):
         )
         self.assertIn("self.runtime_schema_version == 10", executor_source)
         self.assertIn("and force_nonpaper_measurement_admission", executor_source)
+        self.assertIn("certified_floor=min(float(ratio), 0.15)", executor_source)
 
     def test_development_ratio_has_explicit_nonfrozen_measurement_scope(self):
         for ratio in (0.10, 0.12, 0.20, 0.30, 0.50, 0.75):

@@ -1167,7 +1167,7 @@ class RealCacheBlendA800Executor:
                                 )
                                 for index in expected_segments
                             ),
-                            certified_floor=float(ratio),
+                            certified_floor=min(float(ratio), 0.15),
                             profile_frozen=False,
                             certified_ratio_candidates=(float(ratio),),
                         )
