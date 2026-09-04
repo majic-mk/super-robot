@@ -8,6 +8,12 @@ from .metrics import best_answer_f1, token_id_f1
 from .v6_a800_executor import aggregate_relative_l2
 from .v6_h1_runtime import V8H1CaseRuntime
 from .v8_schema10_profile import SCHEMA10_REPAIR_RATIO_GRID, SCHEMA10_TRIM_GRID
+from .v8_schema8_contracts import RepairRatioScope
+from .v8_schema8_repair import (
+    MultiSegmentRepairRatioPlan,
+    SegmentLayerRepairRatio,
+    validate_union_repair_ratio_plan,
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +22,30 @@ class SourceResidualObservationV10:
     completed_depth: int
     source_residual_trim_ratio: float
     residual_score: float
+
+
+def development_repair_measurement_plan(
+    *, segment_id: str, first_reuse_layer: int, repair_ratio: float
+) -> MultiSegmentRepairRatioPlan:
+    """Build an explicitly non-deployable plan for one Profile grid point.
+
+    The frozen online fixed15 path deliberately rejects arbitrary ratios.  A
+    development sweep needs those ratios to measure the future frozen Profile,
+    so its plan carries a distinct scope and remains non-frozen.  The executor
+    accepts it only together with ``force_nonpaper_measurement_admission``.
+    """
+
+    ratio = float(repair_ratio)
+    if ratio not in SCHEMA10_REPAIR_RATIO_GRID or not 0.0 < ratio < 1.0:
+        raise ValueError("development repair plan requires an interior Profile ratio")
+    layer = int(first_reuse_layer)
+    return validate_union_repair_ratio_plan(
+        scope=RepairRatioScope.DEVELOPMENT_PROFILE_MEASUREMENT,
+        rows=(SegmentLayerRepairRatio(segment_id, layer, layer, ratio),),
+        certified_floor=min(ratio, 0.15),
+        profile_frozen=False,
+        certified_ratio_candidates=(ratio,),
+    )
 
 
 class Schema10DevelopmentCaseRuntime(V8H1CaseRuntime):
@@ -150,6 +180,15 @@ class Schema10DevelopmentCaseRuntime(V8H1CaseRuntime):
         """
 
         repair = self._repair_positions(source_index, reuse_layer, ratio)
+        repair_ratio_plan = (
+            development_repair_measurement_plan(
+                segment_id="c0",
+                first_reuse_layer=reuse_layer,
+                repair_ratio=ratio,
+            )
+            if 0.0 < float(ratio) < 1.0
+            else None
+        )
         return self.executor._reuse_generate(
             self.fixture.runtime,
             ratio=ratio,
@@ -161,5 +200,6 @@ class Schema10DevelopmentCaseRuntime(V8H1CaseRuntime):
             repair_positions_by_segment={0: repair},
             model_signature=self.case.model_signature,
             stop_token_ids=self.stop_token_ids,
+            repair_ratio_plan=repair_ratio_plan,
             force_nonpaper_measurement_admission=True,
         )

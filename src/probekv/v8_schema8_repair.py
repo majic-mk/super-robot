@@ -654,6 +654,22 @@ class MultiSegmentRepairRatioPlan:
                 raise ValueError("fixed15 cannot carry adaptive joint decisions")
             if any(abs(row.ratio - 0.15) > 1e-12 for row in self.rows):
                 raise ValueError("fixed15 requires 0.15 for every Segment and layer")
+        elif self.scope is RepairRatioScope.DEVELOPMENT_PROFILE_MEASUREMENT:
+            if self.profile_frozen:
+                raise ValueError(
+                    "development repair measurements cannot masquerade as a frozen Profile"
+                )
+            if self.adaptive_joint_decisions or self.uniform_io_decisions:
+                raise ValueError(
+                    "development repair measurements cannot carry runtime decisions"
+                )
+            if any(
+                all(abs(row.ratio - candidate) > 1e-12 for candidate in candidates)
+                for row in self.rows
+            ):
+                raise ValueError(
+                    "development repair measurement is outside its declared ratio grid"
+                )
         elif self.scope is RepairRatioScope.SHARED_RELATIVE_SCHEDULE:
             if self.adaptive_joint_decisions or self.uniform_io_decisions:
                 raise ValueError("static gradual cannot carry adaptive joint decisions")

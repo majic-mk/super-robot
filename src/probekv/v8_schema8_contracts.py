@@ -15,6 +15,7 @@ class RepairRatioScope(str, Enum):
     SHARED_RELATIVE_SCHEDULE = "shared_relative_schedule"
     PER_SEGMENT_LOAD_AWARE = "per_segment_load_aware"
     REQUEST_LAYER_UNIFORM_IO_BALANCED = "request_layer_uniform_io_balanced"
+    DEVELOPMENT_PROFILE_MEASUREMENT = "development_profile_measurement"
 
 
 class BarrierResolution(str, Enum):

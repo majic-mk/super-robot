@@ -1162,6 +1162,14 @@ class RealCacheBlendA800Executor:
                             profile_frozen=False,
                             certified_ratio_candidates=(float(ratio),),
                         )
+                    if (
+                        plan.scope
+                        is RepairRatioScope.DEVELOPMENT_PROFILE_MEASUREMENT
+                        and not force_nonpaper_measurement_admission
+                    ):
+                        raise ValueError(
+                            "development repair plan requires explicit non-paper measurement admission"
+                        )
                     if {
                         row.segment_id for row in plan.rows
                     } != set(segment_ids):
