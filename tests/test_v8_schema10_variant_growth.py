@@ -578,6 +578,30 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             max(index for index, row in enumerate(jobs) if row["kind"] == "factorized_selection"),
             min(index for index, row in enumerate(jobs) if row["kind"] == "repair_policy_development_sweep"),
         )
+        repair_jobs = [row for row in jobs if row["kind"] == "factorized_repair"]
+        self.assertTrue(any(
+            row["coordinates"]["segment_count"] == 37
+            and row["coordinates"]["segment_token_count"] == 96
+            and row["coordinates"]["active_rows"] == 3552
+            for row in repair_jobs
+        ))
+        self.assertTrue(all(
+            row["coordinates"]["active_rows"]
+            == row["coordinates"]["segment_count"]
+            * row["coordinates"]["segment_token_count"]
+            for row in repair_jobs
+        ))
+        joint_jobs = [row for row in jobs if row["kind"] == "joint_anchor"]
+        self.assertTrue(all(
+            row["coordinates"]["segment_token_count"] == 96
+            for row in joint_jobs
+            if row["coordinates"]["segment_count"] == 37
+        ))
+        self.assertLessEqual(max(
+            row["coordinates"]["segment_count"]
+            * row["coordinates"]["segment_token_count"]
+            for row in repair_jobs + joint_jobs
+        ), 3552)
         manifests = build_schema10_h1_h5_manifests("qwen")
         self.assertEqual(set(manifests), {"H1", "H2", "H3", "H4", "H5"})
         self.assertEqual(manifests["H2"]["source_residual_trim_ratio_grid"], [0.10, 0.15, 0.20, 0.25, 0.30])

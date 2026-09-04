@@ -193,7 +193,16 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                         repeats=5,
                     )
                 )
-    for active_rows in (128, 512, 2560, 18944):
+    # Keep the large-Segment-count pressure point within the frozen 4K
+    # qualification context.  Active rows are an exact product rather than an
+    # implicit ``ceil(active_rows / 512)`` reconstruction in the runner.
+    repair_shapes = (
+        (128, 1, 128),
+        (512, 1, 512),
+        (2560, 5, 512),
+        (3552, 37, 96),
+    )
+    for active_rows, segment_count, segment_token_count in repair_shapes:
         for repair_ratio in SCHEMA10_REPAIR_RATIO_GRID:
             jobs.append(
                 _job(
@@ -201,6 +210,8 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                     {
                         "model": model_key,
                         "active_rows": active_rows,
+                        "segment_count": segment_count,
+                        "segment_token_count": segment_token_count,
                         "repair_ratio": repair_ratio,
                     },
                     phase="runtime_repair_preparation",
@@ -225,6 +236,7 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                 )
             )
     for segment_count in (1, 5, 37):
+        segment_token_count = 96 if segment_count == 37 else 512
         for path in ("gpu_resident", "pinned_cpu_to_gpu", "ssd_staged_to_gpu"):
             for repair_ratio in (0.15, 0.30):
                 anchor = segment_count == 5 and path == "pinned_cpu_to_gpu" and repair_ratio == 0.15
@@ -234,6 +246,7 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                         {
                             "model": model_key,
                             "segment_count": segment_count,
+                            "segment_token_count": segment_token_count,
                             "path": path,
                             "repair_ratio": repair_ratio,
                             "concurrency": 1,
@@ -244,6 +257,7 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                     )
                 )
     for segment_count in (5, 37):
+        segment_token_count = 96 if segment_count == 37 else 512
         for path in ("pinned_cpu_to_gpu", "ssd_staged_to_gpu"):
             for concurrency in (2, 4):
                 jobs.append(
@@ -252,6 +266,7 @@ def build_schema10_profile_jobs(model_key: str) -> Tuple[Dict[str, Any], ...]:
                         {
                             "model": model_key,
                             "segment_count": segment_count,
+                            "segment_token_count": segment_token_count,
                             "path": path,
                             "repair_ratio": 0.15,
                             "concurrency": concurrency,

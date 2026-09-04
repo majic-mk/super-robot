@@ -11,7 +11,6 @@ import argparse
 import hashlib
 from importlib.metadata import version as package_version
 import json
-import math
 import re
 from statistics import mean
 import subprocess
@@ -536,10 +535,16 @@ def main() -> int:
                 else:
                     measurement["concurrency_contention_measured"] = False
             elif kind == "factorized_repair":
-                segments = max(1, int(math.ceil(int(coordinates["active_rows"]) / 512.0)))
+                segments = int(coordinates["segment_count"])
+                segment_token_count = int(coordinates["segment_token_count"])
+                if segments * segment_token_count != int(coordinates["active_rows"]):
+                    raise RuntimeError(
+                        "factorized repair active_rows must equal "
+                        "segment_count * segment_token_count"
+                    )
                 measurement = dict(executor.measure_schema10_joint_anchor(
                     segment_count=segments,
-                    segment_token_count=max(1, int(coordinates["active_rows"]) // segments),
+                    segment_token_count=segment_token_count,
                     boundary=1, repair_ratio=float(coordinates["repair_ratio"]),
                     source_path="pinned_cpu", staging_directory=ssd_staging,
                     warmups=int(job["warmups"]), repeats=int(job["repeats"]),
@@ -559,7 +564,7 @@ def main() -> int:
                 }[str(coordinates["path"])]
                 measurement = dict(executor.measure_schema10_joint_anchor(
                     segment_count=int(coordinates["segment_count"]),
-                    segment_token_count=512,
+                    segment_token_count=int(coordinates["segment_token_count"]),
                     boundary=1,
                     repair_ratio=float(coordinates["repair_ratio"]),
                     source_path=path,
@@ -577,7 +582,8 @@ def main() -> int:
                     )
                     copy_bytes = (
                         int(coordinates["segment_count"])
-                        * 512 * int(spec.num_layers) * 2 * width * 2
+                        * int(coordinates["segment_token_count"])
+                        * int(spec.num_layers) * 2 * width * 2
                     )
                     contention = dict(executor.measure_schema6_copy_interference(
                         copy_bytes=copy_bytes,
