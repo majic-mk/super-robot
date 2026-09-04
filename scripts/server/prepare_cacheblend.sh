@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv|probekv_closed_loop|probekv_v6_multiregion|probekv_v6_staggered_runtime|probekv_v6_prefix_hardened_runtime|probekv_v7_single_artifact_runtime|probekv_v8_training_free_residual_k|probekv_v8_schema6_joint_cfo|probekv_v8_winner_gradual_streaming|probekv_v8_gradual_barrier_tiered_lru]" >&2
+  echo "usage: $0 /absolute/path/to/CacheBlend [cb0|probekv|probekv_closed_loop|probekv_v6_multiregion|probekv_v6_staggered_runtime|probekv_v6_prefix_hardened_runtime|probekv_v7_single_artifact_runtime|probekv_v8_training_free_residual_k|probekv_v8_schema6_joint_cfo|probekv_v8_winner_gradual_streaming|probekv_v8_gradual_barrier_tiered_lru|probekv_v8_absolute_residual_variant_admission|probekv_v8_variant_growth_counterfactual]" >&2
   exit 2
 fi
 
@@ -64,7 +64,7 @@ case "$mode" in
       "0006-probekv-v7-conservative-repair-rounding.patch"
     )
     ;;
-  probekv_v8_schema6_joint_cfo|probekv_v8_winner_gradual_streaming|probekv_v8_gradual_barrier_tiered_lru)
+  probekv_v8_schema6_joint_cfo|probekv_v8_winner_gradual_streaming|probekv_v8_gradual_barrier_tiered_lru|probekv_v8_absolute_residual_variant_admission|probekv_v8_variant_growth_counterfactual)
     patches=(
       "0001-cb0-fix-suffix-length.patch"
       "0002-probekv-segment-repair-mask.patch"

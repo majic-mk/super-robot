@@ -212,6 +212,13 @@ class CacheBlendPatchTests(unittest.TestCase):
         )
         self.assertIn('"$python_bin" -m py_compile', prepare)
 
+    def test_prepare_script_accepts_schema9_and_schema10_runtime_modes(self):
+        prepare = (ROOT / "scripts/server/prepare_cacheblend.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("probekv_v8_absolute_residual_variant_admission", prepare)
+        self.assertIn("probekv_v8_variant_growth_counterfactual", prepare)
+
     def test_schema6_r1_endpoint_uses_exact_dense_attention_path(self):
         patch = patch_files_for_mode(
             MANIFEST, "probekv_v8_schema6_joint_cfo"
