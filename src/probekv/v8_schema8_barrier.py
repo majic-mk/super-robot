@@ -11,6 +11,7 @@ def close_dense_selection_barrier(
     resolved_completed_depth_by_segment: Mapping[str, int],
     source_frozen_segment_ids: Sequence[str],
     abstained_segment_ids: Sequence[str],
+    nonpaper_measurement_only: bool = False,
 ) -> DenseSelectionBarrierDecision:
     inventory = tuple(str(value) for value in segment_ids)
     if not inventory or len(set(inventory)) != len(inventory):
@@ -41,4 +42,5 @@ def close_dense_selection_barrier(
         barrier_depth,
         barrier_depth + 1,
         rescued,
+        bool(nonpaper_measurement_only),
     )

@@ -30,6 +30,7 @@ class DenseSelectionBarrierDecision:
     barrier_completed_depth: int
     first_selective_reuse_layer: int
     d2_rescue_segment_ids: Tuple[str, ...]
+    nonpaper_measurement_only: bool = False
 
     def __post_init__(self) -> None:
         if not self.resolved_completed_depth_by_segment:
@@ -46,10 +47,22 @@ class DenseSelectionBarrierDecision:
                 for key, value in self.resolution_by_segment.items()
             },
         )
-        if any(value not in {1, 2} for value in self.resolved_completed_depth_by_segment.values()):
-            raise ValueError("schema-v8 selection must resolve at d=1 or d=2")
-        if self.barrier_completed_depth not in {1, 2}:
-            raise ValueError("schema-v8 barrier must close at d=1 or d=2")
+        if self.nonpaper_measurement_only:
+            if any(
+                int(value) < 1
+                for value in self.resolved_completed_depth_by_segment.values()
+            ):
+                raise ValueError("development measurement depth must be positive")
+            if self.barrier_completed_depth < 1:
+                raise ValueError("development measurement barrier depth must be positive")
+        else:
+            if any(
+                value not in {1, 2}
+                for value in self.resolved_completed_depth_by_segment.values()
+            ):
+                raise ValueError("schema-v8 selection must resolve at d=1 or d=2")
+            if self.barrier_completed_depth not in {1, 2}:
+                raise ValueError("schema-v8 barrier must close at d=1 or d=2")
         if self.first_selective_reuse_layer != self.barrier_completed_depth + 1:
             raise ValueError("selective reuse must begin after the dense barrier")
         if set(self.d2_rescue_segment_ids) - set(self.resolved_completed_depth_by_segment):

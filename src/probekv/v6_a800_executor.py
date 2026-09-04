@@ -1040,6 +1040,10 @@ class RealCacheBlendA800Executor:
                     },
                     source_frozen_segment_ids=segment_ids,
                     abstained_segment_ids=(),
+                    nonpaper_measurement_only=(
+                        force_nonpaper_measurement_admission
+                        and first_probe not in {1, 2}
+                    ),
                 )
                 engine.configure_dense_selection_barrier(barrier)
                 engine.admit_preparation(segment_ids)

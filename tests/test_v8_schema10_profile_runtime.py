@@ -5,6 +5,7 @@ from probekv.v6_a800_executor import RealCacheBlendA800Executor
 from probekv.v8_schema10_profile_runtime import Schema10DevelopmentCaseRuntime
 from probekv.v8_schema10_profile_runtime import development_repair_measurement_plan
 from probekv.v8_schema8_contracts import RepairRatioScope
+from probekv.v8_schema8_barrier import close_dense_selection_barrier
 from probekv.v8_schema8_repair import (
     SegmentLayerRepairRatio,
     validate_union_repair_ratio_plan,
@@ -62,6 +63,24 @@ class Schema10ProfileRuntimeContractTests(unittest.TestCase):
                 profile_frozen=True,
                 certified_ratio_candidates=(0.30,),
             )
+
+    def test_deep_measurement_barrier_is_explicitly_nonpaper(self):
+        with self.assertRaisesRegex(ValueError, "must resolve at d=1 or d=2"):
+            close_dense_selection_barrier(
+                segment_ids=("c0",),
+                resolved_completed_depth_by_segment={"c0": 4},
+                source_frozen_segment_ids=("c0",),
+                abstained_segment_ids=(),
+            )
+        barrier = close_dense_selection_barrier(
+            segment_ids=("c0",),
+            resolved_completed_depth_by_segment={"c0": 4},
+            source_frozen_segment_ids=("c0",),
+            abstained_segment_ids=(),
+            nonpaper_measurement_only=True,
+        )
+        self.assertTrue(barrier.nonpaper_measurement_only)
+        self.assertEqual(barrier.first_selective_reuse_layer, 5)
 
 
 if __name__ == "__main__":
