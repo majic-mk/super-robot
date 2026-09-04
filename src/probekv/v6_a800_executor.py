@@ -1152,7 +1152,12 @@ class RealCacheBlendA800Executor:
                         )
                     if plan is None:
                         plan = validate_union_repair_ratio_plan(
-                            scope=RepairRatioScope.UNIFORM_FIXED,
+                            scope=(
+                                RepairRatioScope.DEVELOPMENT_PROFILE_MEASUREMENT
+                                if self.runtime_schema_version == 10
+                                and force_nonpaper_measurement_admission
+                                else RepairRatioScope.UNIFORM_FIXED
+                            ),
                             rows=tuple(
                                 SegmentLayerRepairRatio(
                                     "c%d" % index,

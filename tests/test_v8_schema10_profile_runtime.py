@@ -31,6 +31,17 @@ class Schema10ProfileRuntimeContractTests(unittest.TestCase):
         self.assertIn("first_probe not in {1, 2}", executor_source)
         self.assertIn("and not force_nonpaper_measurement_admission", executor_source)
 
+    def test_schema10_factorized_ratio_uses_development_measurement_scope(self):
+        executor_source = inspect.getsource(
+            RealCacheBlendA800Executor._reuse_generate
+        )
+        self.assertIn(
+            "RepairRatioScope.DEVELOPMENT_PROFILE_MEASUREMENT",
+            executor_source,
+        )
+        self.assertIn("self.runtime_schema_version == 10", executor_source)
+        self.assertIn("and force_nonpaper_measurement_admission", executor_source)
+
     def test_development_ratio_has_explicit_nonfrozen_measurement_scope(self):
         for ratio in (0.10, 0.12, 0.20, 0.30, 0.50, 0.75):
             plan = development_repair_measurement_plan(
