@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Mapping, Optional, Sequence, Tuple
 
 from .v8_contracts import CandidateCounts, ResidualCandidate
@@ -27,8 +28,8 @@ class Schema10SourceDecision:
     def __post_init__(self) -> None:
         if self.state not in {"continue_probe", "decision_ready", "abstained"}:
             raise ValueError("unknown schema10 Source decision state")
-        if self.completed_depth not in {1, 2}:
-            raise ValueError("schema10 decision depth must be d1/d2")
+        if self.completed_depth < 1:
+            raise ValueError("schema10 decision depth must be positive")
         if self.state == "decision_ready":
             if not self.selected_source_variant_id or self.gate1_plan is None:
                 raise ValueError("decision-ready Source requires Gate1 evidence")
@@ -38,7 +39,7 @@ class Schema10SourceDecision:
             raise ValueError("only dense fallback may propose materialization")
 
 
-class Schema10D1D2Selector:
+class Schema10CheckpointSelector:
     def __init__(
         self,
         *,
@@ -48,15 +49,27 @@ class Schema10D1D2Selector:
         stable_margin: float,
         residual_band_relative_tolerance: float,
         residual_band_numeric_slack: float = 1e-6,
+        checkpoint_depths: Tuple[int, ...] = (1, 2),
     ) -> None:
         if not 0 <= stable_margin <= strong_margin <= 1:
             raise ValueError("invalid schema10 early-exit margins")
+        if not math.isfinite(residual_band_relative_tolerance) or not 0 <= residual_band_relative_tolerance <= 1:
+            raise ValueError("invalid residual band tolerance")
+        if residual_band_numeric_slack != 1e-6:
+            raise ValueError("schema10 numeric slack must be 1e-6")
         self.variant_profile = variant_profile
         self.preparation_profile = preparation_profile
         self.strong_margin = strong_margin
         self.stable_margin = stable_margin
         self.residual_band_relative_tolerance = residual_band_relative_tolerance
         self.residual_band_numeric_slack = residual_band_numeric_slack
+        if not checkpoint_depths or tuple(sorted(set(checkpoint_depths))) != checkpoint_depths:
+            raise ValueError("selector checkpoints must be ordered and unique")
+        if checkpoint_depths[0] < 1:
+            raise ValueError("d0 is a negative control, not an online checkpoint")
+        for depth in checkpoint_depths:
+            variant_profile.threshold_for_depth(depth)
+        self.checkpoint_depths = checkpoint_depths
 
     @staticmethod
     def _scope_complete(counts: CandidateCounts) -> bool:
@@ -76,13 +89,21 @@ class Schema10D1D2Selector:
         gate1_plan_by_source: Mapping[str, Gate1LocalPlan],
         previous_best_source_variant_id: Optional[str] = None,
     ) -> Schema10SourceDecision:
-        if completed_depth not in {1, 2}:
-            raise ValueError("schema10 online selector only evaluates d1/d2")
+        if completed_depth not in self.checkpoint_depths:
+            raise ValueError("depth is outside the frozen selector checkpoints")
+        at_max = completed_depth == self.checkpoint_depths[-1]
         ordered = tuple(
             sorted(candidates, key=lambda row: (row.residual_score, row.source_variant_id))
         )
         if len(ordered) != counts.compared_k:
             raise ValueError("compared candidates differ from compared_k")
+        if len({row.source_variant_id for row in ordered}) != len(ordered):
+            raise ValueError("duplicate Source in current-state comparison")
+        if any(not math.isfinite(row.residual_score) for row in ordered):
+            raise ValueError("non-finite residual cannot select a Source")
+        for source_id, plan in gate1_plan_by_source.items():
+            if plan.source_variant_id != source_id or plan.selection_completed_depth != completed_depth:
+                raise ValueError("Gate1 plan Source/depth does not match this decision")
         complete = self._scope_complete(counts)
         threshold = self.variant_profile.threshold_for_depth(completed_depth)
         best = ordered[0] if ordered else None
@@ -124,27 +145,27 @@ class Schema10D1D2Selector:
 
         if not ordered:
             return result(
-                "continue_probe" if completed_depth == 1 else "abstained",
+                "abstained" if at_max else "continue_probe",
                 "content_or_selection_state_miss",
                 materialization_reason=(
                     VariantMaterializationReasonV10.CONTENT_MISS
-                    if completed_depth == 2 and counts.correctness_eligible_k == 0
+                    if at_max and counts.correctness_eligible_k == 0
                     else None
                 ),
             )
         if counts.correctness_eligible_k > 1 and counts.compared_k < 2:
             return result(
-                "continue_probe" if completed_depth == 1 else "abstained",
+                "abstained" if at_max else "continue_probe",
                 "insufficient_ranking_coverage",
                 materialization_reason=(
                     VariantMaterializationReasonV10.BUDGET_TRUNCATED_EXPLORATION
-                    if completed_depth == 2
+                    if at_max
                     else None
                 ),
             )
         compatible = tuple(row for row in ordered if row.residual_score <= threshold)
         if not compatible:
-            if completed_depth == 1:
+            if not at_max:
                 return result("continue_probe", "d1_absolute_residual_failed_rescue")
             return result(
                 "abstained",
@@ -156,7 +177,7 @@ class Schema10D1D2Selector:
                 ),
             )
 
-        if completed_depth == 1:
+        if not at_max:
             single = counts.correctness_eligible_k == 1
             strong = margin is not None and margin >= self.strong_margin
             stable = (
@@ -212,3 +233,12 @@ class Schema10D1D2Selector:
             plan=gate1_plan_by_source[chosen.source_variant_id],
             considered=band,
         )
+
+
+class Schema10D1D2Selector(Schema10CheckpointSelector):
+    """Historical d1/d2 API; its checkpoint contract remains unchanged."""
+
+    def __init__(self, **kwargs: object) -> None:
+        if "checkpoint_depths" in kwargs:
+            raise ValueError("use Schema10CheckpointSelector for another dispatch")
+        super().__init__(checkpoint_depths=(1, 2), **kwargs)

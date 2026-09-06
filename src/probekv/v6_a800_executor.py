@@ -7,6 +7,7 @@ import os
 import statistics
 import subprocess
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
@@ -83,6 +84,8 @@ class GenerationTrace:
     artifact_digests_unchanged: bool = True
     completed_depth_hook_verified: bool = False
     runtime_audit: Mapping[str, Any] = field(default_factory=dict)
+    # Executor-local first token; not service TTFT (arrival/queue are external).
+    first_token_host_ms: float | None = None
 
 
 class R1DenseEquivalenceError(RuntimeError):
@@ -684,13 +687,16 @@ class RealCacheBlendA800Executor:
         token_count: int,
         teacher_tokens: Sequence[int] = (),
         stop_token_ids: Sequence[int] = (),
+        on_first_token: Callable[[], None] | None = None,
     ) -> Tuple[Tuple[int, ...], Tuple[Any, ...]]:
         predicted: List[int] = []
         context: List[int] = []
         traces: List[Any] = []
         logits = self._logits(hidden, sampling)
-        traces.append(logits.detach().float().cpu())
         predicted.append(int(logits.argmax().item()))
+        if on_first_token is not None:
+            on_first_token()
+        traces.append(logits.detach().float().cpu())
         context.append(
             int(teacher_tokens[0]) if teacher_tokens else predicted[-1]
         )
@@ -725,6 +731,7 @@ class RealCacheBlendA800Executor:
         token_count: int,
         stop_token_ids: Sequence[int] = (),
     ) -> GenerationTrace:
+        first_token_clock: List[float] = []
         metadata = self.inner_model.cache_fuse_metadata
         metadata["check"] = False
         metadata["collect"] = False
@@ -754,6 +761,7 @@ class RealCacheBlendA800Executor:
             token_ids, logits = self._decode_from_prefill(
                 fixture, hidden, sampling, reuse=False, token_count=token_count,
                 stop_token_ids=stop_token_ids,
+                on_first_token=lambda: first_token_clock.append(time.perf_counter()),
             )
         end.record()
         end.synchronize()
@@ -762,6 +770,7 @@ class RealCacheBlendA800Executor:
             logits,
             float(start.elapsed_time(end)),
             (time.perf_counter() - host_start) * 1000.0,
+            first_token_host_ms=(first_token_clock[0] - host_start) * 1000.0,
         )
 
     def _resumable_dense_generate(
@@ -780,6 +789,7 @@ class RealCacheBlendA800Executor:
         not itself the first source of numerical divergence.
         """
 
+        first_token_clock: List[float] = []
         prefix_tokens = int(exact_prefix_tokens)
         prefix_layers = tuple(exact_prefix_layers)
         if not 0 <= prefix_tokens <= len(fixture.prompt_ids):
@@ -826,6 +836,7 @@ class RealCacheBlendA800Executor:
                 sampling,
                 reuse=True,
                 token_count=token_count,
+                on_first_token=lambda: first_token_clock.append(time.perf_counter()),
             )
         end.record()
         end.synchronize()
@@ -834,6 +845,7 @@ class RealCacheBlendA800Executor:
             logits,
             float(start.elapsed_time(end)),
             (time.perf_counter() - host_start) * 1000.0,
+            first_token_host_ms=(first_token_clock[0] - host_start) * 1000.0,
         )
 
     def _repair_positions(
@@ -869,7 +881,16 @@ class RealCacheBlendA800Executor:
         canonical_layers_by_segment: Mapping[int, Sequence[Tuple[Any, Any]]] | None = None,
         source_replica_tier: KVLocation = KVLocation.PINNED_CPU,
         force_nonpaper_measurement_admission: bool = False,
+        online_selection_bridge: Any = None,
     ) -> GenerationTrace:
+        if online_selection_bridge is not None:
+            if self.runtime_schema_version != 10 or force_nonpaper_measurement_admission:
+                raise ValueError("live selection cannot use diagnostic admission")
+            if not 0 < ratio < 1 or teacher_tokens or repair_positions_by_segment or boundary_by_segment:
+                raise ValueError("live selection must compute winner repair/boundary, not accept forced labels")
+            if online_selection_bridge.session.segment_ids != tuple(f"c{i}" for i in range(len(fixture.segment_positions))):
+                raise ValueError("executor/selector Segment identities differ")
+        first_token_clock: List[float] = []
         prefix_tokens = int(exact_prefix_tokens)
         if prefix_tokens < 0 or prefix_tokens > len(fixture.prompt_ids):
             raise ValueError("invalid exact Prefix Cache token count")
@@ -899,7 +920,15 @@ class RealCacheBlendA800Executor:
         self.torch.cuda.synchronize()
         host_start = time.perf_counter()
         start.record()
-        with self.torch.inference_mode():
+        with self.torch.inference_mode(), ExitStack() as cleanup:
+            def authorize_transfer(**kwargs: Any) -> Any:
+                authorization = self.full_kv_transfer_authorizer.authorize(**kwargs)
+                # On both success and failure: fence GPU work before releasing
+                # physical ownership. ExitStack runs callbacks in reverse order.
+                cleanup.callback(authorization.release)
+                cleanup.callback(self.torch.cuda.synchronize)
+                return authorization
+
             engine.begin_prefill(
                 model_signature=model_signature,
                 token_ids=fixture.prompt_ids[prefix_tokens:],
@@ -924,26 +953,34 @@ class RealCacheBlendA800Executor:
                 and not force_nonpaper_measurement_admission
             ):
                 raise ValueError("schema-v8 online selection is limited to d=1/d=2")
-            engine.advance_to_layer(first_probe)
+            winner_by_segment = {i: winner_variant for i in range(len(fixture.segment_positions))}
+            if online_selection_bridge is None:
+                engine.advance_to_layer(first_probe)
+            else:
+                winner_by_segment = dict(online_selection_bridge.select(self, engine, fixture))
+                first_probe = engine.session.current_layer
             if self.protocol_version == 8:
                 observed_kd = engine.session.observe_pre_rope_k(first_probe)
             tickets = []
             transfer_authorizations = []
             prepared_sources = []
             for index, positions in enumerate(fixture.segment_positions):
+                if index not in winner_by_segment:
+                    continue
+                selected_variant = winner_by_segment[index]
                 variants = fixture.canonical_variants[index]
-                if not 0 <= winner_variant < len(variants):
+                if not 0 <= selected_variant < len(variants):
                     raise ValueError("locked winner variant is unavailable")
-                source_id = "s%d-v%d" % (index, winner_variant)
+                source_id = "s%d-v%d" % (index, selected_variant)
                 canonical_layers = tuple(
                     (canonical_layers_by_segment or {}).get(
-                        index, variants[winner_variant]
+                        index, variants[selected_variant]
                     )
                 )
                 logical = ""
                 if self.protocol_version in {7, 8}:
                     try:
-                        logical = fixture.canonical_variant_digests[index][winner_variant]
+                        logical = fixture.canonical_variant_digests[index][selected_variant]
                     except (IndexError, TypeError):
                         if not full_integrity:
                             raise RuntimeError(
@@ -957,6 +994,8 @@ class RealCacheBlendA800Executor:
                     # containing different token/context states.  The digest
                     # keeps Source Variant identity exact across those runs.
                     source_id = "%s-%s" % (source_id, logical[:16])
+                if online_selection_bridge is not None:
+                    source_id = online_selection_bridge.source_id(fixture, index, selected_variant)
                 if self.protocol_version == 8:
                     engine.freeze_source("c%d" % index, source_id)
                 if self.protocol_version in {7, 8}:
@@ -1004,7 +1043,7 @@ class RealCacheBlendA800Executor:
                         and self.runtime_schema_version not in {8, 9, 10}
                     ):
                         transfer_authorizations.append(
-                            self.full_kv_transfer_authorizer.authorize(
+                            authorize_transfer(
                                 segment_id="c%d" % index,
                                 source_variant_id=source_id,
                                 artifact=artifact,
@@ -1033,13 +1072,16 @@ class RealCacheBlendA800Executor:
                 from .v8_schema8_barrier import close_dense_selection_barrier
 
                 segment_ids = tuple(row[0] for row in prepared_sources)
+                inventory_ids = tuple(f"c{i}" for i in range(len(fixture.segment_positions)))
                 barrier = close_dense_selection_barrier(
-                    segment_ids=segment_ids,
+                    segment_ids=inventory_ids,
                     resolved_completed_depth_by_segment={
-                        segment_id: first_probe for segment_id in segment_ids
+                        segment_id: (online_selection_bridge.session.last_depth[segment_id]
+                                     if online_selection_bridge is not None else first_probe)
+                        for segment_id in inventory_ids
                     },
                     source_frozen_segment_ids=segment_ids,
-                    abstained_segment_ids=(),
+                    abstained_segment_ids=tuple(s for s in inventory_ids if s not in segment_ids),
                     nonpaper_measurement_only=(
                         force_nonpaper_measurement_admission
                         and first_probe not in {1, 2}
@@ -1056,7 +1098,7 @@ class RealCacheBlendA800Executor:
                     positions,
                 ) in prepared_sources:
                     transfer_authorizations.append(
-                        self.full_kv_transfer_authorizer.authorize(
+                        authorize_transfer(
                             segment_id=segment_id,
                             source_variant_id=source_id,
                             artifact=artifact,
@@ -1102,14 +1144,14 @@ class RealCacheBlendA800Executor:
                         if self.runtime_schema_version in {8, 9, 10}
                         else min(base + index % 3, self.model_spec.num_layers)
                     )
-                    for index in range(len(fixture.segment_positions))
+                    for index in winner_by_segment
                 }
             )
-            for index, authorization in enumerate(transfer_authorizations):
+            for index, authorization in zip(winner_by_segment, transfer_authorizations):
                 authorization.mark_ready(
                     actual_reuse_boundary=int(boundaries[index])
                 )
-            expected_segments = set(range(len(fixture.segment_positions)))
+            expected_segments = set(winner_by_segment)
             if set(boundaries) != expected_segments:
                 raise ValueError("reuse boundaries must cover every Segment")
             if any(
@@ -1120,7 +1162,10 @@ class RealCacheBlendA800Executor:
             supplied_positions = dict(repair_positions_by_segment or {})
             if supplied_positions and set(supplied_positions) != expected_segments:
                 raise ValueError("repair positions must cover every Segment")
-            if self.runtime_schema_version in {8, 9, 10}:
+            accepted_indices = set(expected_segments)
+            if online_selection_bridge is not None and not expected_segments:
+                online_selection_bridge.record_dense_fallback()
+            if self.runtime_schema_version in {8, 9, 10} and expected_segments:
                 segment_ids = tuple("c%d" % index for index in expected_segments)
                 if ratio >= 1.0:
                     engine.authorize_final_commit(segment_ids, r1_endpoint=True)
@@ -1186,14 +1231,33 @@ class RealCacheBlendA800Executor:
                             "runtime repair plan differs from committed Segments"
                         )
                     engine.install_repair_ratio_plan(plan)
-                    engine.authorize_final_commit(
-                        segment_ids,
-                        measurement_only=force_nonpaper_measurement_admission,
-                    )
+                    if online_selection_bridge is None:
+                        engine.authorize_final_commit(
+                            segment_ids, measurement_only=force_nonpaper_measurement_admission,
+                        )
+                    else:
+                        from .v8_schema10_execution import digest_json
+                        for index in sorted(expected_segments):
+                            supplied_positions[index] = engine.measured_repair_positions(
+                                segment_id=f"c{index}", repair_check_completed_depth=first_probe,
+                                desired_count=min(len(fixture.segment_positions[index]), math.ceil(
+                                    plan.ratios_for_layer(boundaries[index])[f"c{index}"]
+                                    * len(fixture.segment_positions[index]))),
+                            )
+                        final = online_selection_bridge.final_commit(
+                            boundary_by_segment={f"c{i}": int(b) for i, b in boundaries.items()},
+                            union_mask_digest=digest_json(supplied_positions),
+                        )
+                        accepted_indices = {i for i in expected_segments if f"c{i}" in final.accepted_ready_segment_ids}
+                        if accepted_indices:
+                            engine.authorize_final_commit(final.accepted_ready_segment_ids,
+                                                          joint_admission_decision=final)
             for boundary in sorted(set(boundaries.values())):
                 if engine.session.current_layer < boundary - 1:
                     engine.advance_to_layer(boundary - 1)
                 for index, positions in enumerate(fixture.segment_positions):
+                    if index not in accepted_indices:
+                        continue
                     if boundaries[index] != boundary:
                         continue
                     if index in supplied_positions:
@@ -1239,6 +1303,10 @@ class RealCacheBlendA800Executor:
                 token_count=token_count,
                 teacher_tokens=teacher_tokens,
                 stop_token_ids=stop_token_ids,
+                on_first_token=lambda: (
+                    first_token_clock.append(time.perf_counter()),
+                    online_selection_bridge.on_first_token() if online_selection_bridge is not None else None,
+                ),
             )
             for authorization in transfer_authorizations:
                 authorization.release()
@@ -1270,6 +1338,7 @@ class RealCacheBlendA800Executor:
             for position in row[key]
         )
         runtime_audit = {
+            "online_policy_evidence": online_selection_bridge.audit() if online_selection_bridge is not None else None,
             "probe_completed_depth": first_probe,
             "boundary_by_segment": {
                 "c%d" % index: int(boundary)
@@ -1333,6 +1402,7 @@ class RealCacheBlendA800Executor:
                 )
             ),
             runtime_audit=runtime_audit,
+            first_token_host_ms=(first_token_clock[0] - host_start) * 1000.0,
         )
 
     def _run_sentinel(self, token_count: int) -> Dict[str, Any]:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from probekv.io import atomic_write_json, sha256_file
+from probekv.v8_schema10_evidence import EVIDENCE_CONTRACT_VERSION
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -28,6 +29,8 @@ def main() -> int:
     }
     bundles = {key: _load(path) for key, path in paths.items()}
     for key, bundle in bundles.items():
+        if bundle.get("evidence_contract_version") != EVIDENCE_CONTRACT_VERSION:
+            raise ValueError("historical proxy-only Profile bundle cannot unlock new qualification")
         if (bundle.get("protocol_version"), bundle.get("schema_version")) != (8, 10):
             raise ValueError(f"{key} Profile bundle has the wrong schema")
         if bundle.get("stage") != "schema10_profile_bundle_frozen":
@@ -58,6 +61,7 @@ def main() -> int:
         "protocol_version": 8,
         "schema_version": 10,
         "stage": "schema10_dual_model_profile_freeze_gate",
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "code_commit": bundles["mistral"]["code_commit"],
         "mistral_profile_bundle_frozen": True,
         "qwen_profile_bundle_frozen": True,

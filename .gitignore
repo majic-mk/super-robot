@@ -4,6 +4,7 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.venv-validation/
 venv/
 dist/
 build/

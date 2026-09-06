@@ -47,6 +47,7 @@ class ExperimentConfig:
     candidate_compare_policy: str = "legacy_fixed_k"
     max_compared_variants_per_segment: int = 4
     probe_compare_budget_fraction: float = 0.05
+    selection_budget_policy: str = "legacy_fixed_fraction"
     segment_planning_policy: str = "single_target_segment"
     max_detected_segments: Optional[int] = 1
     boundary_policy: str = "single_segment"
@@ -258,6 +259,7 @@ class ExperimentConfig:
             probe_compare_budget_fraction=float(
                 raw.get("probe_compare_budget_fraction", 0.05)
             ),
+            selection_budget_policy=str(raw.get("selection_budget_policy", "legacy_fixed_fraction")),
             segment_planning_policy=str(
                 raw.get("segment_planning_policy", "single_target_segment")
             ),
@@ -529,6 +531,10 @@ class ExperimentConfig:
         return result
 
     def validate(self) -> None:
+        if self.selection_budget_policy not in {"legacy_fixed_fraction", "end_to_end_aware"}:
+            raise ValueError("unsupported selection budget policy")
+        if self.selection_budget_policy == "end_to_end_aware" and (self.protocol_version, self.v8_schema_version) != (8, 10):
+            raise ValueError("end-to-end selection budgeting requires explicit protocol 8/schema10")
         if self.evidence_class not in {
             "local_simulation",
             "server_pilot",
@@ -736,7 +742,7 @@ class ExperimentConfig:
             raise ValueError("v7 comparison maximum must be in [1, 16]")
         if self.candidate_compare_policy != "all_within_request_budget":
             raise ValueError("v7 requires budgeted all-candidate comparison")
-        if self.probe_compare_budget_fraction != 0.05:
+        if self.selection_budget_policy != "legacy_fixed_fraction" or self.probe_compare_budget_fraction != 0.05:
             raise ValueError("v7 freezes the probe/compare budget at 5%")
         if self.segment_planning_policy != "all_exact_nonprefix":
             raise ValueError("v7 must plan every exact non-prefix Segment")
@@ -833,8 +839,12 @@ class ExperimentConfig:
             raise ValueError("unsupported v8 insufficient-ranking policy")
         if self.candidate_compare_policy != "all_within_request_budget":
             raise ValueError("v8 requires budgeted candidate comparison")
-        if self.probe_compare_budget_fraction != 0.05:
-            raise ValueError("v8 freezes the selection budget at 5%")
+        if self.selection_budget_policy not in {"legacy_fixed_fraction", "end_to_end_aware"}:
+            raise ValueError("unsupported selection budget policy")
+        if self.selection_budget_policy == "end_to_end_aware" and self.v8_schema_version != 10:
+            raise ValueError("end-to-end selection budgeting requires explicit schema10 config")
+        if self.selection_budget_policy == "legacy_fixed_fraction" and self.probe_compare_budget_fraction != 0.05:
+            raise ValueError("legacy v8 freezes the selection budget at 5%")
         if not 0 <= self.early_exit_margin <= self.strong_early_exit_margin <= 1:
             raise ValueError("invalid v8 early-exit margins")
         if not 0 <= self.residual_band_relative_tolerance <= 1:

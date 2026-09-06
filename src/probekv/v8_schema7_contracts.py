@@ -194,6 +194,9 @@ class FinalCommitDecision:
     reason_by_segment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        import math
+        if not all(math.isfinite(x) for x in (self.request_total_ms, self.dense_reference_total_ms)):
+            raise ValueError("FinalCommitAdmission costs must be finite")
         accepted = set(self.accepted_ready_segment_ids)
         rejected = set(self.rejected_ready_segment_ids)
         untouched = set(self.untouched_segment_ids)

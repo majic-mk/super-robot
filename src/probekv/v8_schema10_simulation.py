@@ -30,6 +30,10 @@ from .v8_schema10_selector import Schema10D1D2Selector
 def run_v8_schema10_local_simulation(config: ExperimentConfig) -> Dict[str, Any]:
     if (config.protocol_version, config.v8_schema_version) != (8, 10):
         raise ValueError("schema10 simulation requires protocol 8/schema 10")
+    from .v8_schema10_execution import SelectionCostLedger, SelectionCostPolicy
+    ledger = SelectionCostLedger(100.0, SelectionCostPolicy(config.selection_budget_policy))
+    # Explicit local check: 12ms exceeds legacy 5%, not end-to-end policy.
+    comparison_twelve_ms_admitted = ledger.may_compare(12.0)
     variant_profile = VariantAdmissionProfileV10(
         code_commit="local-unfrozen",
         cacheblend_patch_sha256="0" * 64,
@@ -162,6 +166,8 @@ def run_v8_schema10_local_simulation(config: ExperimentConfig) -> Dict[str, Any]
             "protocol_version": 8,
             "schema_version": 10,
             "gate1_recommended_mode": gate1_summary.recommended_gate1_mode.value,
+            "selection_budget_policy": config.selection_budget_policy,
+            "comparison_twelve_ms_admitted": comparison_twelve_ms_admitted,
             "paper_evidence": False,
         },
         "gates": [

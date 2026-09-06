@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Sequence, Tuple
 
 from .v8_schema7_planner import FinalCommitPlanner
@@ -21,6 +22,12 @@ class Gate1MarginalLowerBound:
     repair_marginal_lower_ms: float
 
     def __post_init__(self) -> None:
+        if not all(math.isfinite(value) for value in (
+            self.support_build_marginal_lower_ms,
+            self.visible_load_marginal_lower_ms,
+            self.repair_marginal_lower_ms,
+        )):
+            raise ValueError("Gate1 marginal costs must be finite")
         if min(
             self.support_build_marginal_lower_ms,
             self.visible_load_marginal_lower_ms,
@@ -66,6 +73,10 @@ class Gate1LocalPlan:
             raise ValueError("Gate1 sunk repair-check cost must be non-negative")
         if self.dense_marginal_same_origin_ms <= 0:
             raise ValueError("Gate1 requires positive same-origin dense marginal cost")
+        if not all(math.isfinite(value) for value in (
+            self.dense_marginal_same_origin_ms, self.dense_repair_check_sunk_ms,
+        )):
+            raise ValueError("Gate1 plan costs must be finite")
         if self.gate1_gamma != 1.0:
             raise ValueError("schema-v8 Gate1 gamma is frozen at 1.0")
 

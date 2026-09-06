@@ -626,7 +626,9 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
         self.assertEqual(handoff["server_lock_sha256"], "e" * 64)
         self.assertEqual(handoff["development_partition_sha256"], "f" * 64)
         self.assertEqual(handoff["development_case_manifest_sha256"], "1" * 64)
-        self.assertTrue(handoff["gpu_rental_ready_for_schema10_profile_freeze"])
+        self.assertFalse(handoff["gpu_rental_ready_for_schema10_profile_freeze"])
+        self.assertTrue(handoff["gpu_diagnostic_measurement_ready"])
+        self.assertIn("production_policy_evidence_integration_required", handoff["failures"])
 
     def test_profile_does_not_mislabel_ninety_cases_as_one_percent_certification(self) -> None:
         self.assertGreater(one_sided_clopper_pearson_upper(0, 90), 0.01)
@@ -692,7 +694,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "freeze order"):
             validate_schema10_profile_freeze_order(tuple(reversed(PROFILE_FREEZE_ORDER)))
 
-    def test_five_profile_freezer_writes_complete_nonpaper_bundle(self) -> None:
+    def test_historical_proxy_aggregate_cannot_freeze_profile(self) -> None:
         timed = lambda **values: {
             **values, "cuda_event_timing": True, "fake_timing": False,
         }
@@ -823,7 +825,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
             measurements = root / "measurements.json"
             measurements.write_text(json.dumps(payload), encoding="utf-8")
             output = root / "frozen"
-            subprocess.run(
+            result = subprocess.run(
                 [
                     sys.executable, str(ROOT / "scripts/server/freeze_v8_schema10_profiles.py"),
                     "--measurements", str(measurements), "--code-commit", "commit",
@@ -834,14 +836,12 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
                     "--development-case-manifest-sha256", "2" * 64,
                     "--output-dir", str(output),
                 ],
-                cwd=str(ROOT), check=True, capture_output=True, text=True,
+                cwd=str(ROOT), check=False, capture_output=True, text=True,
                 env={**__import__("os").environ, "PYTHONPATH": str(ROOT / "src")},
             )
-            bundle = json.loads((output / "profile_bundle_manifest.json").read_text(encoding="utf-8"))
-            self.assertTrue(bundle["ready_for_schema10_runtime_qualification"])
-            self.assertFalse(bundle["quality_tail_rate_1pct_certified"])
-            self.assertEqual(len(bundle["profiles"]), 5)
-            self.assertTrue((output / "coverage_curves_operational.json").is_file())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("evidence contract v2", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_dual_model_profile_gate_requires_two_digest_valid_bundles(self) -> None:
         def make_bundle(model_id: str, gpu_uuid: str) -> dict[str, object]:
@@ -849,6 +849,7 @@ class Schema10MetricsProfileJobsTests(unittest.TestCase):
                 "protocol_version": 8,
                 "schema_version": 10,
                 "stage": "schema10_profile_bundle_frozen",
+                "evidence_contract_version": 2,
                 "code_commit": "commit",
                 "model_id": model_id,
                 "gpu_uuid": gpu_uuid,

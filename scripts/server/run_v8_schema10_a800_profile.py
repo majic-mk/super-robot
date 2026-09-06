@@ -330,7 +330,7 @@ def main() -> int:
             thresholds,
             linear_quantile(timings, 0.95) / max(mean(dense_times), 1e-12),
         )
-        selected = dict(select_dispatch(candidates))
+        selected = dict(select_dispatch(candidates, diagnostic_only=True))
         value = (selected, thresholds, observations)
         reference_selection_cache["value"] = value
         return value
@@ -404,6 +404,9 @@ def main() -> int:
                             "content_id": case.reuse_content_key or case.content_hash,
                             "request_epoch": case_start + selected_cases.index(case) + 1,
                             "dense_reference_ms": runtime.full.host_ms,
+                            "dense_generation_total_ms": runtime.full.host_ms,
+                            "dense_executor_first_token_host_ms": runtime.full.first_token_host_ms,
+                            "dense_reference_ms_semantics": "legacy_generation_total_not_ttft",
                         }
                         for value in runtime.residual_observations(
                             SCHEMA10_MODEL_CHECKPOINTS[args.model_key], SCHEMA10_TRIM_GRID
@@ -443,7 +446,8 @@ def main() -> int:
                                 "answer_f1": runtime.full_answer_f1,
                                 "full_answer_f1": runtime.full_answer_f1,
                                 "answer_f1_drop": 0.0,
-                                "ordered_token_f1": 1.0,
+                                "token_multiset_f1": 1.0,
+                                "token_sequence_exact_match": True,
                                 "token_ids_equal_full": True,
                                 "logit_relative_l2": 0.0,
                                 "gpu_ms": runtime.full.gpu_ms,
@@ -452,6 +456,9 @@ def main() -> int:
                                 "artifact_digest_unchanged": True,
                                 "absolute_union_mask_verified": True,
                                 "execution_mode": "dense_fallback_no_selected_source",
+                                "execution_kind": "diagnostic_dense_self_reference",
+                                "counts_as_reuse_correctness_evidence": False,
+                                "executor_first_token_host_ms": runtime.full.first_token_host_ms,
                                 "cuda_event_timing": True,
                                 "fake_timing": False,
                                 "paper_evidence": False,
@@ -501,7 +508,8 @@ def main() -> int:
                     ),
                     "correctness_match": bool(bypass["source_digest_unchanged"]),
                     "cuda_event_timing": True,
-                    "timing_basis": "paired_real_execution",
+                    "timing_basis": "dense_vs_forced_reuse_not_gate1_ab",
+                    "production_gate1_ab_verified": False,
                 }
             elif kind == "factorized_selection":
                 measurement = dict(executor.measure_schema10_selection_batch(
@@ -600,7 +608,7 @@ def main() -> int:
                     )
                 else:
                     measurement["concurrency_contention_measured"] = False
-                    measurement["integrated_concurrent_requests"] = True
+                    measurement["integrated_concurrent_requests"] = False
                     measurement["anchor_semantics"] = "integrated_single_request_path"
             else:
                 # Growth/probation/shadow/final-consistency are deterministic

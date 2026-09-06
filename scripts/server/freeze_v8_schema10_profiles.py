@@ -29,6 +29,7 @@ from probekv.v8_schema10_profile import (
     validate_schema10_profile_freeze_order,
 )
 from probekv.v8_schema10_profile_analysis import select_dispatch
+from probekv.v8_schema10_evidence import EVIDENCE_CONTRACT_VERSION, require_profile_freeze_evidence
 
 
 def _sha256(path: Path) -> str:
@@ -49,6 +50,8 @@ def main() -> int:
     parser.add_argument("--model-revision", required=True)
     parser.add_argument("--tokenizer-hash", required=True)
     parser.add_argument("--runtime-policy", default="dense_selection_barrier")
+    parser.add_argument("--selection-budget-policy", default="legacy_fixed_fraction",
+                        choices=("legacy_fixed_fraction", "end_to_end_aware"))
     parser.add_argument("--development-partition-sha256", required=True)
     parser.add_argument("--development-case-manifest-sha256", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -56,6 +59,7 @@ def main() -> int:
 
     measurement_path = Path(args.measurements).resolve()
     payload = json.loads(measurement_path.read_text(encoding="utf-8"))
+    require_profile_freeze_evidence(payload)
     if (payload.get("protocol_version"), payload.get("schema_version")) != (8, 10):
         raise ValueError("schema10 Profile freeze requires schema10 measurements")
     if payload.get("real_gpu_measurements") is not True or payload.get("fake_timing") is True:
@@ -67,6 +71,7 @@ def main() -> int:
         "model_revision": args.model_revision,
         "tokenizer_hash": args.tokenizer_hash,
         "runtime_policy": args.runtime_policy,
+        "selection_budget_policy": args.selection_budget_policy,
         "development_partition_sha256": args.development_partition_sha256,
         "development_case_manifest_sha256": args.development_case_manifest_sha256,
     }
@@ -86,6 +91,8 @@ def main() -> int:
     if not gpu_uuid:
         raise ValueError("schema10 Profile measurements lack GPU UUID")
     selected = select_dispatch(list(payload["selection_candidates"]))
+    if selected.get("selection_budget_policy") != args.selection_budget_policy:
+        raise ValueError("selected dispatch uses a different selection budget policy")
     if dict(payload.get("stage_a_reference_dispatch", {})) != dict(selected):
         raise ValueError("Stage-B evidence differs from the frozen Stage-A dispatch")
     selected_ratio = float(selected["source_residual_trim_ratio"])
@@ -308,6 +315,8 @@ def main() -> int:
         "protocol_version": 8,
         "schema_version": 10,
         "stage": "schema10_profile_bundle_frozen",
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "selection_budget_policy": args.selection_budget_policy,
         "code_commit": args.code_commit,
         "model_id": args.model_id,
         "gpu_uuid": gpu_uuid,

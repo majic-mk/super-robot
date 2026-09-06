@@ -90,11 +90,12 @@ def schema10_no_gpu_gate(*, artifact_preparation_ready: bool) -> Mapping[str, ob
     return {
         "protocol_version": V8_SCHEMA10_PROTOCOL_VERSION,
         "schema_version": V8_SCHEMA10_VERSION,
-        "schema10_local_implementation_complete": True,
+        "schema10_local_implementation_complete": False,
+        "schema10_diagnostic_components_available": True,
+        "evidence_contract_version": 2,
         "artifact_preparation_ready": bool(artifact_preparation_ready),
-        "gpu_rental_ready_for_schema10_profile_freeze": bool(
-            artifact_preparation_ready
-        ),
+        "gpu_rental_ready_for_schema10_profile_freeze": False,
+        "gpu_diagnostic_measurement_ready": bool(artifact_preparation_ready),
         "variant_admission_profile_frozen": False,
         "preparation_policy_profile_frozen": False,
         "selection_depth_profile_frozen": False,
@@ -105,9 +106,8 @@ def schema10_no_gpu_gate(*, artifact_preparation_ready: bool) -> Mapping[str, ob
         "full_h1_started": False,
         "paper_evidence": False,
         "locked_test_accessed": False,
-        "failures": []
-        if artifact_preparation_ready
-        else ["schema10_artifact_preparation_required"],
+        "failures": ["production_policy_evidence_integration_required"]
+        + ([] if artifact_preparation_ready else ["schema10_artifact_preparation_required"]),
     }
 
 

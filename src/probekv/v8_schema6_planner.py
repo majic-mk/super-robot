@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from enum import Enum
 from typing import Mapping, Protocol, Sequence, Tuple
 
@@ -43,6 +44,8 @@ class JointTimelineEstimate:
     per_segment_attribution_ms: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not all(math.isfinite(x) for x in (self.joint_future_ms, *self.critical_path_components_ms.values(), *self.per_segment_attribution_ms.values())):
+            raise ValueError("joint timeline costs must be finite")
         if self.joint_future_ms < 0:
             raise ValueError("joint future must be non-negative")
         if min(self.critical_path_components_ms.values(), default=0.0) < 0:
@@ -124,7 +127,7 @@ class PredictedJointPlannerV6:
         inventory = tuple(inventory_segment_ids)
         if not inventory or len(set(inventory)) != len(inventory):
             raise ValueError("Gate 2 requires one complete unique Segment inventory")
-        if actual_sunk_ms < 0 or dense_reference_total_ms <= 0:
+        if not all(math.isfinite(x) for x in (actual_sunk_ms, dense_reference_total_ms)) or actual_sunk_ms < 0 or dense_reference_total_ms <= 0:
             raise ValueError("Gate 2 costs are invalid")
         candidates = {row.segment_id: row for row in frozen_candidates}
         if len(candidates) != len(frozen_candidates) or set(candidates) - set(inventory):
@@ -244,7 +247,7 @@ class RefinedJointPlannerV6:
             raise ValueError("Gate 3 eligible/committed sets are invalid")
         if set(actual_boundary_by_segment) != eligible:
             raise ValueError("actual boundaries must exactly cover ready eligible Segments")
-        if min(actual_sunk_ms, dense_reference_total_ms) < 0 or dense_reference_total_ms == 0:
+        if not all(math.isfinite(x) for x in (actual_sunk_ms, dense_reference_total_ms)) or actual_sunk_ms < 0 or dense_reference_total_ms <= 0:
             raise ValueError("Gate 3 costs are invalid")
 
         order = {segment_id: index for index, segment_id in enumerate(inventory)}

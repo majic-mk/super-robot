@@ -1,5 +1,15 @@
 # ProbeKV
 
+Current schema10 engineering status (2026-09-06): see
+[evidence integration and remaining deployment work](docs/PROBEKV_SCHEMA10_EVIDENCE_UPGRADE_STATUS.md).
+The explicit `end_to_end_aware` configuration removes the selection-only 5%
+gate, but retains resource controls and the final request-level 0.8 cost test.
+Historical configurations keep their original budgets. Diagnostic GPU rows and
+local test success do not freeze production Profiles or qualify the new path.
+
+The protocol history below describes separately versioned paths, not a claim
+that every historical policy is the current deployed main method.
+
 ProbeKV is a research harness for **target-model current-early-state-guided,
 variant-specific safe-cost selection**. When the same exact non-prefix segment
 has several canonical historical KV variants, fresh early state from the
