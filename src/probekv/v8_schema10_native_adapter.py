@@ -35,6 +35,19 @@ def dispatch_depths(selection_path, model_spec):
     raise ValueError("unconnected native dispatch")
 
 
+def validate_native_sampling_request(request):
+    count = request.get("max_new_tokens", 32)
+    if type(count) is not int or count < 1:
+        raise ValueError("max_new_tokens must be a positive integer")
+    if "teacher_token_ids" in request:
+        tokens = request["teacher_token_ids"]
+        if (not request.get("capture_logits") or not isinstance(tokens, (list, tuple))
+                or len(tokens) != count - 1
+                or any(type(t) is not int or t < 0 for t in tokens)
+                or request.get("capture_original_full_prefill")):
+            raise ValueError("teacher-forced diagnostic requires exactly max_new_tokens-1 input tokens and logits")
+
+
 class NativeOnlineAdapter:
     def __init__(self, *, llm, model_spec, selection_path, loader, hbm, shadow_store,
                  store_provider, provenance, cost_provider, shared_runtime_state=None):
@@ -142,6 +155,7 @@ class NativeOnlineAdapter:
     def open_request(self, request, *, arrival_ns):
         from vllm import SamplingParams
         mandatory_suffix_positions(request)
+        validate_native_sampling_request(request)
         if self.active is not None:
             raise RuntimeError("max_integrated_concurrency=1")
         self.check_deadline()
@@ -453,12 +467,13 @@ class NativeRequestContext:
         on_first_token()
         self.logit_trace = [logits.detach().float().cpu()] if self.request.get("capture_logits") else []
         teachers = self.request.get("teacher_token_ids", ())
+        teacher_forced = "teacher_token_ids" in self.request
         eos = a.llm.get_tokenizer().eos_token_id
         for _ in range(1, self.sampling_signature["max_new_tokens"]):
-            if predicted[-1] == eos:
+            if not teacher_forced and predicted[-1] == eos:
                 break
             a.check_deadline()
-            feed_token = int(teachers[len(predicted) - 1]) if teachers else predicted[-1]
+            feed_token = int(teachers[len(predicted) - 1]) if teacher_forced else predicted[-1]
             metadata = self.native.append_for_decode(feed_token)
             ids, pos, attention, sample = a.prepare(metadata)[:4]
             hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv, attn_metadata=attention)
@@ -470,8 +485,13 @@ class NativeRequestContext:
         self.finished = True
         origin = "selective_reuse" if self.committed else "native_prefix_dense_remaining" if self.cached_prefix_tokens else "exact_dense_full_prefill"
         # Only dense requests rebuild exact Prefix state during paired replay.
-        if not self.committed:
+        if not self.committed and not teacher_forced:
             a.warm_history.append(self.request)
+        if teacher_forced:
+            return {"token_ids": predicted, "answer": None, "quality_passed": None,
+                "qa_evidence": None, "generation_mode": "teacher_forced_logit_diagnostic",
+                "whole_request_origin": origin, "cached_prefix_tokens": self.cached_prefix_tokens,
+                "layer_audit": self.engine.session.layer_audit if self.engine else []}
         from .v8_schema10_qa import answer_evidence
         evidence = answer_evidence(predicted, tokenizer=a.llm.get_tokenizer(), request=self.request)
         return {**evidence, "whole_request_origin": origin,

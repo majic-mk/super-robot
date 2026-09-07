@@ -19,7 +19,8 @@ def run_native_source_oracle(backend, *, request, dispatch, segment_id, source_i
                              max_answer_f1_drop):
     if (not source_ids or len(source_ids) > 16 or len(source_ids) != len(set(source_ids))
             or repair_ratio not in {.15, 1.0} or not request.get("answers")
-            or request.get("capture_original_full_prefill", False)):
+            or request.get("capture_original_full_prefill", False)
+            or "teacher_token_ids" in request or request.get("capture_logits")):
         raise ValueError("native oracle requires fixed15/r1, references and a unique fixed Source set")
     adapter = backend.adapters[dispatch["selection_path"]]
     if not 2 <= first_reuse_layer <= adapter.spec.num_layers:

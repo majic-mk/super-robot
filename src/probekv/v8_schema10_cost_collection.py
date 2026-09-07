@@ -5,8 +5,25 @@ import math
 import time
 
 from .v8_schema10_execution import digest_json
-from .v8_schema10_cost_provider import EXECUTION_SHAPE_KEY, MeasurementKey
+from .v8_schema10_cost_provider import EXECUTION_SHAPE_KEY, MeasurementKey, validate_measurement_provenance
 from .v8_schema10_event_log import atomic_json
+
+
+FIRST_TOKEN_CATEGORIES = frozenset({"dense_reference", "source_future", "joint_future"})
+
+
+def measurement_endpoint(category, result, *, begin, finish, joint=False):
+    """Wall-clock endpoints are independent of CUDA operation completion.
+
+    A future-to-first-token query must not silently include decode. CUDA event
+    samples still cover the whole operation and are labelled as such below.
+    """
+    if joint or category in FIRST_TOKEN_CATEGORIES:
+        endpoint = result.get("first_token_ns") if isinstance(result, dict) else None
+        if (type(endpoint) is not int or not begin <= endpoint <= finish):
+            raise ValueError("first-token cost cell lacks actual first-token endpoint")
+        return endpoint, "first_token"
+    return finish, "operation_completion"
 
 
 class CudaCostCollector:
@@ -14,9 +31,7 @@ class CudaCostCollector:
         import torch
         if not torch.cuda.is_available():
             raise RuntimeError("cost collector requires actual CUDA, not fake timing")
-        required = {"model", "code", "patch", "gpu", "config", "runtime_profile", "timing_scope"}
-        if not required <= provenance.keys() or any(not provenance[k] for k in required):
-            raise ValueError("incomplete measured cost provenance")
+        validate_measurement_provenance(provenance)
         self.torch, self.provenance, self.deadline = torch, dict(provenance), deadline
         self.rows, self.joint_rows, self.raw_intervals = [], [], []
         self.started = time.perf_counter_ns()
@@ -41,14 +56,14 @@ class CudaCostCollector:
             finish = time.perf_counter_ns()
             # first-token callbacks can delimit TTFT even when operation also
             # decodes: never call complete generation wall time "TTFT".
-            if category == "dense_reference":
-                if not isinstance(result, dict) or not begin <= result.get("first_token_ns", -1) <= finish:
-                    raise ValueError("dense reference lacks actual first-token endpoint")
-                endpoint = result["first_token_ns"]
-            else:
-                endpoint = finish
+            endpoint, endpoint_kind = measurement_endpoint(category, result,
+                begin=begin, finish=finish, joint=joint)
             interval = {"warmup": index < warmup, "host_start_ns": begin, "host_end_ns": endpoint,
+                        "wall_endpoint_kind": endpoint_kind,
+                        "cuda_timing_scope": "whole_operation_through_completion",
                         "cuda_ms": float(start.elapsed_time(end)), "completion_ns": finish}
+            if not math.isfinite(interval["cuda_ms"]) or interval["cuda_ms"] < 0:
+                raise ValueError("invalid CUDA event interval")
             self.raw_intervals.append({"category": category, "query": query, **interval})
             if index >= warmup:
                 wall.append((endpoint - begin) / 1e6)

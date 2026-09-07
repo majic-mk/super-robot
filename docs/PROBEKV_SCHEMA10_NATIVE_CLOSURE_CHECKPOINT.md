@@ -75,7 +75,7 @@ certificate.** CPU tests cannot certify vLLM/CUDA numerical correctness.
 
 ## Required work still pending
 
-1. Finish the concrete staged operation dispatcher: native Prefix/K-hook/r1/
+1. Finish the concrete staged operation dispatcher: combined native Prefix+r1/
    mask observations, all required primitive and joint cost operations, support
    validation, then trace/A-B/Oracle and aggregate. The collector and native
    operators are not yet a complete one-command session runner. Existing
@@ -93,6 +93,43 @@ certificate.** CPU tests cannot certify vLLM/CUDA numerical correctness.
 The separate local CacheBlend audit replays the frozen patch series on the base
 commit and parses the key source files. It confirms source syntax and file
 identity only. No patch was changed and no server environment was inspected.
+
+## Follow-up: premeasurement timing and evidence boundary
+
+The continuation after `d3c996c` adds the following source paths. None has been
+executed on a server/GPU by this local checkpoint:
+
+- `v8_schema10_stage_journal.py` records ordered premeasurement work against the
+  immutable measurement **plan**, with an explicitly null actual measurement
+  digest. The online event log still rejects absent measurements. Successful
+  prefix recovery checks every result-file digest; failed or unfinished jobs
+  cannot resume or advance. File recovery does not reconstruct a live backend.
+- Provisional cost provenance can explicitly name a preregistered plan with
+  `runtime_profile=null`; it cannot claim a fabricated frozen Profile. Historical
+  Profile-bound provenance remains readable.
+- Dense-reference, Source-future and joint-future wall-clock cells now require
+  an actual first-token endpoint. CUDA samples are explicitly labelled as whole
+  operation completion samples; decode is not silently counted as joint TTFT.
+- Teacher-forced logit diagnostics execute the declared token count even when
+  EOS is predicted, validate teacher length before allocation, and produce no
+  QA evidence or quality-pass flag. Production online execution and QA Oracle
+  reject diagnostic request switches.
+- `v8_schema10_native_preflight.py` adds real operator implementations for
+  isolated native Prefix warm/hit/shadow checks and K-hook comparison against an
+  independent monolithic full-prefill reference. They require actual CUDA,
+  account diagnostic total time, restore retained Prefix state when safe, and
+  do not create Source-pool entries or fake passing admission decisions.
+  Prefix-only success explicitly does **not** pass the combined r1 sentinel.
+- CPU tests exercise actual `NativeRequestContext.finish/close`, EOS and teacher
+  semantics, sampling-index restoration, failed-fence quarantine and pre-cost
+  journal recovery. This expands the harness but does not complete model-level
+  integration or certify BF16 GPU numerical equivalence.
+
+Validation at this follow-up: **656 tests, 655 passed, one skipped (`ijson`)**.
+The generated handoff, not this prose, is authoritative for the exact validated
+commit and the full command logs. The concrete all-stage dispatcher, combined
+r1 operation, complete cost-operation grid and current-SHA data audits remain
+pending; readiness flags below remain false.
 
 ## Handoff status
 

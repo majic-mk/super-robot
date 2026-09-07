@@ -89,10 +89,12 @@ def verify_installed_runtime_sources(runtime, vllm_root):
 
 
 class NativeExperimentBackend(Schema10OnlineExperimentBackend):
-    def execute(self, *args, **kwargs):
+    def execute(self, request, *args, **kwargs):
         if not self.costs.sha:
             raise RuntimeError("measurement-only backend cannot start online trace")
-        return super().execute(*args, **kwargs)
+        if "teacher_token_ids" in request or request.get("capture_logits") or "correctness_repair_ratio" in request:
+            raise ValueError("correctness diagnostics cannot enter the measured online QA path")
+        return super().execute(request, *args, **kwargs)
 
     def install_measurements(self, path, *, expected_sha256, provenance):
         if self.pending or any(a.active for a in self.adapters.values()):

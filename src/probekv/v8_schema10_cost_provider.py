@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import re
 from pathlib import Path
 import json
 from typing import Mapping
@@ -18,6 +19,19 @@ class UnsupportedTimelineCost(RuntimeError):
 
 EXECUTION_SHAPE_KEY = "execution_shape_v1"
 LEGACY_IDENTITY_KEY = "legacy_identity_v1"
+
+
+def validate_measurement_provenance(provenance):
+    required = {"model", "code", "patch", "gpu", "config", "timing_scope"}
+    if not required <= provenance.keys() or any(not provenance[k] for k in required):
+        raise ValueError("cost provenance is incomplete")
+    if provenance.get("profile_binding_kind") == "preregistered_measurement_plan":
+        if (provenance.get("runtime_profile") is not None
+                or not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("measurement_plan_sha256", "")))):
+            raise ValueError("pre-profile measurements require a real plan digest and a null runtime Profile")
+    elif (not provenance.get("runtime_profile") or provenance.get("measurement_plan_sha256")
+          or provenance.get("profile_binding_kind") not in (None, "runtime_profile")):
+        raise ValueError("cost provenance lacks an explicit Profile or measurement-plan binding")
 
 
 @dataclass(frozen=True)
@@ -103,9 +117,7 @@ class ProfiledJointTimelineEstimator:
     def __init__(self, *, provenance: Mapping, shape: RequestExecutionShape,
                  measurements, measurement_digest: str, allow_test_measurements=False,
                  key_contract=LEGACY_IDENTITY_KEY):
-        required = {"model", "code", "patch", "gpu", "config", "runtime_profile", "timing_scope"}
-        if not required <= provenance.keys() or any(not provenance[k] for k in required):
-            raise ValueError("cost provenance is incomplete")
+        validate_measurement_provenance(provenance)
         self.provenance, self.shape = dict(provenance), shape
         if key_contract not in {EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY}:
             raise ValueError("unknown measurement key contract")
