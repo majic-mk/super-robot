@@ -33,7 +33,8 @@ def _online(outcome: Mapping[str, Any]) -> None:
     dense_abstention = (outcome.get("final_commit_not_applicable_reason") == "no_frozen_sources"
                         and outcome.get("selected_source_variant_ids") == [])
     cost_unsupported_dense = (
-        outcome.get("final_commit_not_applicable_reason") in {"matched_dense_cost_unsupported", "selection_cost_unsupported"}
+        outcome.get("final_commit_not_applicable_reason") in {"matched_dense_cost_unsupported", "selection_cost_unsupported",
+            "no_nonprefix_candidates", "native_prefix_shadow_unavailable"}
         and outcome.get("selected_source_variant_ids") == []
         and outcome.get("committed_source_variant_ids") == []
         and any(e.get("kind") == "dense_fallback" and e.get("reason") == outcome.get("final_commit_not_applicable_reason")

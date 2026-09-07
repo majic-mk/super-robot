@@ -238,6 +238,34 @@ class OnlineIntegration(unittest.TestCase):
         self.assertFalse(self.backend.store.objects)
         self.assertEqual(row["final_commit_not_applicable_reason"], "matched_dense_cost_unsupported")
 
+    def test_partial_prefix_cannot_export_locally_dense_tail_as_canonical(self):
+        with patch.object(TinyLiveContext, "cached_prefix_tokens", 2):
+            row = self.execute(1)
+        self.assertEqual(row["segment_ownership"]["s0"]["disposition"], "DENSE_PREFIX_TAIL")
+        self.assertFalse(row["selected_source_variant_ids"])
+        self.assertFalse(self.backend.store.objects)
+
+    def test_fully_covered_prefix_never_compares_or_materializes(self):
+        with patch.object(TinyLiveContext, "cached_prefix_tokens", 4):
+            row = self.execute(1)
+        self.assertEqual(row["segment_ownership"]["s0"]["disposition"], "PREFIX_EXACT")
+        self.assertEqual(row["selection_events"], [])
+        self.assertFalse(self.backend.store.objects)
+
+    def test_stale_final_snapshot_is_dense_not_a_fake_commit(self):
+        self.execute(1)
+        with patch.object(TinyLiveContext, "commit_reuse", side_effect=RuntimeError("stale Planner snapshot cannot be applied")):
+            row = self.execute(2)
+        self.assertFalse(row["committed_source_variant_ids"])
+        self.assertIsNone(row["final_predicted_request_total_ms"])
+        self.assertEqual(self.backend.hbm.active_reserved_bytes, 0)
+
+    def test_quarantined_hbm_cannot_be_reset_to_free_space(self):
+        from probekv.v8_schema6_hbm import HBMReservationKind
+        self.backend.hbm.reserve_batch(owner_request_id="crashed", rows=(("s", 100, HBMReservationKind.WINNER_PREFETCH),))
+        with self.assertRaisesRegex(RuntimeError, "quarantined"):
+            self.backend.reset(capacity=1, global_byte_budget=2000000)
+
     def test_freeze_lease_failure_preserves_selected_audit_but_no_prefetch(self):
         self.execute(1)
         with patch.object(self.backend.store, "leased_winner", side_effect=RuntimeError("generation changed")):

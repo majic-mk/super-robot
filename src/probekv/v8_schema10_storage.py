@@ -22,6 +22,7 @@ from .v7_contracts import CanonicalKVArtifact, ReplicaState
 from .v8_schema10_execution import digest_json
 from .v8_schema10_pool import Schema10SourcePool
 from .v8_schema10_source_metadata import validate_publication_metadata
+from .v8_schema10_layer_storage import LayerFile, write_layer_replica
 
 
 def file_digest(path: Path) -> str:
@@ -70,9 +71,14 @@ class TensorFileSourceStore:
         self.pool, self.root = pool, Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.cpu_bytes, self.ssd_bytes, self.pin_cpu = cpu_bytes, ssd_bytes, pin_cpu
+        self.auxiliary_host_bytes = 0
         self.objects: dict[str, BackingObject] = {}
         self.events: list[dict] = []
         self._snapshots: dict[str, tuple] = {}
+
+    @property
+    def global_byte_budget(self):
+        return self.cpu_bytes + self.ssd_bytes + self.auxiliary_host_bytes
 
     def _quiescent(self):
         if any(self.pool.logical_lease_counts.values()) or any(
@@ -104,19 +110,22 @@ class TensorFileSourceStore:
         for path in set(paths) - retained:
             self._delete_owned(path)
 
-    def _save(self, value, created):
+    def _save(self, value, created, *, layer_addressable=False):
         import torch
         destination = self.root / (uuid.uuid4().hex + ".pt")
         temporary = destination.with_suffix(".tmp")
         try:
             with temporary.open("xb") as stream:
-                torch.save(value, stream)
+                if layer_addressable:
+                    write_layer_replica(stream, value)
+                else:
+                    torch.save(value, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, destination)
             created.append(str(destination))
             # Deserialize our own restricted artifact and validate before publish.
-            restored = torch.load(destination, weights_only=True, map_location="cpu")
+            restored = LayerFile(destination) if layer_addressable else torch.load(destination, weights_only=True, map_location="cpu")
             return str(destination), file_digest(destination), restored
         finally:
             temporary.unlink(missing_ok=True)
@@ -131,6 +140,8 @@ class TensorFileSourceStore:
         # creation/migration/qualification, never per-request immutable reads.
         if path is None or not Path(path).is_file() or ((selection or verify_full) and file_digest(Path(path)) != expected):
             raise RuntimeError("corrupt SSD SelectionState" if selection else "corrupt SSD Artifact")
+        if not selection and LayerFile.recognizes(path):
+            return LayerFile(path)
         return torch.load(path, weights_only=True, map_location="cpu")
 
     def _cpu(self, tensor):
@@ -147,7 +158,7 @@ class TensorFileSourceStore:
                                  tuple((self._cpu(k), self._cpu(v)) for k, v in layers),
                                  {d: self._cpu(k) for d, k in states.items()}, deepcopy(obj.metadata),
                                  None, None, None, None, obj.selection_digest, obj.creation_epoch)
-        kp, kh, check = self._save(layers, created)
+        kp, kh, check = self._save(layers, created, layer_addressable=True)
         if tensor_digest(t for pair in check for t in pair) != tensor_digest(t for pair in layers for t in pair):
             raise RuntimeError("SSD destination full KV verification failed")
         sp, sh, check = self._save(states, created)
@@ -167,7 +178,8 @@ class TensorFileSourceStore:
                 replica.state = ReplicaState.DELETED
         pool.attach_replica(row.identity.model_math_signature, row.identity.reuse_content_key,
                             obj.source_id, tier=obj.tier, locator_value=obj.kv_path or ("cpu:" + obj.source_id),
-                            layout_signature="bf16-contiguous" if not obj.kv_path else "torch-weights-only-v1",
+                            layout_signature="bf16-contiguous" if not obj.kv_path else
+                                "layer-addressable-bf16-v1" if LayerFile.recognizes(obj.kv_path) else "torch-weights-only-v1",
                             bytes_digest=obj.kv_file_digest or row.canonical_source_state_digest,
                             size_bytes=obj.size_bytes, is_backing=True)
 
@@ -268,14 +280,16 @@ class TensorFileSourceStore:
                 raise KeyError("SelectionState unavailable; full-KV fallback is prohibited")
             return states[completed_depth].clone()
 
-    def promote_request_use(self, source_id):
+    def promote_request_use(self, source_id, *, record_request_use=True):
         with self.pool.mutation_lock:
             self._quiescent()
             obj = self.objects[source_id]
             clone, objects, events, created = self._clone_pool(), dict(self.objects), [], []
             row = next(v for v in clone._variants.values() if v.source_variant_id == source_id)
-            # Request selection/binding is a use; migration itself never ticks it.
-            row.last_request_use_epoch = clone._tick()
+            # Selection/binding already recorded the request use. Migration is
+            # not another access and must not reorder otherwise idle Sources.
+            if record_request_use:
+                row.last_request_use_epoch = clone._tick()
             try:
                 if obj.tier is KVLocation.SSD:
                     moved = self._move_object(obj, KVLocation.PINNED_CPU, created)
@@ -354,6 +368,7 @@ class TensorFileSourceStore:
                 "replica_generation": self.pool._replica_generation,
                 "capacity": self.pool.max_variants_per_content,
                 "cpu_budget": self.cpu_bytes, "ssd_budget": self.ssd_bytes,
+                "auxiliary_host_budget": self.auxiliary_host_bytes,
                 "cpu_pinned": self.pin_cpu,
                 "variants": [asdict(v) for v in sorted(self.pool._variants.values(), key=lambda r: r.source_variant_id)],
                 "objects": [{"source_id": o.source_id, "tier": o.tier.value, "bytes": o.size_bytes,

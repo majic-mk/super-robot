@@ -1,5 +1,6 @@
 """Generate an honest code-bound local checkpoint; never start GPU/server work."""
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ def git(*args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
+    parser.add_argument("--native-source-tree", help="optional separately replayed local CacheBlend source tree; never an SSH target")
     args = parser.parse_args()
     output = Path(args.output).resolve()
     if not output.is_relative_to((REPO / "artifacts").resolve()) or output.exists():
@@ -61,6 +63,23 @@ def main():
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     manifest_path = REPO / "patches/cacheblend/manifest.json"
     patches = patch_files_for_mode(manifest_path, lock["stack"]["cacheblend_patch_mode"])
+    native_audit = None
+    if args.native_source_tree:
+        tree = Path(args.native_source_tree).resolve()
+        files = ("model_executor/models/llama.py", "model_executor/models/qwen2.py",
+                 "attention/backends/xformers.py", "worker/model_runner.py",
+                 "core/block_manager_v1.py", "sequence.py")
+        root = tree / "vllm_blend/vllm"
+        hashes = {}
+        for relative in files:
+            path = root / relative
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            hashes[relative] = file_digest(path)
+        native_audit = {"scope": "local_source_syntax_and_file_identity_only", "path": str(tree),
+            "installed_runtime_source_files_sha256": hashes, "syntax_passed": True,
+            "gpu_behavior_verified": False, "server_environment_verified": False}
+        atomic_json(output / "native_source_audit.json", native_audit)
+    source_files = sorted((REPO / "src/probekv").glob("v8_schema10_*.py"))
     report = {"stage": "single_request_local_backend_checkpoint", "protocol_version": 8, "schema_version": 10,
         "code_commit": commit, "branch": git("branch", "--show-current"),
         "tracked_checkout_clean": not git("status", "--porcelain", "--untracked-files=no"),
@@ -69,13 +88,18 @@ def main():
         "config_sha256": {str(p.relative_to(REPO)): file_digest(p) for p in configs},
         "server_lock_sha256": file_digest(lock_path), "cacheblend_base": lock["stack"]["cacheblend_commit"],
         "cacheblend_patch_sha256": combined_patch_sha256(patches),
+        "native_source_audit": native_audit,
+        "native_source_module_sha256": {str(p.relative_to(REPO)): file_digest(p) for p in source_files},
+        "local_environment": {"python": sys.version, "executable": sys.executable,
+                              "is_frozen_server_environment": False},
         "models": [{"model_id": s.model_id, "revision": s.revision, "legacy_checkpoints": s.checkpoints,
                     "tokenizer_assets_sha256": None, "snapshot_audited": False} for s in SCHEMA6_MODEL_SPECS.values()],
-        "pending": ["native FAST/legacy model request contexts and Prefix shadow binding",
-                    "bounded physical SSD staging and GPU hot-replica registration",
-                    "live measured-cost collector and real QA/Oracle adapter",
-                    "actual development trace manifests and tokenizer/snapshot audits",
+        "pending": ["complete staged native correctness/cost operation dispatcher with raw-evidence support validation",
+                    "full native-context CPU harness and failure-path integration audit before declaring source ready",
+                    "new-SHA development trace manifests and actual tokenizer/snapshot audits",
                     "instance and budget confirmation before GPU execution"],
+        "native_runtime_source_ready": False,
+        "online_trace_execution_allowed": False,
         "artifact_preparation_ready": False, "ready_for_single_request_gpu_sentinel": False,
         "single_request_runtime_sentinel_passed": False, "formal_profile_bundle_frozen": False,
         "integrated_concurrency_qualified": False, "gpu_runtime_qualified": False,

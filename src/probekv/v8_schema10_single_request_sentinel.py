@@ -7,16 +7,20 @@ from pathlib import Path
 import subprocess
 import time
 
-from .v8_schema10_event_log import OnlineEventLog, atomic_json
+from .v8_schema10_event_log import OnlineEventLog, atomic_json, read_events, aggregate_online_events
 from .v8_schema10_execution import digest_json
 from .v8_schema10_experiments import _online
 from .v8_schema10_storage import file_digest
 
 
-def _validate_inputs(trace_set, dispatches, binding):
+def _validate_inputs(trace_set, dispatches, binding, *, measurement_pending=False):
     for field, length in (("code_commit", 40), ("patch_sha256", 64), ("config_sha256", 64),
                           ("runtime_measurement_sha256", 64), ("tokenizer_hash", 64)):
         value = binding.get(field, "")
+        if field == "runtime_measurement_sha256" and measurement_pending:
+            if value is not None:
+                raise ValueError("premeasurement blueprint must use null, not a placeholder cost SHA")
+            continue
         if not isinstance(value, str) or len(value) != length or any(c not in "0123456789abcdef" for c in value):
             raise ValueError("missing exact sentinel binding: " + field)
     if not binding.get("model_signature") or not binding.get("model_revision") or binding.get("global_byte_budget", 0) <= 0:
@@ -43,7 +47,7 @@ def _validate_inputs(trace_set, dispatches, binding):
                 ids.add(s["segment_id"])
 
 
-def prepare_manifest(*, trace_set, dispatches, binding, backend_factory=None):
+def prepare_manifest(*, trace_set, dispatches, binding, backend_factory=None, measurement_pending=False):
     """Source traces are actual preregistered data, never fabricated here."""
     if set(trace_set) != {"1", "2", "5", "37"}:
         raise ValueError("sentinel requires 1/2/5/37 Segment traces")
@@ -62,7 +66,7 @@ def prepare_manifest(*, trace_set, dispatches, binding, backend_factory=None):
                 raise ValueError("trace inventory or development partition binding differs")
             if not request.get("content_group_id") or not request.get("partition_id"):
                 raise ValueError("trace must identify its development content-group partition")
-    _validate_inputs(trace_set, dispatches, binding)
+    _validate_inputs(trace_set, dispatches, binding, measurement_pending=measurement_pending)
     jobs = []
     for name, dispatch in sorted(dispatches.items()):
         for k in (1, 4, 16):
@@ -79,7 +83,47 @@ def prepare_manifest(*, trace_set, dispatches, binding, backend_factory=None):
         "readiness": {"ready_for_single_request_gpu_sentinel": False,
                       "pending": ["real_native_model_adapters", "native_prefix_shadow_binding",
                                   "prerequisite_correctness_and_cost_measurements", "instance_budget_confirmation"]}}
+    if measurement_pending:
+        unsigned["stage"] = "single_request_premeasurement_blueprint"
+        unsigned["measurement_pending"] = True
+        unsigned["online_trace_execution_allowed"] = False
     return {**unsigned, "manifest_sha256": digest_json(unsigned)}
+
+
+def bind_completed_measurements(blueprint, *, measurement_path, expected_sha256, provenance):
+    """Derive an executable trace only after the actual cost file exists.
+
+    The immutable parent records the exact pre-GPU jobs. Binding costs does
+    not change any request, dispatch or matrix cell, and grants no correctness
+    or online-trace qualification by itself.
+    """
+    from .v8_schema10_measured_costs import MeasuredRequestCostProvider
+    if (blueprint.get("stage") != "single_request_premeasurement_blueprint"
+            or blueprint.get("measurement_pending") is not True
+            or blueprint["binding"].get("runtime_measurement_sha256") is not None
+            or blueprint.get("manifest_sha256") != digest_json({k: v for k, v in blueprint.items() if k != "manifest_sha256"})):
+        raise ValueError("not an immutable pending-measurement blueprint")
+    cost = MeasuredRequestCostProvider(measurement_path, expected_sha256=expected_sha256, provenance=provenance)
+    if not cost.rows or not cost.joint_rows:
+        raise ValueError("pending blueprint requires both primitive and joint measurements")
+    for sample in [*cost.rows.values(), *cost.joint_rows]:
+        raw = sample.get("raw_intervals")
+        if (not raw or sample.get("origin") != "real_cuda_execution" or sample.get("fake_timing") is not False
+                or sample.get("provenance") != provenance
+                or sample.get("row_sha256") != digest_json({k: v for k, v in sample.items() if k != "row_sha256"})):
+            raise ValueError("cost binding requires raw, provenance-bound CUDA observations")
+    from copy import deepcopy
+    row = deepcopy(blueprint)
+    row.pop("manifest_sha256")
+    row["binding"]["runtime_measurement_sha256"] = cost.sha
+    row.update(stage="single_request_trace_sentinel", measurement_pending=False,
+               premeasurement_manifest_sha256=blueprint["manifest_sha256"])
+    if "native_runtime" in row:
+        row["native_runtime"].update(cost_table_path=str(Path(measurement_path).resolve()),
+                                     cost_table_sha256=cost.sha, cost_provenance=provenance)
+    row["manifest_sha256"] = digest_json(row)
+    validate_manifest(row)
+    return row
 
 
 def validate_manifest(manifest):
@@ -128,6 +172,7 @@ def run_manifest(manifest, *, output_dir, hourly_yuan, instance_confirmed, repos
         raise RuntimeError("backend does not provide a real native CUDA execution path")
     # Runtime factory must fail closed on missing Prefix/r1/mask prerequisites.
     backend.verify_prerequisite_evidence(manifest)
+    backend.set_session_deadline(started + 4 * 3600)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     completed, pending = [], []
@@ -144,6 +189,23 @@ def run_manifest(manifest, *, output_dir, hourly_yuan, instance_confirmed, repos
                 raise RuntimeError("cannot overwrite or reinterpret existing sentinel result")
             if file_digest(directory / "events.jsonl") != result["events_sha256"]:
                 raise ValueError("successful-prefix event digest changed")
+            evidence_binding = result.get("event_binding")
+            if evidence_binding is None or evidence_binding.get("job_id") != job["job_id"]:
+                raise ValueError("resume requires the original complete event binding")
+            expected_binding = {**manifest["binding"], "dispatch": digest_json(job["dispatch"]),
+                                "initial_state_sha256": evidence_binding.get("initial_state_sha256"),
+                                "job_id": job["job_id"]}
+            if evidence_binding != expected_binding:
+                raise ValueError("resume binding differs from frozen manifest")
+            events = read_events(directory / "events.jsonl", binding=evidence_binding)
+            expected_ids = [q["request_id"] for q in job["requests"]]
+            for kind in ("request_started", "request_completed", "request_finalized"):
+                if [e["request_id"] for e in events if e["kind"] == kind] != expected_ids:
+                    raise ValueError("resume is not a completely successful job prefix")
+            if any(e["kind"].endswith("failed") for e in events):
+                raise ValueError("failure evidence cannot be resumed as success")
+            aggregate_online_events(directory / "events.jsonl", expected_file_sha256=result["events_sha256"],
+                                    binding=evidence_binding, fit_rows=[], validation_rows=[])
             completed.append(job["job_id"])
             continue
         if (directory / "events.jsonl").exists():
@@ -163,7 +225,10 @@ def run_manifest(manifest, *, output_dir, hourly_yuan, instance_confirmed, repos
                 _online(outcome)
                 backend.finalize_request(request, outcome)
             result = {"manifest_sha256": manifest["manifest_sha256"], "failed": False,
-                      "events_sha256": file_digest(directory / "events.jsonl"), "paper_evidence": False}
+                      "events_sha256": file_digest(directory / "events.jsonl"), "event_binding": binding,
+                      "paper_evidence": False}
+            aggregate_online_events(directory / "events.jsonl", expected_file_sha256=result["events_sha256"],
+                                    binding=binding, fit_rows=[], validation_rows=[])
             atomic_json(result_path, result)
             completed.append(job["job_id"])
         except Exception as exc:

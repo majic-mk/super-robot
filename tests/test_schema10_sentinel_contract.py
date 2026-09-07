@@ -39,6 +39,20 @@ class SentinelContract(unittest.TestCase):
         self.assertFalse(manifest["readiness"]["ready_for_single_request_gpu_sentinel"])
         self.assertIsNone(manifest["backend_factory"])
 
+    def test_premeasurement_blueprint_has_no_fake_cost_sha_and_cannot_run(self):
+        manifest = self.make()
+        traces = {str(n): next(j["requests"] for j in manifest["jobs"] if j["segments"] == n) for n in (1,2,5,37)}
+        dispatches = {name: next(j["dispatch"] for j in manifest["jobs"] if j["job_id"].startswith(name)) for name in ("fast", "legacy")}
+        binding = {**manifest["binding"], "runtime_measurement_sha256": None}
+        blueprint = prepare_manifest(trace_set=traces, dispatches=dispatches, binding=binding, measurement_pending=True)
+        self.assertIsNone(blueprint["binding"]["runtime_measurement_sha256"])
+        self.assertFalse(blueprint["online_trace_execution_allowed"])
+        self.assertEqual(blueprint["jobs"], manifest["jobs"])
+        with self.assertRaises(ValueError):
+            validate_manifest(blueprint)
+        with self.assertRaises(ValueError):
+            prepare_manifest(trace_set=traces, dispatches=dispatches, binding=manifest["binding"], measurement_pending=True)
+
     def test_deleting_job_cannot_pass_by_resigning_hash(self):
         manifest = self.make()
         manifest["jobs"].pop()

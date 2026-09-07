@@ -8,6 +8,7 @@ from pathlib import Path
 from .v8_schema10_execution import digest_json
 from .v8_schema10_storage import file_digest
 from .v8_schema10_cost_provider import ProfiledJointTimelineEstimator, UnsupportedTimelineCost
+from .v8_schema10_cost_provider import MeasurementKey, EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY
 from .v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
 
 
@@ -19,6 +20,9 @@ class MeasuredRequestCostProvider:
         if data.get("provenance") != provenance or data.get("formal_profile_frozen") is not False:
             raise ValueError("sentinel costs have different provenance or pretend formal freezing")
         self.provenance, self.sha = provenance, expected_sha256
+        self.key_contract = data.get("key_contract", LEGACY_IDENTITY_KEY)
+        if self.key_contract not in {EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY}:
+            raise ValueError("unknown measurement key contract")
         self.rows, self.joint_rows = {}, data.get("joint_rows", [])
         for row in data.get("rows", []):
             unsigned = {k: v for k, v in row.items() if k != "row_sha256"}
@@ -64,8 +68,8 @@ class MeasuredRequestCostProvider:
     def gate1(self, context, sid, source_id, depth):
         query = {"request": self.identity(context), "segment_id": sid, "source_id": source_id,
                  "completed_depth": depth, "first_reuse_layer": depth + 1}
-        reuse = self._lookup("source_local_marginal", query)
-        dense = self._lookup("source_local_dense", query)
+        reuse = self._lookup("source_local_marginal", self._source_query(context, sid, source_id, depth, "source_local_marginal", query))
+        dense = self._lookup("source_local_dense", self._source_query(context, sid, source_id, depth, "source_local_dense", query))
         if not reuse or not dense or min(dense["samples_ms"]) <= 0:
             return None
         parts = reuse.get("component_lower_ms", {})
@@ -78,10 +82,21 @@ class MeasuredRequestCostProvider:
             Gate1MarginalLowerBound(*(parts[n] for n in names)), min(dense["samples_ms"]))
 
     def candidate_future_ms(self, context, sid, source_id, depth):
-        row = self._lookup("source_future", {"request": self.identity(context),
+        query = {"request": self.identity(context),
             "segment_id": sid, "source_id": source_id, "completed_depth": depth,
-            "first_reuse_layer": depth + 1})
+            "first_reuse_layer": depth + 1}
+        row = self._lookup("source_future", self._source_query(context, sid, source_id, depth, "source_future", query))
         return max(row["samples_ms"]) if row else None
+
+    def _source_query(self, context, sid, source_id, depth, category, legacy):
+        if self.key_contract == LEGACY_IDENTITY_KEY:
+            return legacy
+        shape = context.source_measurement_shape(sid, source_id, depth)
+        required = {"prompt_tokens", "prefix_tokens", "positions", "completed_depth",
+                    "num_layers", "dtype", "kv_heads", "head_dim", "tier", "bytes", "layout"}
+        if not required <= shape.keys():
+            raise UnsupportedTimelineCost("incomplete source execution shape")
+        return MeasurementKey(category, shape).query()
 
     def preparation(self, context, sid, source_id):
         # Source-local feasibility is not request admission. Resource/waste
@@ -91,9 +106,11 @@ class MeasuredRequestCostProvider:
         dense = self.dense_reference(context)
         if result.estimate is None or dense is None:
             return None
-        copy = self._lookup("winner_visible_preparation", {"source_id": source_id,
+        query = {"source_id": source_id,
                             "request": self.identity(context), "segment_id": sid,
-                            "boundary": context.current_completed_depth + 1})
+                            "boundary": context.current_completed_depth + 1}
+        copy = self._lookup("winner_visible_preparation", self._source_query(context, sid, source_id,
+            context.current_completed_depth, "winner_visible_preparation", query))
         if copy is None:
             return None
         budget = max(0., dense - context.actual_sunk_ms - result.estimate.joint_future_ms)
@@ -103,4 +120,5 @@ class MeasuredRequestCostProvider:
 
     def joint_estimator(self, context):
         return ProfiledJointTimelineEstimator(provenance=self.provenance,
-            shape=context.execution_shape(), measurements=self.joint_rows, measurement_digest=self.sha)
+            shape=context.execution_shape(), measurements=self.joint_rows, measurement_digest=self.sha,
+            key_contract=self.key_contract)

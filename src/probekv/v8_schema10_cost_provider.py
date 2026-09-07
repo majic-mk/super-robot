@@ -16,6 +16,33 @@ class UnsupportedTimelineCost(RuntimeError):
     pass
 
 
+EXECUTION_SHAPE_KEY = "execution_shape_v1"
+LEGACY_IDENTITY_KEY = "legacy_identity_v1"
+
+
+@dataclass(frozen=True)
+class MeasurementKey:
+    """Execution support, not ownership. Ownership is checked by PlannerSnapshot."""
+    category: str
+    geometry: Mapping
+
+    def query(self):
+        forbidden = {"source_id", "source_variant_id", "request_id", "scheduler_snapshot",
+                     "generation", "placement_epoch", "replica_id"}
+        def check(value):
+            if isinstance(value, Mapping):
+                if forbidden.intersection(value):
+                    raise ValueError("ephemeral identity in execution-shape measurement key")
+                for child in value.values():
+                    check(child)
+            elif isinstance(value, (tuple, list)):
+                for child in value:
+                    check(child)
+        check(self.geometry)
+        return {"key_contract": EXECUTION_SHAPE_KEY, "category": self.category,
+                "geometry": dict(self.geometry)}
+
+
 @dataclass(frozen=True)
 class CostLookup:
     status: str
@@ -74,11 +101,15 @@ class ProfiledJointTimelineEstimator:
     time from the matched boundary to the first token. No extrapolation.
     """
     def __init__(self, *, provenance: Mapping, shape: RequestExecutionShape,
-                 measurements, measurement_digest: str, allow_test_measurements=False):
+                 measurements, measurement_digest: str, allow_test_measurements=False,
+                 key_contract=LEGACY_IDENTITY_KEY):
         required = {"model", "code", "patch", "gpu", "config", "runtime_profile", "timing_scope"}
         if not required <= provenance.keys() or any(not provenance[k] for k in required):
             raise ValueError("cost provenance is incomplete")
         self.provenance, self.shape = dict(provenance), shape
+        if key_contract not in {EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY}:
+            raise ValueError("unknown measurement key contract")
+        self.key_contract = key_contract
         self.measurement_digest, self.rows = measurement_digest, {}
         self.formal_profile_frozen = False
         for raw in measurements:
@@ -112,6 +143,31 @@ class ProfiledJointTimelineEstimator:
 
     def query(self, context: JointTimelineContext):
         masks = self.shape.masks(context)
+        if self.key_contract == EXECUTION_SHAPE_KEY:
+            # Exact position layout is intentional: equal row counts alone do
+            # not establish equal causal-attention work. New IDs may reuse a
+            # cell; different boundaries/masks may not.
+            segments = []
+            for sid in sorted(self.shape.positions_by_segment,
+                              key=lambda s: (self.shape.positions_by_segment[s], s)):
+                source = self.shape.source_state_by_segment.get(sid, {})
+                physical = {key: source[key] for key in (
+                    "tier", "bytes", "ready_layers", "copy_in_flight", "layout",
+                    "copy_stream_load", "scheduler_blocking_state") if key in source}
+                if sid in context.reuse_segment_ids or sid in context.committed_segment_ids:
+                    if not {"tier", "bytes", "ready_layers", "layout"} <= physical.keys():
+                        raise UnsupportedTimelineCost("missing source execution-shape fields")
+                segments.append({"positions": self.shape.positions_by_segment[sid],
+                    "execution": "committed" if sid in context.committed_segment_ids else
+                                 "reuse" if sid in context.reuse_segment_ids else "dense",
+                    "boundary": self.shape.committed_boundary_by_segment.get(sid,
+                                context.boundary_by_segment.get(sid)), "physical": physical})
+            return MeasurementKey("joint_future", {
+                "segments": segments, "layer_active_positions": {str(l): list(p) for l, p in masks.items()},
+                "completed_depth": self.shape.completed_depth, "num_layers": self.shape.num_layers,
+                "prompt_tokens": self.shape.prompt_token_count, "prefix_tokens": self.shape.cached_prefix_tokens,
+                "sampling": self.shape.dense_reference_identity.get("sampling"),
+                "timing_scope": "boundary_to_first_token"}).query()
         # Rebuilt for EVERY trial subset; caller's former mask digest is never a cache key.
         return {"inventory": list(context.inventory_segment_ids),
                 "reuse": sorted(context.reuse_segment_ids), "dense": sorted(context.dense_fallback_segment_ids),

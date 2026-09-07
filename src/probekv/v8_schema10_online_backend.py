@@ -21,6 +21,7 @@ from .v8_schema6_hbm import HBMReservationKind
 from .v8_schema7_planner import FinalCommitPlanner
 from .v8_schema10_contracts import DenseKVProvenance, VariantMaterializationStateV10
 from .v8_schema10_cost_provider import UnsupportedTimelineCost
+from .v8_schema10_inventory import native_segment_inventory
 from .v8_schema10_execution import ProductionSelectionSession, SelectionCostLedger, SelectionCostPolicy, digest_json
 from .v8_schema10_materialization import VariantMaterializationControllerV10, VariantMaterializationRequestV10
 
@@ -50,6 +51,8 @@ class Schema10OnlineExperimentBackend:
         with self.lock:
             if self.pending:
                 raise RuntimeError("finalize the current request before reset")
+            if self.hbm.active_reserved_bytes:
+                raise RuntimeError("cannot reset live or quarantined GPU reservations")
             if not 1 <= capacity <= 16 or global_byte_budget <= 0:
                 raise ValueError("invalid capacity replay budget")
             for adapter in self.adapters.values():
@@ -57,7 +60,7 @@ class Schema10OnlineExperimentBackend:
             if self.store is not None:
                 self.store.close()
             self.store = self.store_factory(capacity, global_byte_budget)
-            if self.store.cpu_bytes + self.store.ssd_bytes != global_byte_budget:
+            if self.store.global_byte_budget != global_byte_budget:
                 raise ValueError("all K runs must retain the exact same global byte budget")
             self.completed, self.finalized_at_ns, self.epoch = {}, {}, -1
             self.poisoned_error = None
@@ -74,13 +77,17 @@ class Schema10OnlineExperimentBackend:
             hbm = deepcopy({k: v for k, v in self.hbm.__dict__.items() if k != "reservations"})
             hbm["reservations"] = {k: asdict(v) for k, v in self.hbm.reservations.items()}
             return {"pool": self.store.snapshot() if retain_backing else self.store.snapshot_descriptor(),
-                    "runtime": {k: v.snapshot() for k, v in self.adapters.items()},
+                    "runtime": {k: v.snapshot(retain=retain_backing) if v.capabilities.get("snapshot_accepts_retention") else v.snapshot()
+                                for k, v in self.adapters.items()},
                     "hbm": hbm, "completed": deepcopy(self.completed), "finalized_at_ns": dict(self.finalized_at_ns),
                     "request_epoch": self.epoch, "generation": self.generation,
                     "provenance": self.provenance, "ssd_page_cache_controlled": False}
 
     def release_snapshot(self, snapshot):
         self.store.release_snapshot(snapshot["pool"])
+        for name, adapter in self.adapters.items():
+            if adapter.capabilities.get("snapshot_accepts_retention"):
+                adapter.release_snapshot(snapshot["runtime"][name])
 
     def snapshot_descriptor(self):
         return self.snapshot(retain_backing=False)
@@ -135,6 +142,8 @@ class Schema10OnlineExperimentBackend:
                 continue
             states.append((row, tensor))
         ledger.observe_shared_interval(f"{request_id}:{sid}:{depth}:state-read", state_read_start, time.perf_counter_ns())
+        if hasattr(context, "selection_backing_tier") and states:
+            context.selection_backing_tier = "pinned_cpu" if all(t.is_pinned() for _, t in states) else "pageable_cpu"
         per_source = current.numel() * 32 + current.shape[0] * 32
         batch_k = min(len(states), max(0, (self.hbm.selector_lease_bytes - per_source) // per_source))
         values, plans = [], {}
@@ -218,7 +227,9 @@ class Schema10OnlineExperimentBackend:
             self._emit("request_started", rid, {"request": request, "dispatch": dispatch, "arrival_ns": arrival_ns,
                                                 "initial_snapshot_sha256": digest_json(initial)})
             try:
-                with adapter.open_request(request, arrival_ns=arrival_ns) as context, ExitStack() as leases:
+                # Native context fences and drops GPU working tensors BEFORE
+                # the outer stack releases physical leases/HBM reservations.
+                with ExitStack() as leases, adapter.open_request(request, arrival_ns=arrival_ns) as context:
                     row, exports = self._execute_context(context, request, dispatch, arrival_ns, started, initial, leases)
                 self._emit("request_completed", rid, row)
                 self.pending = (deepcopy(request), row, exports)
@@ -234,12 +245,15 @@ class Schema10OnlineExperimentBackend:
         context.selector = selector
         context.assert_dispatch(selector.checkpoint_depths)
         segments = context.segments
-        if not segments or set(segments) != {s["segment_id"] for s in request["segments"]}:
+        if set(segments) != {s["segment_id"] for s in request["segments"]}:
             raise ValueError("native request context lost part of the Segment inventory")
-        for sid, segment in segments.items():
-            positions = segment["positions"]
-            if any(p < context.cached_prefix_tokens for p in positions):
-                raise ValueError("native Prefix row entered non-prefix comparison inventory")
+        inventory = native_segment_inventory(segments, prompt_tokens=len(request["token_ids"]),
+                                            cached_prefix_tokens=context.cached_prefix_tokens)
+        context.execution_inventory = inventory
+        segments = {sid: segment for sid, segment in segments.items() if inventory[sid].comparison_eligible}
+        if not segments or getattr(context, "probe_fallback_reason", None):
+            return self._unsupported_dense(context, request, dispatch, arrival_ns, started, initial,
+                reason=getattr(context, "probe_fallback_reason", None) or "no_nonprefix_candidates")
         dense = self.costs.dense_reference(context)
         if dense is None or not math.isfinite(dense) or dense <= 0:
             # Still execute actual dense; no invented reference, selector or cost.
@@ -311,15 +325,20 @@ class Schema10OnlineExperimentBackend:
                                                "reason": "preparation_resource_or_waste_budget_unavailable"})
                         continue
                     try:
-                        size = sum(t.numel() * t.element_size() for pair in layers for t in pair)
+                        size = getattr(layers, "full_kv_bytes", None)
+                        if size is None:
+                            size = sum(t.numel() * t.element_size() for pair in layers for t in pair)
                         reservation = self.hbm.reserve_batch(owner_request_id=rid,
                             rows=((sid, size, HBMReservationKind.WINNER_PREFETCH),))[0]
                     except MemoryError:
                         runtime_events.append({"kind": "dense_fallback", "segment_id": sid, "reason": "hbm_reservation_unavailable"})
                         continue
-                    leases.callback(self.hbm.release, reservation.reservation_id)
-                    # Exception cleanup waits for physical transfers before releasing either lease.
-                    leases.callback(context.synchronize)
+                    def release_after_fence(reservation_id=reservation.reservation_id):
+                        # A failed CUDA fence must not advertise these bytes
+                        # as reusable. Keep the reservation for quarantine.
+                        context.synchronize()
+                        self.hbm.release(reservation_id)
+                    leases.callback(release_after_fence)
                     prepared[sid] = context.prepare_winner(sid, source_id, layers, reservation)
                     runtime_events.append({"kind": "winner_preparation", "segment_id": sid, "source_id": source_id,
                                            "reservation_id": reservation.reservation_id, "full_kv_bytes": size})
@@ -334,18 +353,26 @@ class Schema10OnlineExperimentBackend:
             snapshot = context.planner_snapshot(self.hbm.epoch)
             try:
                 estimator = self.costs.joint_estimator(context)
-                result = FinalCommitPlanner(estimator).plan_ready_subset(inventory_segment_ids=tuple(segments),
+                result = FinalCommitPlanner(estimator).plan_ready_subset(inventory_segment_ids=tuple(inventory),
                     eligible_ready_segment_ids=tuple(ready_boundaries), committed_segment_ids=(),
                     actual_boundary_by_segment=ready_boundaries, actual_sunk_ms=(time.perf_counter_ns() - arrival_ns) / 1e6,
                     dense_reference_total_ms=dense, snapshot=snapshot,
                     current_snapshot=context.planner_snapshot(self.hbm.epoch), union_mask_digest=union_digest)
                 snapshot.assert_current(context.planner_snapshot(self.hbm.epoch))
-                accepted, final_total = result.accepted_ready_segment_ids, result.request_total_ms
                 context.commit_reuse(result)
+                accepted, final_total = result.accepted_ready_segment_ids, result.request_total_ms
                 runtime_events.append({"kind": "final_commit", "decision": asdict(result)})
             except UnsupportedTimelineCost as exc:
                 runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
                     "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None, "reason": str(exc)})
+            except RuntimeError as exc:
+                if str(exc) != "stale Planner snapshot cannot be applied":
+                    raise
+                # No commit has happened: preserve the frozen Source audit and
+                # finish dense instead of applying stale resources/costs.
+                runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
+                    "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None,
+                    "reason": "planner_snapshot_changed_before_commit"})
         else:
             runtime_events.append({"kind": "dense_fallback", "reason": "no_frozen_sources"})
         first = []
@@ -363,19 +390,21 @@ class Schema10OnlineExperimentBackend:
             runtime_events.append({"kind": "dense_fallback", "reason": not_applicable})
         coverage = {"request_id": rid, "request_epoch": epoch, "execution_kind": "online",
             "capacity": self.store.pool.max_variants_per_content,
-            "global_byte_budget": self.store.cpu_bytes + self.store.ssd_bytes,
+            "global_byte_budget": self.store.global_byte_budget,
             "visible_variant_creation_epochs": {v.source_variant_id: self.store.objects[v.source_variant_id].creation_epoch
                                                  for rows in visible.values() for v in rows},
             "compatible_variant_ids": sorted(compatible), "selected_variant_ids": selected,
             "committed_variant_ids": committed, "quality_passed": output.get("quality_passed"),
             "residual_compatibility_observed": not selection_failures,
             "matched_dense_ttft_ms": dense, "actual_ttft_ms": ttft}
-        exports = context.export_exact_dense() if not accepted and output.get("whole_request_origin") == "exact_dense_full_prefill" else {}
+        exports = context.export_exact_dense() if (not accepted and context.cached_prefix_tokens == 0
+            and output.get("whole_request_origin") == "exact_dense_full_prefill") else {}
         row = {**output, "request_id": rid, "arrival_ns": arrival_ns, "service_start_ns": started,
             "queue_ms": (started - arrival_ns) / 1e6, "first_token_ns": first[0], "completion_ns": completion,
             "request_ttft_ms": ttft, "execution_kind": "online_policy", "forced_source": False,
             "selection_events": selection.events, "selection_failures": selection_failures,
             "runtime_events": runtime_events, "coverage_event": coverage,
+            "segment_ownership": {sid: asdict(owner) for sid, owner in inventory.items()},
             "selected_source_variant_ids": selected, "committed_source_variant_ids": committed,
             "final_commit_executed": bool(frozen), "final_commit_not_applicable_reason": not_applicable,
             "final_predicted_request_total_ms": final_total,
@@ -385,17 +414,22 @@ class Schema10OnlineExperimentBackend:
             "execution_disposition": "reuse" if committed else "dense",
             "evidence_origin": context.evidence_origin, "timing_scope": "arrival_to_first_token",
             "ssd_page_cache_controlled": False, "paper_evidence": False, "gpu_runtime_qualified": False}
-        return row, {"tensors": exports, "selection": selection, "context_metadata": context.materialization_metadata()}
+        builders = context.deferred_canonical_builders() if hasattr(context, "deferred_canonical_builders") else {}
+        return row, {"tensors": exports, "selection": selection, "context_metadata": context.materialization_metadata(),
+                     "canonical_builders": builders}
 
-    def _unsupported_dense(self, context, request, dispatch, arrival, started, initial):
+    def _unsupported_dense(self, context, request, dispatch, arrival, started, initial,
+                           reason="matched_dense_cost_unsupported"):
         first = []
         output = context.finish(lambda: first.append(time.perf_counter_ns()))
         if len(first) != 1:
             raise RuntimeError("missing actual first-token endpoint")
-        visible = [v for s in context.segments.values() for v in self._lookup(s, request["request_epoch"])[0]]
+        visible = [v for sid, s in context.segments.items()
+                   if context.execution_inventory[sid].comparison_eligible
+                   for v in self._lookup(s, request["request_epoch"])[0]]
         coverage = {"request_id": request["request_id"], "request_epoch": request["request_epoch"],
             "execution_kind": "online", "capacity": self.store.pool.max_variants_per_content,
-            "global_byte_budget": self.store.cpu_bytes + self.store.ssd_bytes,
+            "global_byte_budget": self.store.global_byte_budget,
             "visible_variant_creation_epochs": {v.source_variant_id: self.store.objects[v.source_variant_id].creation_epoch for v in visible},
             "compatible_variant_ids": [], "selected_variant_ids": [], "committed_variant_ids": [],
             "residual_compatibility_observed": False, "quality_passed": output.get("quality_passed"),
@@ -403,9 +437,10 @@ class Schema10OnlineExperimentBackend:
         row = {**output, "request_id": request["request_id"], "arrival_ns": arrival, "service_start_ns": started,
             "first_token_ns": first[0], "completion_ns": time.perf_counter_ns(), "request_ttft_ms": (first[0] - arrival) / 1e6,
             "queue_ms": (started - arrival) / 1e6, "execution_kind": "online_policy", "forced_source": False,
-            "selection_events": [], "runtime_events": [{"kind": "dense_fallback", "reason": "matched_dense_cost_unsupported"}],
+            "selection_events": [], "runtime_events": [{"kind": "dense_fallback", "reason": reason}],
+            "segment_ownership": {sid: asdict(owner) for sid, owner in context.execution_inventory.items()},
             "selected_source_variant_ids": [], "committed_source_variant_ids": [], "final_commit_executed": False,
-            "final_commit_not_applicable_reason": "matched_dense_cost_unsupported", "quality_passed": output.get("quality_passed"),
+            "final_commit_not_applicable_reason": reason, "quality_passed": output.get("quality_passed"),
             "coverage_event": coverage, "execution_disposition": "dense",
             "matched_dense_ttft_ms": None, "initial_pool_snapshot_sha256": digest_json(initial),
             "dispatch_config": dict(dispatch), "code_commit": self.provenance["code_commit"],
@@ -426,9 +461,15 @@ class Schema10OnlineExperimentBackend:
             selection = exports.get("selection")
             # All lookup/coverage events are already durable before the publication point.
             metadata = exports.get("context_metadata", {})
-            for segment in request["segments"]:
-                self.store.pool.finish_content_lookup(self.provenance["model_signature"], segment["content_key"])
-            for sid, tensors in exports.get("tensors", {}).items():
+            ownership = outcome.get("segment_ownership", {})
+            looked_up_contents = {segment["content_key"] for segment in request["segments"]
+                if not ownership or ownership[segment["segment_id"]]["disposition"] == "NONPREFIX_CANDIDATE"}
+            for content_key in sorted(looked_up_contents):
+                self.store.pool.finish_content_lookup(self.provenance["model_signature"], content_key)
+            builders = exports.get("canonical_builders", {})
+            tensors_by_sid = exports.get("tensors", {})
+            for sid in sorted(set(tensors_by_sid) | set(builders)):
+                tensors = tensors_by_sid.get(sid)
                 decision = selection.decisions.get(sid)
                 if decision is None or decision.materialization_reason is None:
                     continue
@@ -454,6 +495,13 @@ class Schema10OnlineExperimentBackend:
                     continue
                 begin = time.perf_counter_ns()
                 try:
+                    if tensors is None:
+                        tensors = builders[sid]()
+                        if tensors.get("capture_audit", {}).get("origin") != "exact_dense_full_prefill":
+                            raise RuntimeError("independent capture is not exact dense")
+                        self._emit("canonical_build_completed", rid, {"segment_id": sid, **tensors["capture_audit"]})
+                    if tensors.get("source_metadata") is not None:
+                        m = {**m, "source_metadata": tensors["source_metadata"]}
                     replacement = pool.replacement_transaction(self.provenance["model_signature"], content)
                     if replacement.victim_source_variant_id != admission.replacement_source_variant_id:
                         raise RuntimeError("admitted materialization victim changed before publication")
@@ -473,7 +521,7 @@ class Schema10OnlineExperimentBackend:
             for source_id in outcome.get("selected_source_variant_ids", ()):
                 if source_id in self.store.objects:
                     try:
-                        self.store.promote_request_use(source_id)
+                        self.store.promote_request_use(source_id, record_request_use=False)
                     except MemoryError:
                         self._emit("promotion_deferred", rid, {"source_id": source_id, "reason": "protected_capacity"})
             self.completed[rid] = digest_json(outcome)

@@ -112,6 +112,14 @@ def aggregate_online_events(path, *, expected_file_sha256, binding, fit_rows, va
                     raise ValueError("bad raw selector event digest")
             if not value.get("runtime_events"):
                 raise ValueError("missing runtime events")
+            if value.get("evidence_origin") == "real_cuda_execution":
+                from .v8_schema10_qa import validate_answer_evidence
+                qa = value.get("qa_evidence")
+                if qa is None:
+                    raise ValueError("real runtime evidence lacks raw QA")
+                validate_answer_evidence(qa, request=started[rid]["request"])
+                if qa["token_ids"] != value.get("token_ids") or qa["quality_passed"] != value.get("quality_passed"):
+                    raise ValueError("QA evidence differs from runtime output")
             from .v8_schema10_experiments import _online
             _online(value)
             coverage = value.get("coverage_event", {})
