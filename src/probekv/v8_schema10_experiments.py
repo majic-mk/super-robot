@@ -32,9 +32,21 @@ def _online(outcome: Mapping[str, Any]) -> None:
         raise ValueError("experiment requires actual online policy execution")
     dense_abstention = (outcome.get("final_commit_not_applicable_reason") == "no_frozen_sources"
                         and outcome.get("selected_source_variant_ids") == [])
-    if outcome.get("final_commit_executed") is not True and not dense_abstention:
+    cost_unsupported_dense = (
+        outcome.get("final_commit_not_applicable_reason") in {"matched_dense_cost_unsupported", "selection_cost_unsupported"}
+        and outcome.get("selected_source_variant_ids") == []
+        and outcome.get("committed_source_variant_ids") == []
+        and any(e.get("kind") == "dense_fallback" and e.get("reason") == outcome.get("final_commit_not_applicable_reason")
+                for e in outcome.get("runtime_events", ())))
+    freeze_failures = {e.get("source_id") for e in outcome.get("runtime_events", ()) if e.get("kind") == "freeze_failed"}
+    freeze_failed_dense = (
+        outcome.get("final_commit_not_applicable_reason") == "all_source_freezes_failed"
+        and bool(outcome.get("selected_source_variant_ids"))
+        and set(outcome["selected_source_variant_ids"]) <= freeze_failures
+        and outcome.get("committed_source_variant_ids") == [])
+    if outcome.get("final_commit_executed") is not True and not (dense_abstention or cost_unsupported_dense or freeze_failed_dense):
         raise ValueError("actual FinalCommit evidence is missing")
-    if not outcome.get("selection_events"):
+    if not outcome.get("selection_events") and not cost_unsupported_dense:
         raise ValueError("actual Source decision events are missing")
     if not outcome.get("runtime_events"):
         raise ValueError("actual runtime event records are missing")
@@ -65,7 +77,8 @@ def run_gate1_pairs(backend: ExperimentBackend, requests: Sequence[Mapping[str, 
         try:
             for mode in modes:
                 backend.restore(snapshot)
-                if digest_json(backend.snapshot()) != snapshot_sha:
+                descriptor = backend.snapshot_descriptor() if hasattr(backend, "snapshot_descriptor") else backend.snapshot()
+                if digest_json(descriptor) != snapshot_sha:
                     raise RuntimeError("backend did not restore the complete initial pool")
                 configuration = {**dispatch, "gate1_mode": mode}
                 row = dict(backend.execute(request, configuration, arrival_ns=time.perf_counter_ns()))
@@ -80,6 +93,10 @@ def run_gate1_pairs(backend: ExperimentBackend, requests: Sequence[Mapping[str, 
                             "arms": arms, "metrics": metrics, "paper_evidence": False})
         finally:
             backend.restore(snapshot)
+            # Retaining every historical backing snapshot would defeat global
+            # byte budgets and SSD eviction during long traces.
+            if hasattr(backend, "release_snapshot"):
+                backend.release_snapshot(snapshot)
     return results
 
 
@@ -220,7 +237,9 @@ def run_serving_trace(backend: ExperimentBackend, requests: Sequence[Mapping[str
         if abs(row["request_ttft_ms"] - (row["first_token_ns"] - arrival) / 1e6) > 1e-6:
             raise ValueError("reported TTFT excludes client queue/service time")
         backend.finalize_request(q, row)
-        return {**row, "failed": False}
+        service_end = (backend.service_completion_ns(q["request_id"])
+                       if hasattr(backend, "service_completion_ns") else row["completion_ns"])
+        return {**row, "service_completion_ns": service_end, "failed": False}
     def recorded_execute(q: Mapping[str, Any], arrival: int) -> dict[str, Any]:
         try:
             return execute(q, arrival)
@@ -238,7 +257,7 @@ def run_serving_trace(backend: ExperimentBackend, requests: Sequence[Mapping[str
             # Timestamp is scheduled arrival, not worker start: queuing counts.
             futures.append(workers.submit(recorded_execute, request, arrival))
         rows = [future.result() for future in as_completed(futures)]
-    elapsed = (max(row["completion_ns"] for row in rows) - start) / 1e9
+    elapsed = (max(row.get("service_completion_ns", row["completion_ns"]) for row in rows) - start) / 1e9
     successes = [row for row in rows if not row["failed"]]
     good = sum(row["request_ttft_ms"] <= slo_ttft_ms and row.get("quality_passed") is True for row in successes)
     from .v8_schema10_profile_analysis import linear_quantile

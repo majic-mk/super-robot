@@ -56,15 +56,17 @@ the policy is also bound into the immutable measurement and bundle hashes.
 
 ## Items still required, in order
 
-1. Bind the complete Source Pool lookup/materialization/LRU lifecycle and
-   measured joint RuntimeCostProfile provider to the experiment backend.
-   Current experiment harnesses enforce the backend contract but are not a
-   substitute for that deployment adapter. A fixture's prebuilt historical
-   Sources are not an operational dynamic-pool experiment.
+1. The local single-request controller now binds physical tensor/file storage,
+   transactional publication/LRU, independent SelectionState reads and exact-
+   support measured joint costs. Its CPU integration tests use a deliberately
+   small test runtime, **not vLLM or a real language model**. Finish native
+   FAST/legacy request contexts, Prefix shadow binding, GPU hot-replica
+   registration and bounded SSD staging before claiming a real deployed backend.
 2. Validate FAST live selection and preserved legacy scheduling separately on
    the patched engine. The new FAST bridge deliberately refuses deep runtime
    checkpoints; a passing CPU selector replay is not a legacy GPU certificate.
-3. Finish fit/validation-separated production event aggregation. Collect actual
+3. A hash-chained append-only event collector and partition/hash/timestamp
+   validator now exist. Finish real QA and GPU cost-collector integration. Collect actual
    ready/load/admission timing, task quality and per-K causal runs before
    freezing Profiles. Keep the deep residual-score diagnostic distinct from
    the measured quality/cost Oracle.
@@ -72,7 +74,9 @@ the policy is also bound into the immutable measurement and bundle hashes.
    fixture executor owns shared mutable KV/sampling state and must not be made
    concurrent merely by putting it behind a thread pool. It should advertise
    capacity one until isolation/scheduling is implemented and tested.
-5. Only then freeze a new SHA and run new GPU correctness/qualification outputs,
+5. Local checkpoint SHAs can be pushed before runtime completion, but remain
+   explicitly not GPU-ready. Only after the native integration and instance
+   confirmation run new GPU correctness/qualification outputs,
    followed by the preregistered matched-quality baseline and H1-H5 experiments.
    Neither past diagnosis nor this local test run proves Q1-level benefit.
 
@@ -104,3 +108,6 @@ The tests cover replay policy/hash binding, Source16 selection from live K,
 budget-mode separation, complete-inventory FinalCommit partial rejection,
 stale snapshots/non-finite costs, real A/B arm invocation, independent K pools,
 QA-constrained Oracle decisions, queue timing and retained serving failures.
+
+The current single-request implementation slice and its precise remaining
+work are documented in [the backend checkpoint](PROBEKV_SCHEMA10_SINGLE_REQUEST_BACKEND.md).

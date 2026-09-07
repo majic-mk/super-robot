@@ -200,7 +200,8 @@ def summarize_measured_coverage(
         n = len(rows)
         curves.append({
             "k": capacity, "requests": n, "evidence_kind": "online_event_derived",
-            "residual_compatible_coverage": compatible / n,
+            "residual_compatible_coverage": (compatible / n if all(
+                r.get("residual_compatibility_observed", True) for r in rows) else None),
             "selected_coverage": selected / n, "commit_coverage": committed / n,
             "qualified_positive_saving_coverage": useful / n,
         })

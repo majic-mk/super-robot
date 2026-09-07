@@ -240,7 +240,9 @@ class V7SourcePool:
                 and not allow_implicit_replacement
             ):
                 raise RuntimeError("Source Variant capacity changed after admission")
-            victim = self._lowest_value_variant(siblings)
+            # Planning and committing must use the SAME policy. Subclasses may
+            # implement LRU without the commit silently reverting to value.
+            victim = self._replacement_victim(siblings)
             if (
                 expected_replacement_source_variant_id is not None
                 and victim.source_variant_id
@@ -289,7 +291,13 @@ class V7SourcePool:
         )
         if len(siblings) < self.max_variants_per_content:
             return None
-        return self._lowest_value_variant(siblings)
+        return self._replacement_victim(siblings)
+
+    def _replacement_victim(
+        self, variants: Iterable[StoredSourceVariant]
+    ) -> StoredSourceVariant:
+        """Historical v7 default; schema10 overrides only this policy hook."""
+        return self._lowest_value_variant(variants)
 
     def register_artifact(
         self,
