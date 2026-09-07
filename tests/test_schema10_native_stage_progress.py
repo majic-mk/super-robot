@@ -14,7 +14,7 @@ from probekv.v8_schema10_event_log import OnlineEventLog
 from probekv.v8_schema10_native_adapter import NativeRequestContext, validate_native_sampling_request
 from probekv.v8_schema10_native_factory import NativeExperimentBackend
 from probekv.v8_schema10_cost_provider import validate_measurement_provenance
-from probekv.v8_schema10_native_preflight import isolated_native_preflight
+from probekv.v8_schema10_native_preflight import isolated_native_preflight, run_r1_equivalence_sentinel
 
 
 class MeasurementEndpointTests(unittest.TestCase):
@@ -209,6 +209,23 @@ class NativeFinishHarness(unittest.TestCase):
 
 
 class PreflightResourceTests(unittest.TestCase):
+    def test_r1_requires_real_callbacks_and_raw_traces(self):
+        with self.assertRaises(TypeError):
+            run_r1_equivalence_sentinel(request={}, dense_executor=None, reuse_executor=lambda _: {})
+        def row():
+            return {"token_ids": [1, 2], "logits": [[1.0] * 32],
+                    "origin": "real_cuda_execution", "fake_timing": False}
+        result = run_r1_equivalence_sentinel(request={}, dense_executor=lambda _: row(),
+            reuse_executor=lambda _: row())
+        self.assertEqual(result["dense_token_ids"], result["reuse_token_ids"])
+        self.assertLessEqual(result["logit_relative_l2"], 1e-4)
+
+    def test_r1_rejects_claim_without_raw_logits(self):
+        def row():
+            return {"token_ids": [1], "origin": "real_cuda_execution", "fake_timing": False}
+        with self.assertRaises(ValueError):
+            run_r1_equivalence_sentinel(request={}, dense_executor=lambda _: row(), reuse_executor=lambda _: row())
+
     def test_cpu_cannot_produce_real_preflight_rows(self):
         adapter = NS(active=None, hbm=NS(active_reserved_bytes=0), torch=torch)
         if torch.cuda.is_available():

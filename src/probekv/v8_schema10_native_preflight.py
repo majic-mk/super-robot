@@ -146,3 +146,51 @@ def run_native_prefix_sentinel(adapter, *, warm_request, request):
                 "active_positions_after_prefix": active, "warm_execution": warm_output,
                 "execution": output, "combined_r1_sentinel_passed": False}
         return _seal("native_prefix", row, adapter, request, started)
+
+
+def run_r1_equivalence_sentinel(*, request, dense_executor, reuse_executor,
+                                expected_logit_tokens=32, max_relative_l2=1e-4):
+    """Compare two real executor observations at the r=1 endpoint.
+
+    The executors are deliberately injected by the CUDA runner: this keeps the
+    preflight module independent of a particular vLLM scheduler while making
+    it impossible to pass by supplying only a token-id equality flag.
+    """
+    if not callable(dense_executor) or not callable(reuse_executor):
+        raise TypeError("r=1 sentinel requires two real executor callbacks")
+    if type(expected_logit_tokens) is not int or expected_logit_tokens < 32:
+        raise ValueError("r=1 logit coverage must contain at least 32 tokens")
+    started = time.perf_counter_ns()
+    dense = dense_executor(request)
+    reuse = reuse_executor(request)
+    for name, row in (("dense", dense), ("reuse", reuse)):
+        if (not isinstance(row, dict) or row.get("origin") != "real_cuda_execution"
+                or row.get("fake_timing") is not False):
+            raise ValueError("r=1 executor did not return real CUDA evidence: " + name)
+    dense_ids, reuse_ids = dense.get("token_ids"), reuse.get("token_ids")
+    if not isinstance(dense_ids, list) or dense_ids != reuse_ids:
+        raise ValueError("r=1 generated token IDs differ")
+    dense_logits, reuse_logits = dense.get("logits"), reuse.get("logits")
+    if dense_logits is None or reuse_logits is None or len(dense_logits) < expected_logit_tokens:
+        raise ValueError("r=1 executor lacks the preregistered teacher-forced logit trace")
+    if len(dense_logits) != len(reuse_logits):
+        raise ValueError("r=1 logit traces have different lengths")
+    # The CUDA runner serializes finite CPU float rows after synchronization.
+    import torch
+    left, right = torch.as_tensor(dense_logits, dtype=torch.float32), torch.as_tensor(reuse_logits, dtype=torch.float32)
+    if left.shape != right.shape or not bool(torch.isfinite(left).all()) or not bool(torch.isfinite(right).all()):
+        raise ValueError("r=1 logit traces are not finite and shape-compatible")
+    denom = left.norm().clamp_min(1e-12)
+    relative = float((left - right).norm() / denom)
+    if not math.isfinite(relative) or relative > max_relative_l2:
+        raise ValueError("r=1 logit relative-L2 exceeds the fixed sentinel bound")
+    row = {"dense_token_ids": dense_ids, "reuse_token_ids": reuse_ids,
+        "logit_relative_l2": relative, "logit_token_count": len(dense_logits),
+        "dense_first_token_ns": dense.get("first_token_ns"), "reuse_first_token_ns": reuse.get("first_token_ns"),
+        "dense_observation_sha256": digest_json(dense), "reuse_observation_sha256": digest_json(reuse),
+        "origin": "real_cuda_execution", "fake_timing": False,
+        "diagnostic_total_host_ms": (time.perf_counter_ns() - started) / 1e6,
+        "production_admission_applicable": False, "paper_evidence": False}
+    validate_correctness_observation("r1", row)
+    row["raw_observation_sha256"] = digest_json(row)
+    return row
