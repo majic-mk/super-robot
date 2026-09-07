@@ -213,7 +213,7 @@ class PreflightResourceTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             run_r1_equivalence_sentinel(request={}, dense_executor=None, reuse_executor=lambda _: {})
         def row():
-            return {"token_ids": [1, 2], "logits": [[1.0] * 32],
+            return {"token_ids": [1, 2], "logits": [[1.0] * 32 for _ in range(32)],
                     "origin": "real_cuda_execution", "fake_timing": False}
         result = run_r1_equivalence_sentinel(request={}, dense_executor=lambda _: row(),
             reuse_executor=lambda _: row())
