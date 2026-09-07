@@ -94,7 +94,7 @@ def main():
                               "is_frozen_server_environment": False},
         "models": [{"model_id": s.model_id, "revision": s.revision, "legacy_checkpoints": s.checkpoints,
                     "tokenizer_assets_sha256": None, "snapshot_audited": False} for s in SCHEMA6_MODEL_SPECS.values()],
-        "pending": ["complete combined Prefix+r1/mask operations and staged cost dispatcher; isolated Prefix/K-hook operators now implemented but not GPU-tested",
+        "pending": ["run combined Prefix+r1/mask observations on actual CUDA; Prefix/K-hook operators and the strict native operation dispatcher are implemented but not GPU-tested",
                     "full native-context CPU harness and failure-path integration audit before declaring source ready",
                     "new-SHA development trace manifests and actual tokenizer/snapshot audits",
                     "instance and budget confirmation before GPU execution"],
