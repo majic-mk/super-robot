@@ -196,9 +196,15 @@ def main():
         expected_tier = "pinned_cpu" if args.backing_tier == "cpu" else "ssd"
         if obj.tier.value != expected_tier:
             raise RuntimeError("diagnostic Source did not enter preregistered backing tier")
-        r1 = run_combined_native_r1(backend, request=requests["target"], warm_request=requests["warm"],
+        # r=1 correctness keeps the eager transfer path and full integrity
+        # contract. Windowed transfer is enabled only for the later overlap
+        # cost diagnostic, never for the correctness prerequisite.
+        correctness_target = dict(requests["target"])
+        correctness_target["prefetch_window"] = 0
+        r1 = run_combined_native_r1(backend, request=correctness_target, warm_request=requests["warm"],
             source_id=source.source_variant_id, segment_id="C", teacher_token_ids=requests["teacher_token_ids"],
             output_dir=root / "combined-r1", boundary=args.reuse_boundary)
+        requests["target"]["prefetch_window"] = int(args.prefetch_window)
         loader = adapter.loader
         if args.cost_probe:
             cost_root = root / "cost-probe"
