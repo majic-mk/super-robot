@@ -7,7 +7,7 @@ import unittest
 from probekv.v8_schema10_contracts import AbsoluteResidualThreshold
 from probekv.v8_schema9_contracts import AbsoluteResidualThreshold as OldThreshold
 from probekv.v8_schema10_native_factory import verified_model_asset_path
-from probekv.v8_schema10_native_correctness import run_combined_native_r1
+from probekv.v8_schema10_native_correctness import execute_fixed_source_arm, run_combined_native_r1
 
 
 class ConcreteCorrectnessTests(unittest.TestCase):
@@ -36,6 +36,13 @@ class ConcreteCorrectnessTests(unittest.TestCase):
                 run_combined_native_r1(None, request={}, warm_request={}, source_id="s", segment_id="c",
                                       teacher_token_ids=[1] * 30, output_dir=output)
             self.assertFalse(output.exists())
+
+    def test_fixed_source_cost_arm_keeps_repair_and_integrity_modes_explicit(self):
+        for ratio in (0, -0.1, 1.1, True):
+            with self.assertRaises(ValueError):
+                execute_fixed_source_arm(None, request={}, repair_ratio=ratio)
+        with self.assertRaisesRegex(ValueError, "meaningful only"):
+            execute_fixed_source_arm(None, request={}, repair_ratio=.15)
 
 
 if __name__ == "__main__":

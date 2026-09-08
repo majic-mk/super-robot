@@ -18,7 +18,7 @@ from probekv.v8_schema10_event_log import atomic_json
 from probekv.v8_schema10_storage import file_digest
 from probekv.v8_schema10_native_factory import create_native_measurement_backend
 from probekv.v8_schema10_native_preflight import run_native_prefix_sentinel, run_native_k_hook_sentinel
-from probekv.v8_schema10_native_correctness import run_combined_native_r1
+from probekv.v8_schema10_native_correctness import execute_fixed_source_arm, run_combined_native_r1
 
 
 RUNTIME_FILES = ("model_executor/models/llama.py", "model_executor/models/qwen2.py",
@@ -65,6 +65,8 @@ def main():
     p.add_argument("--layer-controls", action="store_true", help="extra read-only Prefix numerical diagnosis")
     p.add_argument("--backing-tier", choices=("cpu", "ssd"), default="cpu")
     p.add_argument("--reuse-boundary", type=int, default=2)
+    p.add_argument("--cost-probe", action="store_true",
+                   help="also collect matched-Prefix dense/fixed15 online-immutable landmarks")
     args = p.parse_args()
     root = Path(args.output).resolve()
     if root.exists():
@@ -99,7 +101,8 @@ def main():
                         "prefill_attention_kernel": "cutlass_mha", "fused_norm_max_rows": 128}
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
-                           "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary})
+                           "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
+                           "cost_probe": args.cost_probe})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
@@ -126,6 +129,7 @@ def main():
     manifest = {"protocol_version": 8, "schema_version": 10, "stage": "native_correctness_diagnostic",
         "binding": binding, "native_runtime": runtime, "diagnostic_requests": requests,
         "layer_controls": args.layer_controls,
+        "cost_probe": args.cost_probe,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
     manifest["manifest_sha256"] = digest_json(manifest)
@@ -176,6 +180,33 @@ def main():
             source_id=source.source_variant_id, segment_id="C", teacher_token_ids=requests["teacher_token_ids"],
             output_dir=root / "combined-r1", boundary=args.reuse_boundary)
         loader = adapter.loader
+        if args.cost_probe:
+            cost_root = root / "cost-probe"
+            cost_root.mkdir()
+            loader.integrity_mode = "online_immutable"
+            dense_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                warm_request=requests["warm"], diagnostic_completed_depth=args.reuse_boundary - 1,
+                boundary=args.reuse_boundary, verify_full_digests=False)
+            source_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
+                boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False)
+            if (source_cost["integrity_verification_mode"] != "online_immutable"
+                    or any(source_cost[k] is not None for k in (
+                        "source_digest_before", "destination_digest", "source_digest_after"))):
+                raise RuntimeError("cost probe performed per-request full-KV hashing")
+            for name, row in (("dense_prefix", dense_cost), ("fixed15_source", source_cost)):
+                row["raw_observation_sha256"] = digest_json(row)
+                atomic_json(cost_root / (name + ".json"), row)
+            atomic_json(cost_root / "summary.json", {
+                "origin": "real_cuda_execution", "fake_timing": False,
+                "timing_scope": "matched_prefix_completed_depth_to_first_token",
+                "dense_boundary_to_first_token_ms": dense_cost["boundary_to_first_token_ms"],
+                "fixed15_boundary_to_first_token_ms": source_cost["boundary_to_first_token_ms"],
+                "fixed15_ready_to_first_token_ms": source_cost["ready_to_first_token_ms"],
+                "winner_preparation_ms": source_cost["winner_preparation_ms"],
+                "repair_check_ms": source_cost["repair_check_ms"],
+                "request_full_kv_digest_performed": False,
+                "formal_profile_frozen": False, "paper_evidence": False})
         if (backend.hbm.active_reserved_bytes or adapter.active is not None
                 or any(slot.leased or slot.completion is not None and not slot.completion.query()
                        for slot in loader.pool.slots)):
@@ -191,6 +222,7 @@ def main():
             "paper_evidence": False})
         atomic_json(root / "result.json", {"native_prefix_k_hook_r1_passed": True,
             "native_cfo_eager_streaming_passed": True,
+            "matched_prefix_cost_probe_passed": bool(args.cost_probe),
             "native_transfer_path": expected_path,
             "r1_observation_sha256": r1["raw_observation_sha256"], "gpu_runtime_qualified": False,
             "online_trace_execution_allowed": False, "paper_evidence": False})

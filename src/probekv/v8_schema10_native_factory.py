@@ -81,7 +81,13 @@ def verified_model_asset_path(model_path, relative):
     allowed = [root]
     if root.parent.name == "snapshots":
         allowed.append((root.parent.parent / "blobs").resolve())
-    if not any(resolved.is_relative_to(base) for base in allowed) or not resolved.is_file():
+    def under(path, base):
+        try:
+            path.relative_to(base)
+            return True
+        except ValueError:
+            return False
+    if not any(under(resolved, base) for base in allowed) or not resolved.is_file():
         raise ValueError("model asset escapes snapshot and same-repository HF blobs")
     return resolved
 
@@ -97,7 +103,12 @@ def verify_installed_runtime_sources(runtime, vllm_root):
     root = Path(vllm_root).resolve()
     for relative, sha in files.items():
         path = (root / relative).resolve()
-        if (not path.is_relative_to(root) or not re.fullmatch("[0-9a-f]{64}", sha)
+        try:
+            path.relative_to(root)
+            contained = True
+        except ValueError:
+            contained = False
+        if (not contained or not re.fullmatch("[0-9a-f]{64}", sha)
                 or file_digest(path) != sha):
             raise ValueError("installed patched runtime source differs: " + relative)
 

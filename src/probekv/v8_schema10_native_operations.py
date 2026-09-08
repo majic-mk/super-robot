@@ -5,7 +5,7 @@ native context and must return a real first-token endpoint for request-cost
 operations; absent support is an error, not a zero-cost cell.
 """
 from dataclasses import dataclass, field
-from typing import Callable, Mapping
+from typing import Callable, List, Mapping
 
 from .v8_schema10_cost_collection import CudaCostCollector
 from .v8_schema10_execution import digest_json
@@ -37,7 +37,7 @@ class RegisteredOperation:
 class NativeMeasurementSession:
     """Run an immutable operation list and fail closed on missing cells."""
     dispatcher: "NativeOperationDispatcher"
-    operations: list[RegisteredOperation] = field(default_factory=list)
+    operations: List[RegisteredOperation] = field(default_factory=list)
 
     def register(self, operation: RegisteredOperation):
         if not isinstance(operation, RegisteredOperation):
