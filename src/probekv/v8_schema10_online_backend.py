@@ -230,6 +230,7 @@ class Schema10OnlineExperimentBackend:
                 # Native context fences and drops GPU working tensors BEFORE
                 # the outer stack releases physical leases/HBM reservations.
                 with ExitStack() as leases, adapter.open_request(request, arrival_ns=arrival_ns) as context:
+                    context.online_context_opened_ns = time.perf_counter_ns()
                     row, exports = self._execute_context(context, request, dispatch, arrival_ns, started, initial, leases)
                 self._emit("request_completed", rid, row)
                 self.pending = (deepcopy(request), row, exports)
@@ -347,6 +348,10 @@ class Schema10OnlineExperimentBackend:
         context.finish_selection(frozen, prepared)
         # Adapter provides actual winner repair supports/ready boundaries, not selector trim rows.
         ready_boundaries, union_digest = context.ready_for_final_commit(prepared)
+        runtime_events.append({"kind": "online_timing_landmarks", "arrival_ns": arrival_ns,
+            "context_opened_ns": getattr(context, "online_context_opened_ns", None),
+            "selection_closed_ns": time.perf_counter_ns(),
+            "selection_intervals": list(ledger.intervals) if hasattr(ledger, "intervals") else None})
         accepted = ()
         final_total = None
         if frozen:

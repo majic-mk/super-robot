@@ -68,6 +68,8 @@ def build_cost_table(correctness_root, output_path):
         raise ValueError("r=1 evidence no longer passes")
     dense = _read_signed(root / "cost-probe" / "dense_prefix.json")
     source = _read_signed(root / "cost-probe" / "fixed15_source.json")
+    all_ready = _read_signed(root / "cost-probe" / "fixed15_all_ready.json")
+    prepared_dense = _read_signed(root / "cost-probe" / "prepared_dense.json")
     if (dense.get("cached_prefix_tokens") != source.get("cached_prefix_tokens")
             or source.get("diagnostic_repair_ratio") != .15
             or source.get("integrity_verification_mode") != "online_immutable"):
@@ -148,13 +150,35 @@ def build_cost_table(correctness_root, output_path):
         "timing_scope": "boundary_to_first_token"}).query()
     joints = [
         _row("joint_future", dense_joint, provenance, dense["boundary_to_first_token_ms"], dense_future,
-             joint_future_wall_ms_samples=[dense["boundary_to_first_token_ms"]]),
-        _row("joint_future", reuse_joint, provenance, source["ready_to_first_token_ms"], ready_future,
-             joint_future_wall_ms_samples=[source["ready_to_first_token_ms"]])]
+             joint_future_wall_ms_samples=[dense["boundary_to_first_token_ms"]])]
+    for observation, commit in ((all_ready, True), (prepared_dense, False)):
+        if (observation.get("diagnostic_wait_all_source_layers") is not True
+                or observation.get("diagnostic_commit_source") is not commit
+                or observation.get("winner_ready_layers") != list(range(1, spec.num_layers + 1))
+                or observation.get("winner_copy_in_flight_at_commit_check") is not False
+                or observation.get("cached_prefix_tokens") != prefix
+                or observation.get("request_tokens_sha256") != dense.get("request_tokens_sha256")
+                or observation.get("sampling_signature") != identity["sampling"]
+                or observation.get("integrity_verification_mode") != "online_immutable"):
+            raise ValueError("all-ready cost evidence does not match its actual execution")
+        query = deepcopy(reuse_joint)
+        segment_query = query["geometry"]["segments"][0]
+        segment_query["physical"].update(ready_layers=observation["winner_ready_layers"], copy_in_flight=False)
+        if not commit:
+            segment_query.update(execution="dense", boundary=None)
+        query["geometry"]["layer_active_positions"] = {
+            str(row["layer"]): row["expected_positions"] for row in observation["layer_rows"]
+            if row["layer"] > depth}
+        if set(query["geometry"]["layer_active_positions"]) != set(dense_masks):
+            raise ValueError("all-ready cost evidence is missing future execution layers")
+        interval = _interval(observation["winner_source_ready_ns"], observation["first_token_ns"],
+                             observation["ready_to_first_token_cuda_ms"], "ready_to_first_token")
+        joints.append(_row("joint_future", query, provenance, observation["ready_to_first_token_ms"],
+            interval, joint_future_wall_ms_samples=[observation["ready_to_first_token_ms"]]))
     payload = {"key_contract": EXECUTION_SHAPE_KEY, "provenance": provenance,
                "formal_profile_frozen": False, "rows": primitives, "joint_rows": joints,
                "source_correctness_manifest_sha256": manifest["manifest_sha256"],
-               "raw_observations_sha256": digest_json([dense, source]),
+               "raw_observations_sha256": digest_json([dense, source, all_ready, prepared_dense]),
                "paper_evidence": False}
     atomic_json(output_path, payload)
     return manifest, payload
@@ -217,7 +241,7 @@ def main():
     atomic_json(output / "joint_query_audit.json", backend.costs.joint_query_audit)
     closed = bool(outcome.get("committed_source_variant_ids"))
     summary = {"code_commit": code, "source_variant_id": source.source_variant_id,
-               "runtime_correctness_prerequisite_passed": True,
+               "prefix_khook_r1_prerequisite_passed": True,
                "online_closed_loop_passed": closed,
                "execution_disposition": outcome.get("execution_disposition"),
                "actual_ttft_ms": outcome.get("request_ttft_ms"),

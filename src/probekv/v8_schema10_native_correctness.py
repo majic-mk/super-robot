@@ -19,13 +19,16 @@ from .v8_schema6_hbm import HBMReservationKind
 def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=None,
                              boundary=2, teacher_token_ids=None, warm_request=None,
                              diagnostic_completed_depth=0, repair_ratio=1.0,
-                             verify_full_digests=True):
+                             verify_full_digests=True, wait_all_source_layers=False,
+                             commit_source=True):
     """Actual native request action; the forced action is diagnostic only."""
     import torch
     if isinstance(repair_ratio, bool) or not isinstance(repair_ratio, (int, float)) or not 0 < repair_ratio <= 1:
         raise ValueError("diagnostic repair ratio must be in (0, 1]")
     if source_id is None and repair_ratio != 1.0:
         raise ValueError("repair ratio is meaningful only for a fixed Source arm")
+    if source_id is None and (wait_all_source_layers or not commit_source):
+        raise ValueError("preparation controls require a fixed Source")
     adapter = backend.adapters["legacy_multicheckpoint"]
     if adapter.active or backend.pending or backend.hbm.active_reserved_bytes:
         raise RuntimeError("correctness arm requires a quiescent backend")
@@ -85,6 +88,11 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     ticket = context.prepare_winner(segment_id, source_id, layers, reservation)
                     context.finish_selection({segment_id: source_id}, {segment_id: ticket})
                     ready, _ = context.ready_for_final_commit({segment_id: ticket})
+                    if wait_all_source_layers:
+                        # A separate measured cell, not a relabelled streaming
+                        # sample. The wait is part of preparation/sunk TTFT.
+                        for event in ticket.layer_events.values():
+                            event.synchronize()
                     source_ready_ns = time.perf_counter_ns()
                     cuda_source_ready.record()
                     winner_ready_layers = sorted(layer for layer, event in ticket.layer_events.items()
@@ -98,13 +106,14 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                         raise RuntimeError("fixed diagnostic repair support has wrong rows")
                     if repair_ratio == 1.0 and tuple(support) != tuple(descriptor["positions"]):
                         raise RuntimeError("r=1 did not retain every Segment row")
-                    context.engine.commit_ready_segment(segment_id=segment_id, boundary=boundary,
-                        segment_positions=descriptor["positions"], repair_positions=support,
-                        scheduler_boundary=boundary)
-                    context.committed[segment_id] = boundary
-                    backend.hbm.promote(reservation.reservation_id,
-                        expected=HBMReservationKind.WINNER_PREFETCH,
-                        target=HBMReservationKind.COMMITTED_EXECUTION)
+                    if commit_source:
+                        context.engine.commit_ready_segment(segment_id=segment_id, boundary=boundary,
+                            segment_positions=descriptor["positions"], repair_positions=support,
+                            scheduler_boundary=boundary)
+                        context.committed[segment_id] = boundary
+                        backend.hbm.promote(reservation.reservation_id,
+                            expected=HBMReservationKind.WINNER_PREFETCH,
+                            target=HBMReservationKind.COMMITTED_EXECUTION)
                 def mark_first_token():
                     cuda_first_token.record()
                     first.append(time.perf_counter_ns())
@@ -112,9 +121,9 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                 context.synchronize()
                 if len(first) != 1:
                     raise RuntimeError("native action needs exactly one first-token event")
-                if source_id is not None and output["whole_request_origin"] != "selective_reuse":
+                if source_id is not None and commit_source and output["whole_request_origin"] != "selective_reuse":
                     raise RuntimeError("r1 Source arm silently executed dense")
-                if source_id is None:
+                if source_id is None or not commit_source:
                     expected = "native_prefix_dense_remaining" if context.cached_prefix_tokens else "exact_dense_full_prefill"
                     if output["whole_request_origin"] != expected:
                         raise RuntimeError("reference/control arm changed its prefill origin")
@@ -165,6 +174,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     ),
                     "selection_boundary_ready_ns": boundary_ready_ns,
                     "winner_source_ready_ns": source_ready_ns,
+                    "diagnostic_wait_all_source_layers": wait_all_source_layers,
+                    "diagnostic_commit_source": commit_source,
                     "winner_ready_layers": winner_ready_layers,
                     "winner_copy_in_flight_at_commit_check": bool(
                         ticket is not None and len(winner_ready_layers) < len(ticket.layer_events)

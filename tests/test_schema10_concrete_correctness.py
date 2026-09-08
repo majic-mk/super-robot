@@ -44,6 +44,10 @@ class ConcreteCorrectnessTests(unittest.TestCase):
                 execute_fixed_source_arm(None, request={}, repair_ratio=ratio)
         with self.assertRaisesRegex(ValueError, "meaningful only"):
             execute_fixed_source_arm(None, request={}, repair_ratio=.15)
+        with self.assertRaisesRegex(ValueError, "preparation controls require"):
+            execute_fixed_source_arm(None, request={}, wait_all_source_layers=True)
+        with self.assertRaisesRegex(ValueError, "preparation controls require"):
+            execute_fixed_source_arm(None, request={}, commit_source=False)
 
     def test_selective_absolute_mask_uses_repair_support_not_r1_rows(self):
         row = {"origin": "real_cuda_execution", "fake_timing": False,

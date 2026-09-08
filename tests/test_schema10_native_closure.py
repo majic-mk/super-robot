@@ -240,6 +240,12 @@ class StableCostTests(unittest.TestCase):
         self.assertEqual(estimator.lookup(unsupported).status, "UNSUPPORTED")
         self.assertEqual(audit[-1]["query"], estimator.query(unsupported))
         self.assertEqual(audit[-1]["reason"], "no_exact_joint_measurement")
+        # Copy progress remains a measured dimension: neither faster nor
+        # slower readiness is silently treated as the same measured cell.
+        for layers in ([1, 2, 3], [2]):
+            estimator.shape = replace(shape, source_state_by_segment={
+                "s": {**shape.source_state_by_segment["s"], "ready_layers": layers}})
+            self.assertEqual(estimator.lookup(ctx).status, "UNSUPPORTED")
 
 
 class QAClosureTests(unittest.TestCase):

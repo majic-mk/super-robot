@@ -109,6 +109,7 @@ def main():
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
                            "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
                            "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens,
+                           "cost_probe_readiness_cells": ["streaming", "all_ready_reuse", "all_ready_dense"],
                            "eager_cfo_reference": not args.skip_eager_cfo})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
@@ -201,11 +202,20 @@ def main():
             source_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False)
+            source_all_ready, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
+                boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
+                wait_all_source_layers=True)
+            prepared_dense, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
+                boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
+                wait_all_source_layers=True, commit_source=False)
             if (source_cost["integrity_verification_mode"] != "online_immutable"
                     or any(source_cost[k] is not None for k in (
                         "source_digest_before", "destination_digest", "source_digest_after"))):
                 raise RuntimeError("cost probe performed per-request full-KV hashing")
-            for name, row in (("dense_prefix", dense_cost), ("fixed15_source", source_cost)):
+            for name, row in (("dense_prefix", dense_cost), ("fixed15_source", source_cost),
+                              ("fixed15_all_ready", source_all_ready), ("prepared_dense", prepared_dense)):
                 row["raw_observation_sha256"] = digest_json(row)
                 atomic_json(cost_root / (name + ".json"), row)
             atomic_json(cost_root / "summary.json", {
