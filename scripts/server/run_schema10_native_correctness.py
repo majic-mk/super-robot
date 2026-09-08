@@ -61,6 +61,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--execute", action="store_true")
+    p.add_argument("--layer-controls", action="store_true", help="extra read-only Prefix numerical diagnosis")
     args = p.parse_args()
     root = Path(args.output).resolve()
     if root.exists():
@@ -89,7 +90,8 @@ def main():
     token_hash, patch_sha = audit["tokenizer_assets_sha256"], patch["cacheblend_patch_sha256"]
     config_sha = file_digest(Path(args.config))
     requests = diagnostic_requests(tokenizer, model, token_hash)
-    plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha})
+    plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
+                           "layer_controls": args.layer_controls})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
@@ -112,6 +114,7 @@ def main():
         "installed_runtime_source_files_sha256": {name: file_digest(package / name) for name in RUNTIME_FILES}}
     manifest = {"protocol_version": 8, "schema_version": 10, "stage": "native_correctness_diagnostic",
         "binding": binding, "native_runtime": runtime, "diagnostic_requests": requests,
+        "layer_controls": args.layer_controls,
         "paper_evidence": False, "locked_test_accessed": False}
     manifest["manifest_sha256"] = digest_json(manifest)
     root.mkdir(parents=True)
@@ -134,6 +137,10 @@ def main():
         atomic_json(root / "k_hook.json", k)
         prefix = run_native_prefix_sentinel(adapter, warm_request=requests["warm"], request=requests["target"])
         atomic_json(root / "prefix.json", prefix)
+        if args.layer_controls:
+            from probekv.v8_schema10_prefix_numerics import run_prefix_layer_controls
+            atomic_json(root / "prefix_layer_controls.json", run_prefix_layer_controls(adapter,
+                request=requests["target"], warm_request=requests["warm"]))
         capture = adapter.build_exact_dense_source(requests["source"], "C")
         descriptor = requests["source"]["segments"][0]
         identity = SourceVariantIdentity(descriptor["content_key"],
