@@ -96,7 +96,7 @@ def verify_native_primitive_directory(directory):
     files += [arm_root / (n + ".json") for n in names]
     files += [arm_root / arms[n]["logits_path"] for n in tensors]
     return {"binding": manifest["binding"], "raw_files_sha256": {
-                str(p.relative_to(root)): file_digest(p) for p in files},
+                p.relative_to(root).as_posix(): file_digest(p) for p in files},
         "native_prefix_k_hook_r1_passed": True, "native_cfo_eager_streaming_passed": True,
         "logit_relative_l2_recomputed": l2, "raw_logits_bitwise_equal": torch.equal(left, right),
         "cached_prefix_tokens": prefix["cached_prefix_tokens"], "reuse_boundary": boundary,

@@ -92,6 +92,11 @@ All failed runs retain their logs, token/logit observations and failure files.
 Source backing stores remain on the server; the separate evidence archive
 excludes bulky stores, not raw logit files.
 
+Local archive: artifacts/r1-native-evidence-20260908-d923c0e.tar.gz.
+Its SHA256 (verified after download) is
+3b3d8df796e86858b93ac4d1bd02aadb8dfff75467116c6bf904edb0c794b78a.
+The local Git bundle is artifacts/probekv-r1-checkpoint-20260908.bundle.
+
 The offline verifier at d923c0e recomputed the two final tier observations
 from signed arm JSON and saved tensors. It checks declared inputs, true
 commit/Prefix/mask records, file hashes, CFO layer errors and transfer records;
