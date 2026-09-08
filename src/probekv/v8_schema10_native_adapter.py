@@ -260,11 +260,20 @@ class NativeRequestContext:
             rows=(("request_working_kv", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
         try:
             self._enable_original_capture()
-            # Pinned immutable inputs remain owned by this request; copies and
-            # consuming kernels use the same current stream. No per-layer host
-            # fence or request-time pinning is needed.
-            shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned()) for t in pair)
-                            for pair in (self.native.prefix_shadow or ()))
+            # Pinned immutable inputs remain owned by this request. Transfer
+            # K and V as two contiguous layer batches instead of issuing one
+            # H2D operation per tensor (64 small copies for Mistral).
+            # Layer views preserve the engine's existing per-layer contract.
+            prefix_cpu = self.native.prefix_shadow or ()
+            if prefix_cpu:
+                key_cpu = a.torch.stack(tuple(pair[0] for pair in prefix_cpu), dim=0)
+                value_cpu = a.torch.stack(tuple(pair[1] for pair in prefix_cpu), dim=0)
+                key_gpu = key_cpu.to(a.runner.device, non_blocking=key_cpu.is_pinned())
+                value_gpu = value_cpu.to(a.runner.device, non_blocking=value_cpu.is_pinned())
+                shadows = tuple((key_gpu[layer], value_gpu[layer])
+                                for layer in range(len(prefix_cpu)))
+            else:
+                shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec, source_loader=a.loader)
             self.engine.begin_prefill(model_signature=a.provenance["model_signature"],
                 token_ids=tuple(self.request["token_ids"][self.cached_prefix_tokens:]),
