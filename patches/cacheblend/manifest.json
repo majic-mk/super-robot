@@ -97,7 +97,8 @@
       "0007-probekv-schema6-cfo-post-rope-hook.patch",
       "0008-probekv-resumable-active-kv-writeback.patch",
       "0009-probekv-native-prefix-owned-slots.patch",
-      "0010-probekv-composite-rope-flat-heads.patch"
+      "0010-probekv-composite-rope-flat-heads.patch",
+      "0011-probekv-matched-prefill-kernel.patch"
     ]
   },
   "runtime_modes": {

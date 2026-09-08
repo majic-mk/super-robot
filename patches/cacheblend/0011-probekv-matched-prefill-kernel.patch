@@ -1,0 +1,43 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -20,0 +21,23 @@
++# Explicitly selected by a provenance-bound native runtime policy.
++_PROBEKV_PREFILL_KERNEL = None
++
++
++def _probekv_attention_forward(query, key, value, *, attn_bias, p, scale):
++    if _PROBEKV_PREFILL_KERNEL is None:
++        return xops.memory_efficient_attention_forward(
++            query, key, value, attn_bias=attn_bias, p=p, scale=scale)
++    if _PROBEKV_PREFILL_KERNEL != "cutlass_mha":
++        raise RuntimeError("unsupported ProbeKV prefill kernel")
++    # Dense and partial-query paths use the same arithmetic kernel/layout.
++    # Expand GQA only for execution; canonical KV remains compact BF16.
++    if query.ndim == 5:
++        query = query.flatten(2, 3).contiguous()
++        key = key.flatten(2, 3).contiguous()
++        value = value.flatten(2, 3).contiguous()
++    if torch.is_tensor(attn_bias) and attn_bias.ndim == 5:
++        attn_bias = attn_bias.flatten(1, 2)
++    return xops.memory_efficient_attention_forward(
++        query, key, value, attn_bias=attn_bias, p=p, scale=scale,
++        op=xops.MemoryEfficientAttentionCutlassOp[0])
++
++
+@@ -683,6 +706,6 @@
+-                out = xops.memory_efficient_attention_forward(
++                out = _probekv_attention_forward(
+                         query,
+                         key,
+                         value,
+                         attn_bias=partial_bias,
+                         p=0.0,
+@@ -693,6 +716,6 @@
+-                out = xops.memory_efficient_attention_forward(
++                out = _probekv_attention_forward(
+                 query,
+                 key,
+                 value,
+                 attn_bias=attn_metadata.attn_bias,
+                 p=0.0,
