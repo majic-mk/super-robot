@@ -8,6 +8,7 @@ from probekv.v8_schema10_contracts import AbsoluteResidualThreshold
 from probekv.v8_schema9_contracts import AbsoluteResidualThreshold as OldThreshold
 from probekv.v8_schema10_native_factory import verified_model_asset_path
 from probekv.v8_schema10_native_correctness import execute_fixed_source_arm, run_combined_native_r1
+from probekv.v8_schema10_native_validation import validate_correctness_observation
 
 
 class ConcreteCorrectnessTests(unittest.TestCase):
@@ -43,6 +44,18 @@ class ConcreteCorrectnessTests(unittest.TestCase):
                 execute_fixed_source_arm(None, request={}, repair_ratio=ratio)
         with self.assertRaisesRegex(ValueError, "meaningful only"):
             execute_fixed_source_arm(None, request={}, repair_ratio=.15)
+
+    def test_selective_absolute_mask_uses_repair_support_not_r1_rows(self):
+        row = {"origin": "real_cuda_execution", "fake_timing": False,
+               "cached_prefix_tokens": 4, "layer_rows": [
+                   {"layer": 1, "active_positions": [4, 5, 6, 7],
+                    "expected_positions": [4, 5, 6, 7]},
+                   {"layer": 2, "active_positions": [4, 7],
+                    "expected_positions": [4, 7]}]}
+        self.assertTrue(validate_correctness_observation("absolute_mask", row))
+        row["layer_rows"][1]["expected_positions"] = [4, 5, 6, 7]
+        with self.assertRaises(ValueError):
+            validate_correctness_observation("absolute_mask", row)
 
 
 if __name__ == "__main__":

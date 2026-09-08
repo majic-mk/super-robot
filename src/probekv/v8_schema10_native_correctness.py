@@ -111,10 +111,19 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if not before == destination == after:
                         raise RuntimeError("Source/destination/source digest mismatch")
                 n, prefix = len(q["token_ids"]), context.cached_prefix_tokens
-                layer_rows = [{"layer": a["layer"], "active_positions": list(a["active_after"]),
-                               "expected_positions": list(range(prefix, n)),
-                               "union_mask_digest": a["union_mask_digest"]}
-                              for a in output["layer_audit"] if "active_after" in a]
+                layer_rows = []
+                for audit in output["layer_audit"]:
+                    if "active_after" not in audit:
+                        continue
+                    layer = audit["layer"]
+                    expected = set(range(prefix, n))
+                    for sid, commit_boundary in context.committed.items():
+                        if layer >= commit_boundary:
+                            expected.difference_update(context.segments[sid]["positions"])
+                            expected.update(context.supports[sid][layer])
+                    layer_rows.append({"layer": layer, "active_positions": list(audit["active_after"]),
+                                       "expected_positions": sorted(expected),
+                                       "union_mask_digest": audit["union_mask_digest"]})
                 if source_id is not None:
                     validate_correctness_observation("absolute_mask", {"origin": "real_cuda_execution",
                         "fake_timing": False, "layer_rows": layer_rows, "cached_prefix_tokens": prefix})
