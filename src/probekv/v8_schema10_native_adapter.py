@@ -397,6 +397,8 @@ class NativeRequestContext:
         local = {p: i for i, p in enumerate(self.engine.session.active_positions)}
         ready = {}
         for sid, ticket in prepared.items():
+            if depth + 1 not in ticket.layer_events:
+                self.engine.source_loader.prefetch_pending(ticket, depth + 1)
             ticket.layer_events[depth + 1].synchronize()
             positions = tuple(self.segments[sid]["positions"])
             # Winner V-only metric is independent of Source-score trim indices.
