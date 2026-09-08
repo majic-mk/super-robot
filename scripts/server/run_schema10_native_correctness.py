@@ -144,7 +144,13 @@ def main():
             from probekv.v8_schema10_prefix_numerics import run_prefix_layer_controls
             atomic_json(root / "prefix_layer_controls.json", run_prefix_layer_controls(adapter,
                 request=requests["target"], warm_request=requests["warm"]))
-        capture = adapter.build_exact_dense_source(requests["source"], "C")
+        from probekv.v8_schema10_canonical import capture_exact_dense_source
+        from probekv.v8_schema10_native_validation import validate_correctness_observation
+        capture = capture_exact_dense_source(adapter, requests["source"], "C", eager_reference=True)
+        cfo = {**capture["capture_audit"]["cfo"], "origin": "real_cuda_execution",
+               "fake_timing": False, "paper_evidence": False}
+        atomic_json(root / "cfo.json", cfo)
+        validate_correctness_observation("cfo", cfo)
         descriptor = requests["source"]["segments"][0]
         identity = SourceVariantIdentity(descriptor["content_key"],
             digest_json(requests["source"]["token_ids"][:descriptor["positions"][0]]),
@@ -157,6 +163,7 @@ def main():
             source_id=source.source_variant_id, segment_id="C", teacher_token_ids=requests["teacher_token_ids"],
             output_dir=root / "combined-r1")
         atomic_json(root / "result.json", {"native_prefix_k_hook_r1_passed": True,
+            "native_cfo_eager_streaming_passed": True,
             "r1_observation_sha256": r1["raw_observation_sha256"], "gpu_runtime_qualified": False,
             "online_trace_execution_allowed": False, "paper_evidence": False})
         print(json.dumps({"native_prefix_k_hook_r1_passed": True, "output": str(root)}))

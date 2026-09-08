@@ -72,15 +72,17 @@ def export_original_full_prefill(adapter, request, collector):
     return result
 
 
-def capture_exact_dense_source(adapter, request, segment_id):
+def capture_exact_dense_source(adapter, request, segment_id, *, eager_reference=False):
     import torch
     from vllm.sequence import SequenceData, SequenceGroupMetadata
     from vllm import SamplingParams
     token_ids = tuple(request["token_ids"])
+    if type(eager_reference) is not bool or eager_reference and len(token_ids) > 512:
+        raise ValueError("eager CFO reference is a bounded <=512-token diagnostic")
     occurrences, targets, occurrence_ids = request_occurrences(request)
     target = targets[segment_id]
     collector = CFOFullPrefillCollector(token_occurrence_ids=occurrence_ids,
-        expected_layers=adapter.spec.num_layers, eager_reference=False)
+        expected_layers=adapter.spec.num_layers, eager_reference=eager_reference)
     caches = [None] * adapter.spec.num_layers
     group = SequenceGroupMetadata(request_id=request["request_id"] + ":canonical-capture", is_prompt=True,
         seq_data={0: SequenceData(list(token_ids))}, sampling_params=SamplingParams(temperature=0, max_tokens=1),

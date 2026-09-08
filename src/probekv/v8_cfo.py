@@ -362,6 +362,7 @@ class CFOFullPrefillCollector:
         self.eager_tolerance = float(eager_tolerance)
         self.layer_masses: list[StreamingAttentionMass] = []
         self.eager_max_abs_error = 0.0
+        self.eager_layer_errors = []
         self.ignored_nonprefill_calls = 0
 
     def __call__(self, **payload: Any) -> None:
@@ -397,9 +398,9 @@ class CFOFullPrefillCollector:
             reference = eager_qk_attention_mass(
                 q3, k3, self.token_occurrence_ids, scale=float(payload["scale"])
             )
-            self.eager_max_abs_error = max(
-                self.eager_max_abs_error, _mass_max_abs_error(observed, reference)
-            )
+            error = _mass_max_abs_error(observed, reference)
+            self.eager_layer_errors.append(error)
+            self.eager_max_abs_error = max(self.eager_max_abs_error, error)
         self.layer_masses.append(observed)
 
     def finalize(
@@ -443,6 +444,7 @@ class CFOFullPrefillCollector:
             "streaming_logsumexp": True,
             "eager_reference": self.eager_reference,
             "eager_max_abs_error": self.eager_max_abs_error,
+            "eager_layer_errors": list(self.eager_layer_errors),
             "eager_tolerance": self.eager_tolerance,
             "ignored_nonprefill_calls": self.ignored_nonprefill_calls,
             "passed": (

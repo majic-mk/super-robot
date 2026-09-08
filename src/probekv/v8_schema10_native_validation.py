@@ -25,6 +25,18 @@ def validate_correctness_observation(category, row):
                 or not isinstance(l2, (int, float)) or not math.isfinite(l2) or not 0 <= l2 <= 1e-4
                 or row.get("logit_token_count", 0) < 32):
             raise ValueError("native r=1 equivalence failed")
+    elif category == "cfo":
+        errors = row.get("eager_layer_errors")
+        if (row.get("eager_reference") is not True
+                or type(row.get("expected_layers")) is not int or row["expected_layers"] < 1
+                or row.get("captured_layers") != row["expected_layers"]
+                or not isinstance(errors, list) or len(errors) != row["expected_layers"]
+                or any(type(x) not in (int, float) or not math.isfinite(x) or not 0 <= x <= 2e-5 for x in errors)
+                or row.get("eager_tolerance") != 2e-5
+                or any(row.get(k) is not True for k in
+                       ("post_rope_qk", "causal_mask", "gqa_mapping", "fp32_accumulation", "streaming_logsumexp"))
+                or not row.get("metadata_digest")):
+            raise ValueError("native CFO eager/streaming layer evidence failed")
     elif category == "source_digest":
         if (not row.get("source_digest_before") or not row["source_digest_before"] ==
                 row.get("source_digest_after") == row.get("destination_digest")):
