@@ -46,6 +46,13 @@ def manager_with_source():
 
 
 class Schema6PlannerTests(unittest.TestCase):
+    def test_stale_snapshot_reports_changed_fields_without_weakening_check(self):
+        with self.assertRaisesRegex(RuntimeError, "stale Planner snapshot") as raised:
+            snapshot().assert_current(snapshot(2))
+        self.assertEqual(raised.exception.snapshot_difference,
+                         {"hbm_reservation_epoch": {"expected": 1, "current": 2}})
+        snapshot().assert_current(snapshot())
+
     def test_gate2_complete_inventory_uses_dense_fallback(self):
         estimator = DeterministicJointTimelineEstimator(
             base_future_ms=0,

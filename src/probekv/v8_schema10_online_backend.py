@@ -390,12 +390,14 @@ class Schema10OnlineExperimentBackend:
                         raise
                     if attempt < 2:
                         runtime_events.append({"kind": "planner_snapshot_retry", "attempt": attempt + 1,
-                            "selected_sources": dict(frozen), "timestamp_ns": time.perf_counter_ns()})
+                            "selected_sources": dict(frozen), "timestamp_ns": time.perf_counter_ns(),
+                            "snapshot_difference": getattr(exc, "snapshot_difference", None)})
                         continue
                     # A permanently unstable snapshot is a dense fallback.
                     runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
                         "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None,
-                        "reason": "planner_snapshot_changed_before_commit"})
+                        "reason": "planner_snapshot_changed_before_commit",
+                        "snapshot_difference": getattr(exc, "snapshot_difference", None)})
         else:
             runtime_events.append({"kind": "dense_fallback", "reason": "no_frozen_sources"})
         first = []

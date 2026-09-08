@@ -55,7 +55,13 @@ class PlannerSnapshot:
 
     def assert_current(self, current: "PlannerSnapshot") -> None:
         if self != current:
-            raise RuntimeError("stale Planner snapshot cannot be applied")
+            error = RuntimeError("stale Planner snapshot cannot be applied")
+            error.snapshot_difference = {
+                name: {"expected": getattr(self, name), "current": getattr(current, name)}
+                for name in self.__dataclass_fields__
+                if getattr(self, name) != getattr(current, name)
+            }
+            raise error
 
 
 @dataclass
