@@ -266,8 +266,12 @@ class NativeRequestContext:
             # Layer views preserve the engine's existing per-layer contract.
             prefix_cpu = self.native.prefix_shadow or ()
             if prefix_cpu:
-                key_cpu = a.torch.stack(tuple(pair[0] for pair in prefix_cpu), dim=0)
-                value_cpu = a.torch.stack(tuple(pair[1] for pair in prefix_cpu), dim=0)
+                key_cpu = a.torch.empty((len(prefix_cpu),) + tuple(prefix_cpu[0][0].shape),
+                                        dtype=prefix_cpu[0][0].dtype, device="cpu", pin_memory=True)
+                value_cpu = a.torch.empty((len(prefix_cpu),) + tuple(prefix_cpu[0][1].shape),
+                                          dtype=prefix_cpu[0][1].dtype, device="cpu", pin_memory=True)
+                a.torch.stack(tuple(pair[0] for pair in prefix_cpu), dim=0, out=key_cpu)
+                a.torch.stack(tuple(pair[1] for pair in prefix_cpu), dim=0, out=value_cpu)
                 key_gpu = key_cpu.to(a.runner.device, non_blocking=key_cpu.is_pinned())
                 value_gpu = value_cpu.to(a.runner.device, non_blocking=value_cpu.is_pinned())
                 shadows = tuple((key_gpu[layer], value_gpu[layer])
