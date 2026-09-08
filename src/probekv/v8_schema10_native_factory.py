@@ -159,6 +159,8 @@ class UnmeasuredCosts:
 
 def create_native_backend(manifest, *, _measurement_only=False):
     runtime = validate_native_attachment(manifest, allow_unmeasured=_measurement_only)
+    from .v8_schema10_numerical_policy import validate_numerical_policy, apply_numerical_policy
+    numerical_policy = validate_numerical_policy(runtime)
     cost = UnmeasuredCosts() if _measurement_only else MeasuredRequestCostProvider(runtime["cost_table_path"],
         expected_sha256=runtime["cost_table_sha256"], provenance=runtime["cost_provenance"])
     if cost.key_contract != EXECUTION_SHAPE_KEY:
@@ -185,6 +187,7 @@ def create_native_backend(manifest, *, _measurement_only=False):
         raise RuntimeError("cost collection provenance does not name the actual single GPU")
     from vllm import LLM
     spec = SCHEMA6_MODEL_SPECS[runtime["model_key"]]
+    apply_numerical_policy(torch, numerical_policy)
     llm = LLM(model=runtime["model_path"], tokenizer=runtime["model_path"], dtype="bfloat16",
         max_model_len=runtime["max_model_len"], gpu_memory_utilization=runtime["gpu_memory_utilization"],
         enable_prefix_caching=True, enforce_eager=True, trust_remote_code=False)
@@ -237,6 +240,8 @@ def create_native_backend(manifest, *, _measurement_only=False):
     adapters = {path: (LegacyNativeOnlineAdapter if path == "legacy_multicheckpoint" else FastNativeOnlineAdapter)(llm=llm, model_spec=spec, selection_path=path, loader=loader,
         hbm=hbm, shadow_store=shadows, store_provider=lambda: owner["backend"].store, provenance=source,
         cost_provider=cost, shared_runtime_state=shared) for path in ("d1_only", "d1_d2_rescue", "legacy_multicheckpoint")}
+    for adapter in adapters.values():
+        adapter.expected_numerical_execution_policy = numerical_policy
     def selector_factory(dispatch, capacity):
         return Schema10CheckpointSelector(variant_profile=replace(template, max_variants_per_content=capacity),
             preparation_profile=PreparationPolicyProfile(code_commit=source["code_commit"], model_id=source["model_id"],

@@ -90,21 +90,23 @@ def main():
     token_hash, patch_sha = audit["tokenizer_assets_sha256"], patch["cacheblend_patch_sha256"]
     config_sha = file_digest(Path(args.config))
     requests = diagnostic_requests(tokenizer, model, token_hash)
+    numerical_policy = {"allow_bf16_reduced_precision_reduction": False}
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
-                           "layer_controls": args.layer_controls})
+                           "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
         "runtime_measurement_sha256": None, "global_byte_budget": 8 * 1024**3}
     provenance = {"model_id": audit["model_id"], "model_revision": spec.revision,
         "model_signature": model, "tokenizer_hash": token_hash, "code_commit": sha,
-        "runtime_compatibility": digest_json([patch_sha, spec.adapter_name, "bf16-pre-rope-v1"])}
+        "runtime_compatibility": digest_json([patch_sha, spec.adapter_name, "bf16-pre-rope-v1", numerical_policy])}
     runtime = {"model_path": audit["snapshot_path"], "model_key": audit["model_id"],
         "model_audit_path": str(audit_path), "model_audit_sha256": file_digest(audit_path),
         "source_provenance": provenance, "cost_provenance": {"model": model, "code": sha,
             "patch": patch_sha, "gpu": gpu, "config": config_sha, "timing_scope": "diagnostic_prequalification",
             "profile_binding_kind": "preregistered_measurement_plan", "measurement_plan_sha256": plan_sha,
-            "runtime_profile": None},
+            "runtime_profile": None, "numerical_execution_policy_sha256": digest_json(numerical_policy)},
+        "numerical_execution_policy": numerical_policy,
         "allocator_capacity_bytes": 12 * 1024**3, "prefix_shadow_capacity_bytes": 256 * 1024**2,
         "max_model_len": 4096, "gpu_memory_utilization": .6, "storage_root": str(root / "store"),
         "cpu_backing_bytes": 6 * 1024**3, "selector_parameters": {"source_residual_trim_ratio": .15,

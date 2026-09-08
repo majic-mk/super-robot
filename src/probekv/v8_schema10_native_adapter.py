@@ -154,6 +154,8 @@ class NativeOnlineAdapter:
     @contextmanager
     def open_request(self, request, *, arrival_ns):
         from vllm import SamplingParams
+        from .v8_schema10_numerical_policy import assert_numerical_policy
+        assert_numerical_policy(self.torch, getattr(self, "expected_numerical_execution_policy", None))
         mandatory_suffix_positions(request)
         validate_native_sampling_request(request)
         if self.active is not None:
