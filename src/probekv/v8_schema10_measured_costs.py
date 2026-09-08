@@ -10,6 +10,7 @@ from .v8_schema10_storage import file_digest
 from .v8_schema10_cost_provider import ProfiledJointTimelineEstimator, UnsupportedTimelineCost
 from .v8_schema10_cost_provider import MeasurementKey, EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY
 from .v8_schema8_planner import Gate1LocalPlan, Gate1MarginalLowerBound
+from .v8_schema10_contracts import Gate1Mode
 
 
 class MeasuredRequestCostProvider:
@@ -99,13 +100,6 @@ class MeasuredRequestCostProvider:
         return MeasurementKey(category, shape).query()
 
     def preparation(self, context, sid, source_id):
-        # Source-local feasibility is not request admission. Resource/waste
-        # admission additionally needs a whole-request dense-fallback timeline.
-        estimator = self.joint_estimator(context)
-        result = estimator.lookup(context.dense_fallback_joint_context())
-        dense = self.dense_reference(context)
-        if result.estimate is None or dense is None:
-            return None
         query = {"source_id": source_id,
                             "request": self.identity(context), "segment_id": sid,
                             "boundary": context.current_completed_depth + 1}
@@ -113,10 +107,31 @@ class MeasuredRequestCostProvider:
             context.current_completed_depth, "winner_visible_preparation", query))
         if copy is None:
             return None
+        copy_upper = max(copy["samples_ms"])
+        mode = Gate1Mode(context.selector.preparation_profile.gate1_mode)
+        # An explicit Gate1 has already admitted this frozen Source's measured
+        # marginal preparation. PreparationAdmission is therefore a resource
+        # contract, not a second economic barrier. HBM capacity is acquired
+        # atomically by the caller immediately after this decision.
+        if mode is Gate1Mode.EXPLICIT_BARRIER:
+            return {"resource_admitted": True,
+                    "predicted_visible_and_interference_ms": copy_upper,
+                    "speculative_waste_budget_ms": None,
+                    "admission_basis": "explicit_gate1_plus_measured_copy",
+                    "measurement_sha256": self.sha}
+        # Fused advisory preparation is speculative: it additionally needs a
+        # whole-request dense-fallback waste budget before any physical copy.
+        estimator = self.joint_estimator(context)
+        result = estimator.lookup(context.dense_fallback_joint_context())
+        dense = self.dense_reference(context)
+        if result.estimate is None or dense is None:
+            return None
         budget = max(0., dense - context.actual_sunk_ms - result.estimate.joint_future_ms)
-        return {"resource_admitted": max(copy["samples_ms"]) <= budget,
-                "predicted_visible_and_interference_ms": max(copy["samples_ms"]),
-                "speculative_waste_budget_ms": budget, "measurement_sha256": self.sha}
+        return {"resource_admitted": copy_upper <= budget,
+                "predicted_visible_and_interference_ms": copy_upper,
+                "speculative_waste_budget_ms": budget,
+                "admission_basis": "fused_advisory_speculative_waste",
+                "measurement_sha256": self.sha}
 
     def joint_estimator(self, context):
         return ProfiledJointTimelineEstimator(provenance=self.provenance,

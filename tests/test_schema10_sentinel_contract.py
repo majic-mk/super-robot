@@ -117,6 +117,19 @@ class MeasuredCostContracts(unittest.TestCase):
         self.assertEqual(provider.candidate_future_ms(self.ctx, "s", "v", 1), 45.)
         self.assertIsNone(provider.candidate_future_ms(self.ctx, "s", "unknown", 1))
 
+    def test_explicit_gate1_preparation_is_not_blocked_by_speculative_waste_budget(self):
+        provider = self.load([])
+        provider.sha = "measured"
+        provider._lookup = lambda category, query: ({"samples_ms": [2.5]}
+            if category == "winner_visible_preparation" else None)
+        provider.joint_estimator = lambda context: self.fail("explicit Gate1 must not query speculative waste")
+        self.ctx.current_completed_depth = 1
+        self.ctx.selector = NS(preparation_profile=NS(gate1_mode="explicit_barrier"))
+        result = provider.preparation(self.ctx, "s", "v")
+        self.assertTrue(result["resource_admitted"])
+        self.assertIsNone(result["speculative_waste_budget_ms"])
+        self.assertEqual(result["admission_basis"], "explicit_gate1_plus_measured_copy")
+
     def test_fake_timing_and_other_gpu_provenance_rejected(self):
         for overrides in ({"fake_timing": True}, {"provenance": {**self.provenance, "gpu": "another"}}):
             with self.assertRaises(ValueError):
