@@ -1,0 +1,32 @@
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -177,3 +177,9 @@
+-            _, old_kv[0] = self.rotary_emb(cache_fuse_metadata['org_pos'],
+-                                        cache_fuse_metadata['fake_q'],
+-                                        old_kv[0])
++            # vLLM 0.4.1 CUDA RoPE infers heads from size(-1) and token
++            # stride from stride(-2). A [T,H,D] composite is NOT its ABI.
++            old_key_shape = old_kv[0].shape
++            old_key_flat = old_kv[0].reshape(old_key_shape[0], -1)
++            _, rotated_key = self.rotary_emb(
++                cache_fuse_metadata["org_pos"],
++                cache_fuse_metadata["fake_q"], old_key_flat)
++            old_kv[0] = rotated_key.view(old_key_shape)
++
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -158,3 +158,9 @@
+-            _, old_kv[0] = self.rotary_emb(
+-                cache_fuse_metadata["org_pos"],
+-                cache_fuse_metadata["fake_q"], old_kv[0])
++            # vLLM 0.4.1 CUDA RoPE infers heads from size(-1) and token
++            # stride from stride(-2). A [T,H,D] composite is NOT its ABI.
++            old_key_shape = old_kv[0].shape
++            old_key_flat = old_kv[0].reshape(old_key_shape[0], -1)
++            _, rotated_key = self.rotary_emb(
++                cache_fuse_metadata["org_pos"],
++                cache_fuse_metadata["fake_q"], old_key_flat)
++            old_kv[0] = rotated_key.view(old_key_shape)
++

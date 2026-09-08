@@ -16,7 +16,7 @@ class NativePrefixOwnedSlotTests(unittest.TestCase):
     def setUp(self):
         paths = patch_files_for_mode(ROOT / 'patches/cacheblend/manifest.json',
                                     'probekv_v8_variant_growth_counterfactual')
-        self.patch_text = paths[-1].read_text(encoding='utf-8')
+        self.patch_text = next(p for p in paths if p.name.startswith('0009')).read_text(encoding='utf-8')
         # Execute the actual dependency-free helper shipped in the patch,
         # not a second local implementation of the ownership calculation.
         hunk = self.patch_text.split('@@')[2]

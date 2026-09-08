@@ -84,6 +84,7 @@ esac
 
 if [[ "$mode" == "probekv_v8_variant_growth_counterfactual" ]]; then
   patches+=("0009-probekv-native-prefix-owned-slots.patch")
+  patches+=("0010-probekv-composite-rope-flat-heads.patch")
 fi
 
 case "$target" in
