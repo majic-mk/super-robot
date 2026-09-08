@@ -278,6 +278,23 @@ class OnlineIntegration(unittest.TestCase):
         self.assertTrue(any(e.get("reason") == "planner_elapsed_exceeds_gamma" for e in row["runtime_events"]))
         self.assertEqual(self.backend.hbm.active_reserved_bytes, 0)
 
+    def test_transient_snapshot_progress_replans_same_winner_without_recopy(self):
+        self.execute(1)
+        commit = TinyLiveContext.commit_reuse
+        attempts = []
+        def transient(context, decision):
+            attempts.append(tuple(decision.accepted_ready_segment_ids))
+            if len(attempts) == 1:
+                raise RuntimeError("stale Planner snapshot cannot be applied")
+            return commit(context, decision)
+        with patch.object(TinyLiveContext, "commit_reuse", transient):
+            row = self.execute(2)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertTrue(row["committed_source_variant_ids"])
+        self.assertEqual(sum(e["kind"] == "winner_preparation" for e in row["runtime_events"]), 1)
+        self.assertEqual(sum(e["kind"] == "planner_snapshot_retry" for e in row["runtime_events"]), 1)
+
     def test_quarantined_hbm_cannot_be_reset_to_free_space(self):
         from probekv.v8_schema6_hbm import HBMReservationKind
         self.backend.hbm.reserve_batch(owner_request_id="crashed", rows=(("s", 100, HBMReservationKind.WINNER_PREFETCH),))
