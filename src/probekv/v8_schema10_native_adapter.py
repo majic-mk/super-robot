@@ -260,7 +260,11 @@ class NativeRequestContext:
             rows=(("request_working_kv", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
         try:
             self._enable_original_capture()
-            shadows = tuple(tuple(t.to(a.runner.device) for t in pair) for pair in (self.native.prefix_shadow or ()))
+            # Pinned immutable inputs remain owned by this request; copies and
+            # consuming kernels use the same current stream. No per-layer host
+            # fence or request-time pinning is needed.
+            shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned()) for t in pair)
+                            for pair in (self.native.prefix_shadow or ()))
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec, source_loader=a.loader)
             self.engine.begin_prefill(model_signature=a.provenance["model_signature"],
                 token_ids=tuple(self.request["token_ids"][self.cached_prefix_tokens:]),

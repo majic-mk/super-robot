@@ -121,6 +121,16 @@ class PhysicalStorageTests(unittest.TestCase):
         store.clear()
         self.assertEqual(store.resident_bytes, 0)
 
+    def test_pinned_shadow_allocation_failure_is_not_silent_pageable_fallback(self):
+        store = PrefixShadowStore(model_signature="m", num_layers=1, kv_heads=1,
+                                  head_dim=1, capacity_bytes=16, pin_memory=True)
+        kv = ((torch.zeros((4,1,1), dtype=torch.bfloat16), torch.ones((4,1,1), dtype=torch.bfloat16)),)
+        with patch.object(torch, "empty", side_effect=RuntimeError("pinned allocation failed")) as allocate:
+            with self.assertRaisesRegex(RuntimeError, "pinned allocation"):
+                store.publish([1,2,3,4], kv, origin="exact_dense_full_prefill")
+        self.assertTrue(allocate.call_args.kwargs["pin_memory"])
+        self.assertFalse(store.entries)
+
     def test_real_pinned_copy_is_not_required_for_cpu_storage_tests(self):
         pool = PhysicalPinnedStagingPool(32, pin_memory=False)
         slot = pool.acquire((4,1,1))

@@ -251,10 +251,17 @@ class RefinedJointPlannerV6:
             raise ValueError("Gate 3 costs are invalid")
 
         order = {segment_id: index for index, segment_id in enumerate(inventory)}
+        # Pruning can revisit a subset within this synchronous planning call.
+        # Its shape/boundaries/snapshot are fixed here. Never retain estimates
+        # across calls or after the accepted execution set is changed outside.
+        subset_estimates = {}
 
         def evaluate(active: set[str]) -> JointTimelineEstimate:
+            key = frozenset(active)
+            if key in subset_estimates:
+                return subset_estimates[key]
             dense = set(inventory) - active - committed
-            return self.estimator.estimate(
+            result = self.estimator.estimate(
                 JointTimelineContext(
                     inventory,
                     tuple(sorted(active)),
@@ -265,6 +272,8 @@ class RefinedJointPlannerV6:
                     snapshot.scheduler_snapshot_id,
                 )
             )
+            subset_estimates[key] = result
+            return result
 
         active = set(eligible)
         estimate = evaluate(active)

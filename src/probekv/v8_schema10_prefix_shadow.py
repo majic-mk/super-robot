@@ -6,9 +6,10 @@ from .v8_schema10_storage import tensor_digest
 
 
 class PrefixShadowStore:
-    def __init__(self, *, model_signature, num_layers, kv_heads, head_dim, capacity_bytes):
+    def __init__(self, *, model_signature, num_layers, kv_heads, head_dim, capacity_bytes, pin_memory=False):
         self.signature, self.num_layers = model_signature, num_layers
         self.geometry, self.capacity_bytes = (kv_heads, head_dim), capacity_bytes
+        self.pin_memory = bool(pin_memory)
         if not model_signature or min(num_layers, kv_heads, head_dim, capacity_bytes) <= 0:
             raise ValueError("invalid Prefix shadow capacity/geometry")
         self.entries = OrderedDict()
@@ -51,7 +52,13 @@ class PrefixShadowStore:
             self.entries.popitem(last=False)
         if self.resident_bytes + size > self.capacity_bytes:
             return False  # retained snapshots cannot be evicted or undercounted
-        cpu = tuple(tuple(t.detach().to(device="cpu", copy=True).contiguous() for t in pair) for pair in layers)
+        def host_copy(t):
+            if self.pin_memory:
+                # Creation-time allocation/copy, under the same host capacity.
+                # Blocking publication ensures the immutable host copy is complete.
+                return torch.empty(tuple(t.shape), dtype=t.dtype, device="cpu", pin_memory=True).copy_(t.detach())
+            return t.detach().to(device="cpu", copy=True).contiguous()
+        cpu = tuple(tuple(host_copy(t) for t in pair) for pair in layers)
         self.entries[key] = {"tokens": tokens, "layers": cpu, "bytes": size,
                              "logical_digest": tensor_digest(t for p in cpu for t in p)}
         return True
@@ -75,5 +82,6 @@ class PrefixShadowStore:
 
     def descriptor(self):
         return {"model_signature": self.signature, "capacity_bytes": self.capacity_bytes,
+                "pin_memory": self.pin_memory,
                 "rows": [{"tokens": list(r["tokens"]), "logical_digest": r["logical_digest"]}
                          for r in self.entries.values()]}

@@ -225,6 +225,19 @@ class MeasuredCostLookup(unittest.TestCase):
         self.assertEqual(result.accepted_ready_segment_ids, ("a",))
         self.assertEqual(result.request_total_ms, 70)
 
+    def test_pruning_memo_is_limited_to_one_snapshot_call(self):
+        estimator = self.estimator([(("a", "b"), 90), (("a",), 60), (("b",), 85), ((), 100)])
+        planner = RefinedJointPlannerV6(estimator)
+        snapshot = PlannerSnapshot(1, 1, "scheduler", 1, "profile")
+        kwargs = dict(inventory_segment_ids=("a", "b"), eligible_ready_segment_ids=("a", "b"),
+            committed_segment_ids=(), actual_boundary_by_segment={"a": 2, "b": 2}, actual_sunk_ms=10,
+            dense_reference_total_ms=100, snapshot=snapshot, current_snapshot=snapshot, union_mask_digest="mask")
+        with patch.object(estimator, "estimate", wraps=estimator.estimate) as estimate:
+            self.assertEqual(planner.plan_subset(**kwargs).accepted_ready_segment_ids, ("a",))
+            self.assertEqual(estimate.call_count, 3)
+            planner.plan_subset(**kwargs)
+            self.assertEqual(estimate.call_count, 6)
+
     def test_cpu_samples_cannot_supply_real_admission(self):
         estimator = self.estimator([(("a",), 10)])
         row = next(iter(estimator.rows.values()))

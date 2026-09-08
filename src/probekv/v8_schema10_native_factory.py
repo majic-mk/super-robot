@@ -246,7 +246,8 @@ def create_native_backend(manifest, *, _measurement_only=False):
         integrity_mode=runtime.get("integrity_mode", "online_immutable"))
     layer = llm.llm_engine.model_executor.driver_worker.model_runner.model.model.layers[0].self_attn
     shadows = PrefixShadowStore(model_signature=source["model_signature"], num_layers=spec.num_layers,
-        kv_heads=layer.num_kv_heads, head_dim=layer.head_dim, capacity_bytes=runtime["prefix_shadow_capacity_bytes"])
+        kv_heads=layer.num_kv_heads, head_dim=layer.head_dim, capacity_bytes=runtime["prefix_shadow_capacity_bytes"],
+        pin_memory=True)
     shared = {"active": None, "warm_history": [], "generation": 1}
     adapters = {path: (LegacyNativeOnlineAdapter if path == "legacy_multicheckpoint" else FastNativeOnlineAdapter)(llm=llm, model_spec=spec, selection_path=path, loader=loader,
         hbm=hbm, shadow_store=shadows, store_provider=lambda: owner["backend"].store, provenance=source,
