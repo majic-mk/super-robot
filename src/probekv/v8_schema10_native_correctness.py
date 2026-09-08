@@ -161,6 +161,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "block_size": adapter.scheduler.block_manager.block_size,
                     "source_digest_before": before, "destination_digest": destination, "source_digest_after": after,
                     "layer_rows": layer_rows, "committed_segments": dict(context.committed),
+                    "overlap_trace": list(output.get("overlap_trace", ())),
                     "resumable_engine_used": context.engine is not None,
                     "first_token_ns": first[0], "diagnostic_start_ns": started,
                     "first_token_host_ms": (first[0] - started) / 1e6,

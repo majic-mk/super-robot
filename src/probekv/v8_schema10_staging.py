@@ -106,7 +106,7 @@ class PhysicalLayerwiseSourceLoader:
                 raise RuntimeError("canonical digest differs before transfer")
         started = time.perf_counter() * 1000
         start = torch.cuda.Event(enable_timing=True)
-        tensors, events, outstanding = {}, {}, []
+        tensors, events, layer_start_events, outstanding = {}, {}, {}, []
         try:
             with torch.cuda.stream(self.stream):
                 start.record()
@@ -130,10 +130,13 @@ class PhysicalLayerwiseSourceLoader:
                         if any(t.device.type != "cpu" or not t.is_pinned() for t in pair):
                             raise ValueError("CPU backing must be pre-pinned; no silent pin_memory")
                     try:
+                        copy_start = torch.cuda.Event(enable_timing=True)
+                        copy_start.record()
                         tensors[index + 1] = tuple(t.to(self.device, non_blocking=True) for t in pair)
                         done = torch.cuda.Event(enable_timing=True)
                         done.record()
                         events[index + 1] = done
+                        layer_start_events[index + 1] = copy_start
                         if slot:
                             self.pool.release_after(slot, done)
                             outstanding.append(done)
@@ -156,7 +159,8 @@ class PhysicalLayerwiseSourceLoader:
                 "staging_wait_ms": wait_ms, "full_kv_bytes": size,
                 "path": "SSD_STAGED_TO_GPU" if isinstance(canonical_layers, LayerFile) else "CPU_PINNED_TO_GPU"})
             return LayerwiseLoadTicket(segment_id, source_id, started, size, tensors, start, events,
-                before, after, tuple(segment_positions), integrity_mode=self.integrity_mode,
+                before, after, tuple(segment_positions), layer_start_events=layer_start_events,
+                integrity_mode=self.integrity_mode,
                 expected_artifact_digest=expected_artifact_digest, destination_digest=destination,
                 hash_host_ms=hash_ms, d2h_hash_host_ms=d2h_ms,
                 per_request_full_digest_verified=self.integrity_mode == "qualification_full")

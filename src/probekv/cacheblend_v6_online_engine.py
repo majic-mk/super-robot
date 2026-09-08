@@ -32,6 +32,7 @@ class LayerwiseLoadTicket:
     source_digest_before: str
     source_digest_after: str
     segment_positions: Tuple[int, ...]
+    layer_start_events: Dict[int, Any] = field(default_factory=dict)
     integrity_mode: str = "legacy_source_full"
     expected_artifact_digest: str = ""
     destination_digest: str = ""
@@ -95,6 +96,14 @@ class LayerwiseLoadTicket:
         if event is None or not event.query():
             raise RuntimeError("Source layer has no completed CUDA ready event")
         return float(self.start_event.elapsed_time(event))
+
+    def layer_copy_interval_gpu_ms(self, layer: int) -> Tuple[float, float]:
+        start = self.layer_start_events.get(int(layer), self.start_event)
+        end = self.layer_events.get(int(layer))
+        if end is None or not end.query():
+            raise RuntimeError("Source layer has no completed CUDA copy event")
+        return (float(self.start_event.elapsed_time(start)),
+                float(self.start_event.elapsed_time(end)))
 
 
 @dataclass(frozen=True)
@@ -221,6 +230,7 @@ class TorchLayerwiseSourceLoader:
         started = time.perf_counter() * 1000.0
         layer_tensors: Dict[int, Tuple[Any, Any]] = {}
         layer_events: Dict[int, Any] = {}
+        layer_start_events: Dict[int, Any] = {}
         requested_bytes = 0
         pinning_copy_bytes = 0
         pinning_host_ms = 0.0
@@ -228,6 +238,8 @@ class TorchLayerwiseSourceLoader:
             start_event = self.torch.cuda.Event(enable_timing=True)
             start_event.record(self.stream)
             for layer, (key, value) in enumerate(canonical_layers, start=1):
+                copy_start = self.torch.cuda.Event(enable_timing=True)
+                copy_start.record(self.stream)
                 if key.device.type != value.device.type:
                     raise ValueError("K/V Replica tensors must use one physical tier")
                 if key.device.type == "cuda":
@@ -258,6 +270,7 @@ class TorchLayerwiseSourceLoader:
                 event.record(self.stream)
                 layer_tensors[layer] = (gpu_key, gpu_value)
                 layer_events[layer] = event
+                layer_start_events[layer] = copy_start
         destination_digest = ""
         sampled_verified = False
         d2h_hash_host_ms = 0.0
@@ -296,6 +309,7 @@ class TorchLayerwiseSourceLoader:
             source_digest_before=before,
             source_digest_after=after,
             segment_positions=positions,
+            layer_start_events=layer_start_events,
             integrity_mode=mode,
             expected_artifact_digest=expected_artifact_digest,
             destination_digest=destination_digest,
@@ -373,6 +387,7 @@ class CacheBlendV6OnlineEngine:
         self.audit = OnlineRequestAudit(model_adapter=model_spec.adapter_name)
         self._composite_old_kvs: list[list[Any]] = []
         self._exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
+        self._compute_events: Dict[int, Tuple[Any, Any]] = {}
 
     @staticmethod
     def capabilities() -> Mapping[str, bool]:
@@ -414,6 +429,7 @@ class CacheBlendV6OnlineEngine:
         elif prefix_layers:
             raise ValueError("exact-prefix shadows require an exact Prefix Cache hit")
         self._exact_prefix_layers = prefix_layers
+        self._compute_events = {}
         if prefix_layers:
             request_span = session.absolute_positions[-1] + 1
             prefix = session.exact_prefix_tokens
@@ -608,8 +624,34 @@ class CacheBlendV6OnlineEngine:
             raise RuntimeError("advance requires an active request")
         while self.session.current_layer < layer:
             next_layer = self.session.current_layer + 1
+            torch = self.source_loader.torch
+            compute_start = torch.cuda.Event(enable_timing=True)
+            compute_end = torch.cuda.Event(enable_timing=True)
+            compute_start.record(torch.cuda.current_stream())
             self._install_ready_source_rows(next_layer)
             self.session.advance_to_layer(next_layer)
+            compute_end.record(torch.cuda.current_stream())
+            self._compute_events[next_layer] = (compute_start, compute_end)
+
+    def overlap_trace(self) -> list[dict]:
+        rows = []
+        for sid, ticket in self.tickets.items():
+            for layer, (compute_start, compute_end) in self._compute_events.items():
+                if layer not in ticket.layer_events:
+                    continue
+                copy_start, copy_end = ticket.layer_copy_interval_gpu_ms(layer)
+                compute_begin = float(ticket.start_event.elapsed_time(compute_start))
+                compute_finish = float(ticket.start_event.elapsed_time(compute_end))
+                overlap = max(0.0, min(copy_end, compute_finish) -
+                              max(copy_start, compute_begin))
+                rows.append({"segment_id": sid, "layer": int(layer),
+                             "copy_start_gpu_ms": copy_start,
+                             "copy_end_gpu_ms": copy_end,
+                             "compute_start_gpu_ms": compute_begin,
+                             "compute_end_gpu_ms": compute_finish,
+                             "overlap_gpu_ms": overlap,
+                             "copy_waited_before_compute": copy_end > compute_begin})
+        return rows
 
     def finish_prefill(self) -> Any:
         if self.session is None:
