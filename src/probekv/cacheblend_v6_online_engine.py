@@ -668,13 +668,16 @@ class CacheBlendV6OnlineEngine:
             compute_start = torch.cuda.Event(enable_timing=True)
             compute_end = torch.cuda.Event(enable_timing=True)
             compute_start.record(torch.cuda.current_stream())
+            # Submit the following layer before launching this layer's
+            # compute. The copy stream can then overlap with the current
+            # Transformer block instead of being awaited after it finishes.
+            for ticket in self.tickets.values():
+                if ticket.pending_layers:
+                    self.source_loader.prefetch_pending(ticket, next_layer + 1)
             self._install_ready_source_rows(next_layer)
             self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
             self._compute_events[next_layer] = (compute_start, compute_end)
-            for ticket in self.tickets.values():
-                if ticket.pending_layers:
-                    self.source_loader.prefetch_pending(ticket, next_layer + 1)
 
     def overlap_trace(self) -> list[dict]:
         rows = []
