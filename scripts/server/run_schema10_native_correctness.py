@@ -22,7 +22,8 @@ from probekv.v8_schema10_native_correctness import run_combined_native_r1
 
 
 RUNTIME_FILES = ("model_executor/models/llama.py", "model_executor/models/qwen2.py",
-    "attention/backends/xformers.py", "worker/model_runner.py", "core/block_manager_v1.py", "sequence.py")
+    "attention/backends/xformers.py", "model_executor/layers/layernorm.py",
+    "worker/model_runner.py", "core/block_manager_v1.py", "sequence.py")
 
 
 def diagnostic_requests(tokenizer, model_signature, tokenizer_hash):
@@ -62,6 +63,8 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--execute", action="store_true")
     p.add_argument("--layer-controls", action="store_true", help="extra read-only Prefix numerical diagnosis")
+    p.add_argument("--backing-tier", choices=("cpu", "ssd"), default="cpu")
+    p.add_argument("--reuse-boundary", type=int, default=2)
     args = p.parse_args()
     root = Path(args.output).resolve()
     if root.exists():
@@ -90,10 +93,13 @@ def main():
     token_hash, patch_sha = audit["tokenizer_assets_sha256"], patch["cacheblend_patch_sha256"]
     config_sha = file_digest(Path(args.config))
     requests = diagnostic_requests(tokenizer, model, token_hash)
+    if args.reuse_boundary - 1 not in spec.checkpoints:
+        raise ValueError("diagnostic reuse boundary must follow a legal model checkpoint")
     numerical_policy = {"allow_bf16_reduced_precision_reduction": False,
                         "prefill_attention_kernel": "cutlass_mha", "fused_norm_max_rows": 128}
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
-                           "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy})
+                           "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
+                           "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
@@ -110,7 +116,9 @@ def main():
         "numerical_execution_policy": numerical_policy,
         "allocator_capacity_bytes": 12 * 1024**3, "prefix_shadow_capacity_bytes": 256 * 1024**2,
         "max_model_len": 4096, "gpu_memory_utilization": .6, "storage_root": str(root / "store"),
-        "cpu_backing_bytes": 6 * 1024**3, "selector_parameters": {"source_residual_trim_ratio": .15,
+        "cpu_backing_bytes": (6 * 1024**3 if args.backing_tier == "cpu" else
+                              2 * 1024**3 + 256 * 1024**2 + 1024),
+        "selector_parameters": {"source_residual_trim_ratio": .15,
             "thresholds": [[d, .25] for d in spec.checkpoints], "strong_margin": .6,
             "stable_margin": .3, "residual_band_relative_tolerance": .05},
         "sentinel_evidence_paths": {}, "repair_policy": "fixed_15", "integrity_mode": "qualification_full",
@@ -118,6 +126,7 @@ def main():
     manifest = {"protocol_version": 8, "schema_version": 10, "stage": "native_correctness_diagnostic",
         "binding": binding, "native_runtime": runtime, "diagnostic_requests": requests,
         "layer_controls": args.layer_controls,
+        "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
     manifest["manifest_sha256"] = digest_json(manifest)
     root.mkdir(parents=True)
@@ -159,11 +168,30 @@ def main():
             selection_states=capture["selection_states"], metadata=capture["source_metadata"],
             request_epoch=1, whole_request_origin="exact_dense_full_prefill", materialization_reason="content_miss")
         atomic_json(root / "canonical_capture.json", capture["capture_audit"])
+        obj = backend.store.objects[source.source_variant_id]
+        expected_tier = "pinned_cpu" if args.backing_tier == "cpu" else "ssd"
+        if obj.tier.value != expected_tier:
+            raise RuntimeError("diagnostic Source did not enter preregistered backing tier")
         r1 = run_combined_native_r1(backend, request=requests["target"], warm_request=requests["warm"],
             source_id=source.source_variant_id, segment_id="C", teacher_token_ids=requests["teacher_token_ids"],
-            output_dir=root / "combined-r1")
+            output_dir=root / "combined-r1", boundary=args.reuse_boundary)
+        loader = adapter.loader
+        if (backend.hbm.active_reserved_bytes or adapter.active is not None
+                or any(slot.leased or slot.completion is not None and not slot.completion.query()
+                       for slot in loader.pool.slots)):
+            raise RuntimeError("completed native sentinel retained active execution resources")
+        expected_path = "CPU_PINNED_TO_GPU" if args.backing_tier == "cpu" else "SSD_STAGED_TO_GPU"
+        if not loader.events or any(e["path"] != expected_path or e["source_id"] != source.source_variant_id
+                                    for e in loader.events):
+            raise RuntimeError("physical transfer did not use only the frozen winner and declared tier")
+        atomic_json(root / "transfer.json", {"origin": "real_cuda_execution", "fake_timing": False,
+            "events": loader.events, "staging_peak_bytes": loader.pool.peak_bytes,
+            "staging_capacity_bytes": loader.pool.capacity_bytes,
+            "staging_slots": len(loader.pool.slots), "active_hbm_reserved_bytes": backend.hbm.active_reserved_bytes,
+            "paper_evidence": False})
         atomic_json(root / "result.json", {"native_prefix_k_hook_r1_passed": True,
             "native_cfo_eager_streaming_passed": True,
+            "native_transfer_path": expected_path,
             "r1_observation_sha256": r1["raw_observation_sha256"], "gpu_runtime_qualified": False,
             "online_trace_execution_allowed": False, "paper_evidence": False})
         print(json.dumps({"native_prefix_k_hook_r1_passed": True, "output": str(root)}))
