@@ -270,7 +270,9 @@ class NativeRequestContext:
                                       for t in pair) for pair in prefix_cpu)
             else:
                 shadows = ()
-            self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec, source_loader=a.loader)
+            self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec,
+                source_loader=a.loader,
+                prefetch_window=int(self.request.get("prefetch_window", 0)))
             self.engine.begin_prefill(model_signature=a.provenance["model_signature"],
                 token_ids=tuple(self.request["token_ids"][self.cached_prefix_tokens:]),
                 absolute_positions=tuple(range(self.cached_prefix_tokens, n)),
@@ -311,6 +313,9 @@ class NativeRequestContext:
             # Native single-concurrency scheduling waits on the actual next
             # layer event. Waiting is inside request wall-clock accounting.
             for sid in self.committed:
+                ticket = self.prepared[sid]
+                if layer not in ticket.layer_events:
+                    self.engine.source_loader.prefetch_pending(ticket, layer)
                 self.prepared[sid].layer_events[layer].synchronize()
             self.engine.advance_to_layer(layer)
             self.generation += 1

@@ -26,7 +26,7 @@ RUNTIME_FILES = ("model_executor/models/llama.py", "model_executor/models/qwen2.
     "worker/model_runner.py", "core/block_manager_v1.py", "sequence.py")
 
 
-def diagnostic_requests(tokenizer, model_signature, tokenizer_hash, *, segment_tokens=128):
+def diagnostic_requests(tokenizer, model_signature, tokenizer_hash, *, segment_tokens=128, prefetch_window=0):
     if not isinstance(segment_tokens, int) or not 128 <= segment_tokens <= 640:
         raise ValueError("diagnostic Segment length must stay inside the canonical 128..640 contract")
     def tokens(text, count):
@@ -46,7 +46,8 @@ def diagnostic_requests(tokenizer, model_signature, tokenizer_hash, *, segment_t
                      "positions": list(range(start, start + len(content)))}] if has_segment else []
         return {"request_id": name, "request_epoch": epoch, "token_ids": ids, "segments": segments,
             "mandatory_suffix_positions": list(range(len(ids) - len(tail), len(ids))),
-            "max_new_tokens": 32, "evidence_class": "synthetic_correctness_diagnostic",
+            "max_new_tokens": 32, "prefetch_window": int(prefetch_window),
+            "evidence_class": "synthetic_correctness_diagnostic",
             "paper_evidence": False, "locked_test_accessed": False}
     target = request("native-target", prefix + dense, suffix, 10)
     warm_tail = tokens("Unrelated warmup continuation. ", 64)
@@ -71,6 +72,8 @@ def main():
                    help="also collect matched-Prefix dense/fixed15 online-immutable landmarks")
     p.add_argument("--segment-tokens", type=int, default=128,
                    help="canonical diagnostic Segment length (128..640)")
+    p.add_argument("--prefetch-window", type=int, default=0,
+                   help="diagnostic layerwise prefetch window; 0 keeps eager loading")
     p.add_argument("--skip-eager-cfo", action="store_true",
                    help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
     args = p.parse_args()
@@ -100,7 +103,11 @@ def main():
     model = audit["model_id"] + "@" + audit["revision"]
     token_hash, patch_sha = audit["tokenizer_assets_sha256"], patch["cacheblend_patch_sha256"]
     config_sha = file_digest(Path(args.config))
-    requests = diagnostic_requests(tokenizer, model, token_hash, segment_tokens=args.segment_tokens)
+    if args.prefetch_window < 0:
+        raise ValueError("prefetch window must be non-negative")
+    requests = diagnostic_requests(tokenizer, model, token_hash,
+                                   segment_tokens=args.segment_tokens,
+                                   prefetch_window=args.prefetch_window)
     if args.reuse_boundary - 1 not in spec.checkpoints:
         raise ValueError("diagnostic reuse boundary must follow a legal model checkpoint")
     numerical_policy = {"allow_bf16_reduced_precision_reduction": False,
@@ -110,6 +117,7 @@ def main():
                            "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
                            "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens,
                            "cost_probe_readiness_cells": ["streaming", "all_ready_reuse", "all_ready_dense"],
+                           "prefetch_window": args.prefetch_window,
                            "eager_cfo_reference": not args.skip_eager_cfo})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,

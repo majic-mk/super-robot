@@ -86,7 +86,7 @@ class PhysicalLayerwiseSourceLoader:
         self.events = []
 
     def begin(self, *, segment_id, source_id, canonical_layers, segment_positions,
-              expected_artifact_digest, request_id="", replica_id=""):
+              expected_artifact_digest, request_id="", replica_id="", prefetch_window=0):
         torch = self.torch
         size = getattr(canonical_layers, "full_kv_bytes", None)
         if size is None:
@@ -107,10 +107,18 @@ class PhysicalLayerwiseSourceLoader:
         started = time.perf_counter() * 1000
         start = torch.cuda.Event(enable_timing=True)
         tensors, events, layer_start_events, outstanding = {}, {}, {}, []
+        if prefetch_window < 0:
+            raise ValueError("prefetch_window must be non-negative")
+        if prefetch_window and isinstance(canonical_layers, LayerFile):
+            raise ValueError("windowed prefetch requires an in-memory CPU backing")
+        copy_layers = canonical_layers if not prefetch_window else canonical_layers[:prefetch_window]
+        pending_layers = {} if not prefetch_window else {
+            i + 1: pair for i, pair in enumerate(canonical_layers[prefetch_window:], start=prefetch_window)
+        }
         try:
             with torch.cuda.stream(self.stream):
                 start.record()
-                for index in range(len(canonical_layers)):
+                for index in range(len(copy_layers)):
                     slot = None
                     if isinstance(canonical_layers, LayerFile):
                         if len(outstanding) >= 2:
@@ -160,6 +168,7 @@ class PhysicalLayerwiseSourceLoader:
                 "path": "SSD_STAGED_TO_GPU" if isinstance(canonical_layers, LayerFile) else "CPU_PINNED_TO_GPU"})
             return LayerwiseLoadTicket(segment_id, source_id, started, size, tensors, start, events,
                 before, after, tuple(segment_positions), layer_start_events=layer_start_events,
+                pending_layers=pending_layers,
                 integrity_mode=self.integrity_mode,
                 expected_artifact_digest=expected_artifact_digest, destination_digest=destination,
                 hash_host_ms=hash_ms, d2h_hash_host_ms=d2h_ms,
@@ -167,3 +176,21 @@ class PhysicalLayerwiseSourceLoader:
         except Exception:
             self.stream.synchronize()
             raise
+
+    def prefetch_pending(self, ticket, through_layer):
+        pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
+        if not pending:
+            return
+        with self.torch.cuda.stream(self.stream):
+            for layer in pending:
+                key, value = ticket.pending_layers.pop(layer)
+                if key.device.type != "cpu" or value.device.type != "cpu" or not key.is_pinned() or not value.is_pinned():
+                    raise ValueError("windowed CPU backing must be pinned")
+                start = self.torch.cuda.Event(enable_timing=True)
+                start.record(self.stream)
+                gpu_key, gpu_value = key.to(self.device, non_blocking=True), value.to(self.device, non_blocking=True)
+                done = self.torch.cuda.Event(enable_timing=True)
+                done.record(self.stream)
+                ticket.layer_tensors[layer] = (gpu_key, gpu_value)
+                ticket.layer_start_events[layer] = start
+                ticket.layer_events[layer] = done

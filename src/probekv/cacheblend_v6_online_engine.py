@@ -33,6 +33,7 @@ class LayerwiseLoadTicket:
     source_digest_after: str
     segment_positions: Tuple[int, ...]
     layer_start_events: Dict[int, Any] = field(default_factory=dict)
+    pending_layers: Dict[int, Tuple[Any, Any]] = field(default_factory=dict)
     integrity_mode: str = "legacy_source_full"
     expected_artifact_digest: str = ""
     destination_digest: str = ""
@@ -216,6 +217,7 @@ class TorchLayerwiseSourceLoader:
         expected_artifact_digest: str = "",
         request_id: str = "",
         replica_id: str = "",
+        prefetch_window: int = 0,
     ) -> LayerwiseLoadTicket:
         if not canonical_layers:
             raise ValueError("canonical Source has no KV layers")
@@ -234,10 +236,18 @@ class TorchLayerwiseSourceLoader:
         requested_bytes = 0
         pinning_copy_bytes = 0
         pinning_host_ms = 0.0
+        if prefetch_window < 0:
+            raise ValueError("prefetch_window must be non-negative")
+        if prefetch_window and not isinstance(canonical_layers, (tuple, list)):
+            raise ValueError("windowed prefetch requires an in-memory CPU backing")
+        copy_layers = canonical_layers if not prefetch_window else canonical_layers[:prefetch_window]
+        pending_layers = {} if not prefetch_window else {
+            i + 1: pair for i, pair in enumerate(canonical_layers[prefetch_window:], start=prefetch_window)
+        }
         with self.torch.cuda.stream(self.stream):
             start_event = self.torch.cuda.Event(enable_timing=True)
             start_event.record(self.stream)
-            for layer, (key, value) in enumerate(canonical_layers, start=1):
+            for layer, (key, value) in enumerate(copy_layers, start=1):
                 copy_start = self.torch.cuda.Event(enable_timing=True)
                 copy_start.record(self.stream)
                 if key.device.type != value.device.type:
@@ -310,6 +320,7 @@ class TorchLayerwiseSourceLoader:
             source_digest_after=after,
             segment_positions=positions,
             layer_start_events=layer_start_events,
+            pending_layers=pending_layers,
             integrity_mode=mode,
             expected_artifact_digest=expected_artifact_digest,
             destination_digest=destination_digest,
@@ -322,6 +333,32 @@ class TorchLayerwiseSourceLoader:
             pinning_copy_bytes=pinning_copy_bytes,
             pinning_host_ms=pinning_host_ms,
         )
+
+    def prefetch_pending(self, ticket: LayerwiseLoadTicket, through_layer: int) -> None:
+        """Enqueue pending CPU-backed layers on the copy stream.
+
+        This is the diagnostic windowed path: callers submit the next layer
+        after the current compute starts, allowing a real copy/compute overlap.
+        """
+        pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
+        if not pending:
+            return
+        with self.torch.cuda.stream(self.stream):
+            for layer in pending:
+                key, value = ticket.pending_layers.pop(layer)
+                if key.device.type != "cpu" or value.device.type != "cpu":
+                    raise ValueError("windowed pending layers must be CPU backed")
+                if not key.is_pinned() or not value.is_pinned():
+                    raise ValueError("windowed CPU backing must be pinned")
+                start = self.torch.cuda.Event(enable_timing=True)
+                start.record(self.stream)
+                gpu_key = key.to(self.device, non_blocking=True)
+                gpu_value = value.to(self.device, non_blocking=True)
+                done = self.torch.cuda.Event(enable_timing=True)
+                done.record(self.stream)
+                ticket.layer_tensors[layer] = (gpu_key, gpu_value)
+                ticket.layer_start_events[layer] = start
+                ticket.layer_events[layer] = done
 
 
 @dataclass
@@ -378,10 +415,12 @@ class CacheBlendV6OnlineEngine:
         inner_model: Any,
         model_spec: ResumableModelSpec,
         source_loader: TorchLayerwiseSourceLoader,
+        prefetch_window: int = 0,
     ) -> None:
         self.model_spec = model_spec
         self.adapter = PinnedCacheBlendResumableAdapter(inner_model, model_spec)
         self.source_loader = source_loader
+        self.prefetch_window = int(prefetch_window)
         self.session: Optional[ProbeKVResumablePrefillSession] = None
         self.tickets: Dict[str, LayerwiseLoadTicket] = {}
         self.audit = OnlineRequestAudit(model_adapter=model_spec.adapter_name)
@@ -484,8 +523,9 @@ class CacheBlendV6OnlineEngine:
             expected_artifact_digest=expected_artifact_digest,
             request_id=request_id,
             replica_id=replica_id,
+            prefetch_window=self.prefetch_window,
         )
-        if len(ticket.layer_tensors) != self.model_spec.num_layers:
+        if len(ticket.layer_tensors) + len(ticket.pending_layers) != self.model_spec.num_layers:
             raise ValueError("canonical Source layer count differs from model")
         if len(ticket.segment_positions) != canonical_layers[0][0].shape[0]:
             raise ValueError("canonical Source rows differ from Segment length")
@@ -632,6 +672,9 @@ class CacheBlendV6OnlineEngine:
             self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
             self._compute_events[next_layer] = (compute_start, compute_end)
+            for ticket in self.tickets.values():
+                if ticket.pending_layers:
+                    self.source_loader.prefetch_pending(ticket, next_layer + 1)
 
     def overlap_trace(self) -> list[dict]:
         rows = []
