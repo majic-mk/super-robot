@@ -71,6 +71,8 @@ def main():
                    help="also collect matched-Prefix dense/fixed15 online-immutable landmarks")
     p.add_argument("--segment-tokens", type=int, default=128,
                    help="canonical diagnostic Segment length (128..640)")
+    p.add_argument("--skip-eager-cfo", action="store_true",
+                   help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
     args = p.parse_args()
     root = Path(args.output).resolve()
     if root.exists():
@@ -106,7 +108,8 @@ def main():
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
                            "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
-                           "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens})
+                           "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens,
+                           "eager_cfo_reference": not args.skip_eager_cfo})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
@@ -135,6 +138,7 @@ def main():
         "layer_controls": args.layer_controls,
         "cost_probe": args.cost_probe,
         "diagnostic_segment_tokens": args.segment_tokens,
+        "eager_cfo_reference": not args.skip_eager_cfo,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
     manifest["manifest_sha256"] = digest_json(manifest)
@@ -164,11 +168,13 @@ def main():
                 request=requests["target"], warm_request=requests["warm"]))
         from probekv.v8_schema10_canonical import capture_exact_dense_source
         from probekv.v8_schema10_native_validation import validate_correctness_observation
-        capture = capture_exact_dense_source(adapter, requests["source"], "C", eager_reference=True)
+        capture = capture_exact_dense_source(adapter, requests["source"], "C",
+                                             eager_reference=not args.skip_eager_cfo)
         cfo = {**capture["capture_audit"]["cfo"], "origin": "real_cuda_execution",
                "fake_timing": False, "paper_evidence": False}
         atomic_json(root / "cfo.json", cfo)
-        validate_correctness_observation("cfo", cfo)
+        if not args.skip_eager_cfo:
+            validate_correctness_observation("cfo", cfo)
         descriptor = requests["source"]["segments"][0]
         identity = SourceVariantIdentity(descriptor["content_key"],
             digest_json(requests["source"]["token_ids"][:descriptor["positions"][0]]),
@@ -226,7 +232,7 @@ def main():
             "staging_slots": len(loader.pool.slots), "active_hbm_reserved_bytes": backend.hbm.active_reserved_bytes,
             "paper_evidence": False})
         atomic_json(root / "result.json", {"native_prefix_k_hook_r1_passed": True,
-            "native_cfo_eager_streaming_passed": True,
+            "native_cfo_eager_streaming_passed": not args.skip_eager_cfo,
             "matched_prefix_cost_probe_passed": bool(args.cost_probe),
             "native_transfer_path": expected_path,
             "r1_observation_sha256": r1["raw_observation_sha256"], "gpu_runtime_qualified": False,
