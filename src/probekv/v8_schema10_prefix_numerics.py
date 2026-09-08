@@ -27,6 +27,8 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
     bridge = PinnedCacheBlendResumableAdapter(adapter.inner, adapter.spec)
     captures = {}
     stage_captures = {}
+    projection_inputs = {}
+    projection_shape_controls = []
     controls = {}
     with isolated_native_preflight(adapter):
         for mode in ("dense", "native_prefix", "resumable_prefix"):
@@ -66,6 +68,31 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
                                 stages[depth, name] = tuple(
                                     value.detach().cpu().clone() for value in values
                                     if torch.is_tensor(value))
+                                if name == "gate_up_projection" and depth == 6:
+                                    value = args[0].detach().cpu().clone()
+                                    projection_inputs[mode] = value
+                                    if mode == "resumable_prefix":
+                                        full = projection_inputs['dense'].to(args[0].device)
+                                        positions = rows[depth][0].to(args[0].device)
+                                        partial = args[0].detach()
+                                        linear = torch.nn.functional.linear
+                                        weight, bias = module.weight, module.bias
+                                        def chunked(x):
+                                            output = []
+                                            for start in range(0, x.shape[0], 64):
+                                                part = x[start:start + 64]
+                                                padded = torch.zeros((64, x.shape[1]), device=x.device, dtype=x.dtype)
+                                                padded[:len(part)].copy_(part)
+                                                output.append(linear(padded, weight, bias)[:len(part)])
+                                            return torch.cat(output)
+                                        projection_shape_controls.append({
+                                            "layer": depth + 1,
+                                            "input": tensor_difference(full[positions], partial),
+                                            "bf16_shape": tensor_difference(linear(full, weight, bias)[positions],
+                                                                             linear(partial, weight, bias)),
+                                            "bf16_fixed_64_rows": tensor_difference(chunked(full)[positions], chunked(partial)),
+                                            "diagnostic_only": True,
+                                        })
                             handles.append(module.register_forward_hook(stage_hook))
                 q = {**request, "max_new_tokens": 1}
                 with adapter.open_request(q, arrival_ns=time.perf_counter_ns()) as context:
@@ -111,6 +138,7 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
                                 for left, right in zip(ref, tensors)]})
     return {"controls": controls, "origin": "real_cuda_execution", "fake_timing": False,
         "stage_controls": stage_differences,
+        "projection_shape_controls": projection_shape_controls,
         "diagnostic_only": True, "qualification_passed": False, "paper_evidence": False,
         "retained_cpu_capture_bytes": sum(t.numel()*t.element_size() for rows in captures.values()
                                           for triple in rows.values() for t in triple)}
