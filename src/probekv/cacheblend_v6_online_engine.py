@@ -683,14 +683,19 @@ class CacheBlendV6OnlineEngine:
         rows = []
         for sid, ticket in self.tickets.items():
             for layer, (compute_start, compute_end) in self._compute_events.items():
-                if layer not in ticket.layer_events:
+                # The useful overlap is the next layer's transfer during
+                # this layer's compute, not the same layer's already-ready
+                # transfer.
+                copy_layer = layer + 1
+                if copy_layer not in ticket.layer_events:
                     continue
-                copy_start, copy_end = ticket.layer_copy_interval_gpu_ms(layer)
+                copy_start, copy_end = ticket.layer_copy_interval_gpu_ms(copy_layer)
                 compute_begin = float(ticket.start_event.elapsed_time(compute_start))
                 compute_finish = float(ticket.start_event.elapsed_time(compute_end))
                 overlap = max(0.0, min(copy_end, compute_finish) -
                               max(copy_start, compute_begin))
-                rows.append({"segment_id": sid, "layer": int(layer),
+                rows.append({"segment_id": sid, "compute_layer": int(layer),
+                             "copy_layer": int(copy_layer),
                              "copy_start_gpu_ms": copy_start,
                              "copy_end_gpu_ms": copy_end,
                              "compute_start_gpu_ms": compute_begin,
