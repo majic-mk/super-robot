@@ -26,13 +26,15 @@ RUNTIME_FILES = ("model_executor/models/llama.py", "model_executor/models/qwen2.
     "worker/model_runner.py", "core/block_manager_v1.py", "sequence.py")
 
 
-def diagnostic_requests(tokenizer, model_signature, tokenizer_hash):
+def diagnostic_requests(tokenizer, model_signature, tokenizer_hash, *, segment_tokens=128):
+    if not isinstance(segment_tokens, int) or not 128 <= segment_tokens <= 640:
+        raise ValueError("diagnostic Segment length must stay inside the canonical 128..640 contract")
     def tokens(text, count):
         ids = tokenizer.encode(text * (count + 1), add_special_tokens=False)
         return ids[:count]
     prefix = tokens("A shared exact prefix describes the reference library. ", 256)
     dense = tokens("New context changes the requested information. ", 32)
-    content = tokens("The canonical document records the capital and river of a city. ", 128)
+    content = tokens("The canonical document records the capital and river of a city. ", segment_tokens)
     suffix = tokens("Now answer the question using the supplied document. ", 32)
     canonical = CanonicalSegment(0, 0, len(content), tuple(content), SemanticBoundary.TOKEN,
                                  "correctness-diagnostic-v1", "diagnostic-not-development-data")
@@ -67,6 +69,8 @@ def main():
     p.add_argument("--reuse-boundary", type=int, default=2)
     p.add_argument("--cost-probe", action="store_true",
                    help="also collect matched-Prefix dense/fixed15 online-immutable landmarks")
+    p.add_argument("--segment-tokens", type=int, default=128,
+                   help="canonical diagnostic Segment length (128..640)")
     args = p.parse_args()
     root = Path(args.output).resolve()
     if root.exists():
@@ -94,7 +98,7 @@ def main():
     model = audit["model_id"] + "@" + audit["revision"]
     token_hash, patch_sha = audit["tokenizer_assets_sha256"], patch["cacheblend_patch_sha256"]
     config_sha = file_digest(Path(args.config))
-    requests = diagnostic_requests(tokenizer, model, token_hash)
+    requests = diagnostic_requests(tokenizer, model, token_hash, segment_tokens=args.segment_tokens)
     if args.reuse_boundary - 1 not in spec.checkpoints:
         raise ValueError("diagnostic reuse boundary must follow a legal model checkpoint")
     numerical_policy = {"allow_bf16_reduced_precision_reduction": False,
@@ -102,7 +106,7 @@ def main():
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
                            "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
-                           "cost_probe": args.cost_probe})
+                           "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
         "model_signature": model, "model_revision": spec.revision, "tokenizer_hash": token_hash,
@@ -130,6 +134,7 @@ def main():
         "binding": binding, "native_runtime": runtime, "diagnostic_requests": requests,
         "layer_controls": args.layer_controls,
         "cost_probe": args.cost_probe,
+        "diagnostic_segment_tokens": args.segment_tokens,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
     manifest["manifest_sha256"] = digest_json(manifest)
