@@ -256,13 +256,17 @@ def streaming_qk_attention_mass(
             valid = positions[k_start:k_end].view(1, 1, -1) <= q_positions.view(-1, 1, 1)
             probabilities = torch.exp(logits - log_denominator.unsqueeze(-1)).masked_fill(~valid, 0)
             probabilities = probabilities.mean(dim=1)
+            # One bounded block transfer, not a synchronizing CUDA .item()
+            # for every causal token pair. Keep the existing reduction order
+            # and FP32 attention arithmetic; never retain a full T x T matrix.
+            block_masses = probabilities.detach().cpu().tolist()
             for local_q, absolute_q in enumerate(range(q_start, q_end)):
                 query_occurrence = token_occurrence_ids[absolute_q]
                 for local_k, absolute_k in enumerate(range(k_start, k_end)):
                     if absolute_k > absolute_q:
                         continue
                     key_occurrence = token_occurrence_ids[absolute_k]
-                    mass = float(probabilities[local_q, local_k].item())
+                    mass = block_masses[local_q][local_k]
                     if key_occurrence == query_occurrence:
                         intra[query_occurrence] = intra.get(query_occurrence, 0.0) + mass
                     else:
@@ -297,13 +301,16 @@ def eager_qk_attention_mass(
     valid = positions.view(1, 1, -1) <= positions.view(-1, 1, 1)
     probabilities = torch.softmax(logits.masked_fill(~valid, -torch.inf), dim=-1)
     probabilities = probabilities.mean(dim=1)
+    # This independent, explicitly small-context reference may materialize
+    # the matrix, but must not synchronize once per scalar either.
+    masses = probabilities.detach().cpu().tolist()
     inter: Dict[Tuple[str, str], float] = {}
     intra: Dict[str, float] = {}
     for query_position in range(token_count):
         query_occurrence = token_occurrence_ids[query_position]
         for key_position in range(query_position + 1):
             key_occurrence = token_occurrence_ids[key_position]
-            mass = float(probabilities[query_position, key_position].item())
+            mass = masses[query_position][key_position]
             if key_occurrence == query_occurrence:
                 intra[query_occurrence] = intra.get(query_occurrence, 0.0) + mass
             else:

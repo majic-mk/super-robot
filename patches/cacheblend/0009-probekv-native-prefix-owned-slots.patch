@@ -1,0 +1,42 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -20,0 +21,18 @@
++def _probekv_owned_cache_rows(key, value, metadata, fuse):
++    # Composite KV spans the full request; native slots span only the
++    # uncomputed suffix. Never write shared exact Prefix blocks back.
++    prefix = int(fuse.get("exact_prefix_tokens", 0))
++    total = int(fuse["org_seq_len"])
++    if not 0 <= prefix < total:
++        raise ValueError("invalid exact Prefix extent")
++    if key.shape[0] != total or value.shape[0] != total:
++        raise ValueError("resumable KV must cover the complete request")
++    if metadata.num_decode_tokens != 0:
++        raise ValueError("resumable prefill cannot mix native decode rows")
++    if metadata.slot_mapping.numel() != total - prefix:
++        raise ValueError("native slot count differs from owned KV rows")
++    if metadata.num_prefill_tokens != total - prefix:
++        raise ValueError("native prefill extent differs from owned KV rows")
++    return key[prefix:], value[prefix:]
++
++
+@@ -477,1 +495,6 @@
+-            PagedAttention.write_to_paged_cache(key, value, key_cache,
++            cache_key, cache_value = key, value
++            if resumable_mode and status in [1, 2]:
++                cache_key, cache_value = _probekv_owned_cache_rows(
++                    key, value, attn_metadata, cache_fuse_metadata)
++            PagedAttention.write_to_paged_cache(cache_key, cache_value,
++                                                key_cache,
+@@ -495,2 +518,4 @@
+-            key = key[:num_prefill_tokens]
+-            value = value[:num_prefill_tokens]
++            if not resumable_mode:
++                key = key[:num_prefill_tokens]
++                value = value[:num_prefill_tokens]
++            # Resumable partial queries attend to ALL composite KV rows.
+@@ -516,1 +541,3 @@
+-            if kv_cache is None or prefill_meta.block_tables.numel() == 0:
++            if (kv_cache is None or prefill_meta.block_tables.numel() == 0
++                    or (resumable_mode and attention_status in [1, 2])):
++                # Native forward_prefix assumes contiguous suffix queries.

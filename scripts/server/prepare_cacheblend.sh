@@ -82,6 +82,10 @@ case "$mode" in
     ;;
 esac
 
+if [[ "$mode" == "probekv_v8_variant_growth_counterfactual" ]]; then
+  patches+=("0009-probekv-native-prefix-owned-slots.patch")
+fi
+
 case "$target" in
   /*) ;;
   *) echo "target must be an absolute path" >&2; exit 2 ;;
