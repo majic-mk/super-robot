@@ -260,22 +260,14 @@ class NativeRequestContext:
             rows=(("request_working_kv", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
         try:
             self._enable_original_capture()
-            # Pinned immutable inputs remain owned by this request. Transfer
-            # K and V as two contiguous layer batches instead of issuing one
-            # H2D operation per tensor (64 small copies for Mistral).
-            # Layer views preserve the engine's existing per-layer contract.
             prefix_cpu = self.native.prefix_shadow or ()
             if prefix_cpu:
-                key_cpu = a.torch.empty((len(prefix_cpu),) + tuple(prefix_cpu[0][0].shape),
-                                        dtype=prefix_cpu[0][0].dtype, device="cpu", pin_memory=True)
-                value_cpu = a.torch.empty((len(prefix_cpu),) + tuple(prefix_cpu[0][1].shape),
-                                          dtype=prefix_cpu[0][1].dtype, device="cpu", pin_memory=True)
-                a.torch.stack(tuple(pair[0] for pair in prefix_cpu), dim=0, out=key_cpu)
-                a.torch.stack(tuple(pair[1] for pair in prefix_cpu), dim=0, out=value_cpu)
-                key_gpu = key_cpu.to(a.runner.device, non_blocking=key_cpu.is_pinned())
-                value_gpu = value_cpu.to(a.runner.device, non_blocking=value_cpu.is_pinned())
-                shadows = tuple((key_gpu[layer], value_gpu[layer])
-                                for layer in range(len(prefix_cpu)))
+                # Keep the established per-layer transfer contract.  The
+                # engine retains layer-local views and the shadow store owns
+                # pinned immutable inputs; a batched stack can introduce a
+                # second allocation and erase the intended transfer benefit.
+                shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
+                                      for t in pair) for pair in prefix_cpu)
             else:
                 shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec, source_loader=a.loader)
