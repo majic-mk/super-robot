@@ -301,6 +301,30 @@ class OnlineIntegration(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "quarantined"):
             self.backend.reset(capacity=1, global_byte_budget=2000000)
 
+    def test_readiness_fence_runs_once_and_wait_enters_next_sunk_cost(self):
+        from probekv.v8_schema7_planner import FinalCommitPlanner
+        self.execute(1)
+        clock = time.perf_counter_ns
+        offset, sunk, settled = [0], [], []
+        plan = FinalCommitPlanner.plan_ready_subset
+        def changing_plan(planner, **kwargs):
+            sunk.append(kwargs["actual_sunk_ms"])
+            if len(sunk) == 1:
+                raise RuntimeError("stale Planner snapshot cannot be applied")
+            return plan(planner, **kwargs)
+        def fence(context):
+            settled.append(dict(context.frozen))
+            offset[0] += 11_000_000
+            return {"host_wait_ms": 11.}
+        with patch.object(FinalCommitPlanner, "plan_ready_subset", changing_plan), \
+                patch.object(TinyLiveContext, "settle_preparation_for_replan", fence, create=True), \
+                patch.object(time, "perf_counter_ns", side_effect=lambda: clock() + offset[0]):
+            row = self.execute(2)
+        self.assertEqual(len(settled), 1)
+        self.assertGreaterEqual(sunk[1] - sunk[0], 11.)
+        self.assertTrue(row["committed_source_variant_ids"])
+        self.assertEqual(sum(e["kind"] == "winner_preparation" for e in row["runtime_events"]), 1)
+
     def test_freeze_lease_failure_preserves_selected_audit_but_no_prefetch(self):
         self.execute(1)
         with patch.object(self.backend.store, "leased_winner", side_effect=RuntimeError("generation changed")):

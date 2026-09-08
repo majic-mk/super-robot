@@ -402,15 +402,27 @@ class NativeRequestContext:
     def planner_snapshot(self, epoch):
         ready = {sid: [l for l, event in ticket.layer_events.items() if event.query()]
                  for sid, ticket in self.prepared.items()}
-        # vLLM may recycle/renumber the native Sequence object while the
-        # request advances (notably around decode metadata preparation).  That
-        # allocator-local number is not a scheduler snapshot identity and made
-        # an otherwise unchanged request look stale on every planner retry.
-        # Request identity plus our monotone generation/depth/readiness state is
-        # stable and still invalidates decisions when execution state changes.
-        return PlannerSnapshot(self.generation, 1, digest_json([self.request["request_id"],
+        return PlannerSnapshot(self.generation, 1, digest_json([self.native.sequence.seq_id,
                                self.generation, self.current_completed_depth, ready]),
                                epoch, self.adapter.costs.sha)
+
+    def settle_preparation_for_replan(self):
+        """Fence only existing winner copies after a readiness-snapshot race.
+
+        This starts no transfer and changes no Source. The backend includes
+        the wait in actual sunk time before its next admission attempt.
+        """
+        before = {sid: [l for l, event in ticket.layer_events.items() if event.query()]
+                  for sid, ticket in self.prepared.items()}
+        started = time.perf_counter_ns()
+        for ticket in self.prepared.values():
+            for event in ticket.layer_events.values():
+                event.synchronize()
+        self.register_ready_hot_replicas()
+        after = {sid: [l for l, event in ticket.layer_events.items() if event.query()]
+                 for sid, ticket in self.prepared.items()}
+        return {"ready_layers_before": before, "ready_layers_after": after,
+                "host_wait_ms": (time.perf_counter_ns() - started) / 1e6}
 
     def execution_shape(self):
         physical = {}

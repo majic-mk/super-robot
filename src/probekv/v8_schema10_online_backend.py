@@ -392,6 +392,9 @@ class Schema10OnlineExperimentBackend:
                         runtime_events.append({"kind": "planner_snapshot_retry", "attempt": attempt + 1,
                             "selected_sources": dict(frozen), "timestamp_ns": time.perf_counter_ns(),
                             "snapshot_difference": getattr(exc, "snapshot_difference", None)})
+                        if attempt == 0 and hasattr(context, "settle_preparation_for_replan"):
+                            runtime_events.append({"kind": "planner_readiness_settle",
+                                **context.settle_preparation_for_replan()})
                         continue
                     # A permanently unstable snapshot is a dense fallback.
                     runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
