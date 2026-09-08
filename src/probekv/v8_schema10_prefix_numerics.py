@@ -26,6 +26,7 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
     import torch
     bridge = PinnedCacheBlendResumableAdapter(adapter.inner, adapter.spec)
     captures = {}
+    stage_captures = {}
     controls = {}
     with isolated_native_preflight(adapter):
         for mode in ("dense", "native_prefix", "resumable_prefix"):
@@ -34,7 +35,7 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
                 warm = {**warm_request, "capture_original_full_prefill": True, "max_new_tokens": 1}
                 with adapter.open_request(warm, arrival_ns=time.perf_counter_ns()) as context:
                     context.finish(lambda: None)
-            rows, handles = {}, []
+            rows, handles, stages = {}, [], {}
             def hook(depth):
                 def capture(module, args):
                     positions, hidden = args[:2]
@@ -49,6 +50,23 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
             try:
                 for depth, layer in enumerate(adapter.inner.layers):
                     handles.append(layer.register_forward_pre_hook(hook(depth)))
+                    if depth < 10:
+                        for name, module in (
+                            ("attention", layer.self_attn.attn),
+                            ("output_projection", layer.self_attn.o_proj),
+                            ("gate_up_projection", layer.mlp.gate_up_proj),
+                            ("activation", layer.mlp.act_fn),
+                            ("down_projection", layer.mlp.down_proj),
+                            ("block", layer),
+                        ):
+                            def stage_hook(module, args, output, depth=depth, name=name):
+                                if depth not in rows or (depth, name) in stages:
+                                    return
+                                values = output if isinstance(output, tuple) else (output,)
+                                stages[depth, name] = tuple(
+                                    value.detach().cpu().clone() for value in values
+                                    if torch.is_tensor(value))
+                            handles.append(module.register_forward_hook(stage_hook))
                 q = {**request, "max_new_tokens": 1}
                 with adapter.open_request(q, arrival_ns=time.perf_counter_ns()) as context:
                     prefix = context.cached_prefix_tokens
@@ -72,6 +90,7 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
             if len(rows) != adapter.spec.num_layers:
                 raise RuntimeError("layer controls omit Transformer blocks")
             captures[mode] = rows
+            stage_captures[mode] = stages
         for mode in ('native_prefix', 'resumable_prefix'):
             controls[mode] = [{"layer": d + 1, "absolute_positions": row[0].tolist(),
                 "k": tensor_difference(captures['dense'][d][1][row[0]], row[1]),
@@ -81,7 +100,17 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
             "k": tensor_difference(captures['native_prefix'][d][1], row[1]),
             "v": tensor_difference(captures['native_prefix'][d][2], row[2])}
             for d, row in captures['resumable_prefix'].items()]
+        stage_differences = {}
+        for mode in ('native_prefix', 'resumable_prefix'):
+            stage_differences[mode] = []
+            for (depth, name), tensors in stage_captures[mode].items():
+                positions = captures[mode][depth][0]
+                ref = stage_captures['dense'][depth, name]
+                stage_differences[mode].append({"layer": depth + 1, "stage": name,
+                    "outputs": [tensor_difference(left[positions], right)
+                                for left, right in zip(ref, tensors)]})
     return {"controls": controls, "origin": "real_cuda_execution", "fake_timing": False,
+        "stage_controls": stage_differences,
         "diagnostic_only": True, "qualification_passed": False, "paper_evidence": False,
         "retained_cpu_capture_bytes": sum(t.numel()*t.element_size() for rows in captures.values()
                                           for triple in rows.values() for t in triple)}
