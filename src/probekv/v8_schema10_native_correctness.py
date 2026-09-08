@@ -33,6 +33,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
         q.update(capture_logits=True, teacher_token_ids=list(teacher_token_ids),
                  max_new_tokens=len(teacher_token_ids) + 1)
     first, ticket, layers, reservation = [], None, None, None
+    boundary_ready_ns = source_ready_ns = None
     before = destination = after = None
     started = time.perf_counter_ns()
     with ExitStack() as leases:
@@ -42,6 +43,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if source_id is not None:
                         raise ValueError("Prefix control must not also force a Source")
                     context.advance_to_depth(diagnostic_completed_depth)
+                    context.synchronize()
+                    boundary_ready_ns = time.perf_counter_ns()
                 if source_id is not None:
                     descriptor = context.segments[segment_id]
                     if not 2 <= boundary <= adapter.spec.num_layers:
@@ -52,6 +55,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if context.probe_fallback_reason:
                         raise RuntimeError("combined r1 cannot pass by missing-shadow dense fallback")
                     context.advance_to_depth(boundary - 1)
+                    context.synchronize()
+                    boundary_ready_ns = time.perf_counter_ns()
                     model, content = backend.provenance["model_signature"], descriptor["content_key"]
                     layers = leases.enter_context(backend.store.leased_winner(model, content, source_id,
                         expected_generation=backend.store.pool.content_generation(model, content)))
@@ -65,6 +70,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     ticket = context.prepare_winner(segment_id, source_id, layers, reservation)
                     context.finish_selection({segment_id: source_id}, {segment_id: ticket})
                     ready, _ = context.ready_for_final_commit({segment_id: ticket})
+                    source_ready_ns = time.perf_counter_ns()
                     if ready != {segment_id: boundary}:
                         raise RuntimeError("fixed diagnostic boundary changed")
                     support = context.supports[segment_id][boundary]
@@ -114,6 +120,16 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "layer_rows": layer_rows, "committed_segments": dict(context.committed),
                     "first_token_ns": first[0], "diagnostic_start_ns": started,
                     "first_token_host_ms": (first[0] - started) / 1e6,
+                    "selection_boundary_ready_ns": boundary_ready_ns,
+                    "winner_source_ready_ns": source_ready_ns,
+                    "boundary_to_first_token_ms": (
+                        (first[0] - boundary_ready_ns) / 1e6
+                        if boundary_ready_ns is not None else None
+                    ),
+                    "winner_preparation_ms": (
+                        (source_ready_ns - boundary_ready_ns) / 1e6
+                        if source_ready_ns is not None and boundary_ready_ns is not None else None
+                    ),
                     "origin": "real_cuda_execution", "fake_timing": False,
                     "production_admission_applicable": False, "paper_evidence": False}
             finally:
