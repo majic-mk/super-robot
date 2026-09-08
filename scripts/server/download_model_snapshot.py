@@ -100,6 +100,13 @@ def audit_snapshot(snapshot: Path, model_id: str, revision: str) -> dict:
         "weight_files": [path.name for path in weights],
         "tokenizer_assets": list(tokenizer_assets),
         "selected_file_sha256": selected_hashes,
+        # Schema10 native_factory consumes the complete immutable asset map,
+        # not only the config/index subset used by the historical v6 audit.
+        "files": {
+            str(path.relative_to(snapshot)).replace("\\", "/"): sha256_file(path)
+            for path in files
+        },
+        "tokenizer_assets_sha256": tokenizer_hash,
         "adapter_name": spec.adapter_name if spec is not None else None,
         "tokenizer_hash": tokenizer_hash,
         "model_contract": {
