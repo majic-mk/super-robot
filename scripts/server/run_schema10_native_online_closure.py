@@ -53,6 +53,16 @@ def _row(category, query, provenance, sample, interval, **extra):
     return row
 
 
+def validate_native_dense_reference(native, boundary_control):
+    if (native.get("resumable_engine_used") is not False or native.get("source_id") is not None
+            or native.get("diagnostic_completed_depth") != 0 or native.get("committed_segments")
+            or native.get("whole_request_origin") != "native_prefix_dense_remaining"):
+        raise ValueError("primary dense reference must execute direct native Prefix forward")
+    for key in ("request_tokens_sha256", "cached_prefix_tokens", "prefix_cache_mode", "sampling_signature"):
+        if key not in native or native[key] != boundary_control.get(key):
+            raise ValueError("native/reference boundary control mismatch: " + key)
+
+
 def build_cost_table(correctness_root, output_path):
     root = Path(correctness_root)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -67,6 +77,8 @@ def build_cost_table(correctness_root, output_path):
     if r1.get("logit_relative_l2", 1) > 1e-4:
         raise ValueError("r=1 evidence no longer passes")
     dense = _read_signed(root / "cost-probe" / "dense_prefix.json")
+    native_dense = _read_signed(root / "cost-probe" / "native_dense_prefix.json")
+    validate_native_dense_reference(native_dense, dense)
     source = _read_signed(root / "cost-probe" / "fixed15_source.json")
     all_ready = _read_signed(root / "cost-probe" / "fixed15_all_ready.json")
     prepared_dense = _read_signed(root / "cost-probe" / "prepared_dense.json")
@@ -94,8 +106,8 @@ def build_cost_table(correctness_root, output_path):
     identity = {"prompt_token_ids_sha256": digest_json(request["token_ids"]),
                 "cached_prefix_tokens": prefix, "prefix_cache_mode": dense["prefix_cache_mode"],
                 "timing_scope": "arrival_to_first_token", "sampling": dense["sampling_signature"]}
-    dense_whole = _interval(dense["diagnostic_start_ns"], dense["first_token_ns"],
-                            dense["first_token_cuda_ms"], "first_token")
+    dense_whole = _interval(native_dense["diagnostic_start_ns"], native_dense["first_token_ns"],
+                            native_dense["first_token_cuda_ms"], "first_token")
     dense_future = _interval(dense["selection_boundary_ready_ns"], dense["first_token_ns"],
                              dense["boundary_to_first_token_cuda_ms"], "boundary_to_first_token")
     source_future = _interval(source["selection_boundary_ready_ns"], source["first_token_ns"],
@@ -107,7 +119,8 @@ def build_cost_table(correctness_root, output_path):
     source_query = lambda category: MeasurementKey(category, shape).query()
     support = source["repair_check_ms"]
     primitives = [
-        _row("dense_reference", identity, provenance, dense["first_token_host_ms"], dense_whole),
+        _row("dense_reference", identity, provenance, native_dense["first_token_host_ms"], dense_whole,
+             baseline_execution="native_prefix_direct_forward"),
         _row("source_local_dense", source_query("source_local_dense"), provenance,
              dense["boundary_to_first_token_ms"], dense_future),
         _row("source_local_marginal", source_query("source_local_marginal"), provenance,
@@ -178,7 +191,7 @@ def build_cost_table(correctness_root, output_path):
     payload = {"key_contract": EXECUTION_SHAPE_KEY, "provenance": provenance,
                "formal_profile_frozen": False, "rows": primitives, "joint_rows": joints,
                "source_correctness_manifest_sha256": manifest["manifest_sha256"],
-               "raw_observations_sha256": digest_json([dense, source, all_ready, prepared_dense]),
+               "raw_observations_sha256": digest_json([native_dense, dense, source, all_ready, prepared_dense]),
                "paper_evidence": False}
     atomic_json(output_path, payload)
     return manifest, payload

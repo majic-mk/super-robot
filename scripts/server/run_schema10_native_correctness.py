@@ -196,6 +196,8 @@ def main():
             cost_root = root / "cost-probe"
             cost_root.mkdir()
             loader.integrity_mode = "online_immutable"
+            native_dense_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                warm_request=requests["warm"], verify_full_digests=False)
             dense_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], diagnostic_completed_depth=args.reuse_boundary - 1,
                 boundary=args.reuse_boundary, verify_full_digests=False)
@@ -214,13 +216,17 @@ def main():
                     or any(source_cost[k] is not None for k in (
                         "source_digest_before", "destination_digest", "source_digest_after"))):
                 raise RuntimeError("cost probe performed per-request full-KV hashing")
-            for name, row in (("dense_prefix", dense_cost), ("fixed15_source", source_cost),
+            for name, row in (("native_dense_prefix", native_dense_cost),
+                              ("dense_prefix", dense_cost), ("fixed15_source", source_cost),
                               ("fixed15_all_ready", source_all_ready), ("prepared_dense", prepared_dense)):
                 row["raw_observation_sha256"] = digest_json(row)
                 atomic_json(cost_root / (name + ".json"), row)
             atomic_json(cost_root / "summary.json", {
                 "origin": "real_cuda_execution", "fake_timing": False,
                 "timing_scope": "matched_prefix_completed_depth_to_first_token",
+                "primary_baseline": "native_prefix_direct_forward",
+                "native_dense_first_token_ms": native_dense_cost["first_token_host_ms"],
+                "resumable_dense_first_token_ms": dense_cost["first_token_host_ms"],
                 "dense_boundary_to_first_token_ms": dense_cost["boundary_to_first_token_ms"],
                 "dense_boundary_to_first_token_cuda_ms": dense_cost["boundary_to_first_token_cuda_ms"],
                 "fixed15_boundary_to_first_token_ms": source_cost["boundary_to_first_token_ms"],
