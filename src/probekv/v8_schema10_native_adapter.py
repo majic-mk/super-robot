@@ -402,7 +402,13 @@ class NativeRequestContext:
     def planner_snapshot(self, epoch):
         ready = {sid: [l for l, event in ticket.layer_events.items() if event.query()]
                  for sid, ticket in self.prepared.items()}
-        return PlannerSnapshot(self.generation, 1, digest_json([self.native.sequence.seq_id,
+        # vLLM may recycle/renumber the native Sequence object while the
+        # request advances (notably around decode metadata preparation).  That
+        # allocator-local number is not a scheduler snapshot identity and made
+        # an otherwise unchanged request look stale on every planner retry.
+        # Request identity plus our monotone generation/depth/readiness state is
+        # stable and still invalidates decisions when execution state changes.
+        return PlannerSnapshot(self.generation, 1, digest_json([self.request["request_id"],
                                self.generation, self.current_completed_depth, ready]),
                                epoch, self.adapter.costs.sha)
 
