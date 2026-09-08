@@ -16,7 +16,8 @@ from .v8_schema6_hbm import HBMReservationKind
 
 
 def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=None,
-                             boundary=2, teacher_token_ids=None, warm_request=None):
+                             boundary=2, teacher_token_ids=None, warm_request=None,
+                             diagnostic_completed_depth=0):
     """Actual native request action; the forced action is diagnostic only."""
     import torch
     adapter = backend.adapters["legacy_multicheckpoint"]
@@ -37,6 +38,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
     with ExitStack() as leases:
         with adapter.open_request(q, arrival_ns=started) as context:
             try:
+                if diagnostic_completed_depth:
+                    if source_id is not None:
+                        raise ValueError("Prefix control must not also force a Source")
+                    context.advance_to_depth(diagnostic_completed_depth)
                 if source_id is not None:
                     descriptor = context.segments[segment_id]
                     if not 2 <= boundary <= adapter.spec.num_layers:
@@ -78,8 +83,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     raise RuntimeError("native action needs exactly one first-token event")
                 if source_id is not None and output["whole_request_origin"] != "selective_reuse":
                     raise RuntimeError("r1 Source arm silently executed dense")
-                if source_id is None and output["whole_request_origin"] != "exact_dense_full_prefill":
-                    raise RuntimeError("reference arm is not no-cache exact dense")
+                if source_id is None:
+                    expected = "native_prefix_dense_remaining" if context.cached_prefix_tokens else "exact_dense_full_prefill"
+                    if output["whole_request_origin"] != expected:
+                        raise RuntimeError("reference/control arm changed its prefill origin")
                 if ticket is not None:
                     destination = tensor_digest(t for layer in sorted(ticket.layer_tensors)
                                                 for t in ticket.layer_tensors[layer])
@@ -128,13 +135,16 @@ def run_combined_native_r1(backend, *, request, warm_request, source_id, segment
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=False)
     records = {}
-    for name, source, teacher, warm in (
-        ("dense_free", None, None, None), ("reuse_free", source_id, None, warm_request),
-        ("dense_teacher", None, teacher_token_ids, None),
-        ("reuse_teacher", source_id, teacher_token_ids, warm_request)):
+    for name, source, teacher, warm, depth in (
+        ("dense_free", None, None, None, 0), ("reuse_free", source_id, None, warm_request, 0),
+        ("dense_teacher", None, teacher_token_ids, None, 0),
+        ("reuse_teacher", source_id, teacher_token_ids, warm_request, 0),
+        ("native_prefix_teacher", None, teacher_token_ids, warm_request, 0),
+        ("resumable_prefix_teacher", None, teacher_token_ids, warm_request, 1)):
         try:
             row, logits = execute_fixed_source_arm(backend, request=request, source_id=source,
-                segment_id=segment_id, boundary=boundary, teacher_token_ids=teacher, warm_request=warm)
+                segment_id=segment_id, boundary=boundary, teacher_token_ids=teacher, warm_request=warm,
+                diagnostic_completed_depth=depth)
             if logits is not None:
                 path = root / (name + ".pt")
                 torch.save(logits.detach().cpu(), path)
@@ -154,10 +164,22 @@ def run_combined_native_r1(backend, *, request, warm_request, source_id, segment
     if left.shape != right.shape or left.ndim != 2 or not torch.isfinite(left).all() or not torch.isfinite(right).all():
         raise RuntimeError("r1 raw logits differ in geometry or contain nonfinite values")
     l2 = float((left - right).norm() / left.norm().clamp_min(1e-12))
+    # Independent controls locate error introduced by native Prefix alone,
+    # resumable Prefix, or Source commit. They never replace the original
+    # no-cache dense reference or relax the qualification threshold.
+    controls = {}
+    for name in ("native_prefix_teacher", "resumable_prefix_teacher"):
+        tensor = torch.load(root / (name + ".pt"), map_location="cpu", weights_only=True)
+        if tensor.shape != left.shape or not torch.isfinite(tensor).all():
+            raise RuntimeError("Prefix control has invalid logit geometry/values")
+        controls[name] = {"vs_dense_relative_l2": float((left - tensor).norm() / left.norm().clamp_min(1e-12)),
+            "vs_reuse_relative_l2": float((right - tensor).norm() / right.norm().clamp_min(1e-12)),
+            "vs_dense_per_position_relative_l2": ((left - tensor).norm(dim=1) / left.norm(dim=1).clamp_min(1e-12)).tolist()}
     row = {"category": "r1", "origin": "real_cuda_execution", "fake_timing": False,
         "dense_token_ids": records["dense_free"]["token_ids"],
         "reuse_token_ids": records["reuse_free"]["token_ids"],
         "logit_relative_l2": l2, "logit_token_count": left.shape[0],
+        "prefix_controls": controls,
         "arm_digests": {name: r["raw_observation_sha256"] for name, r in records.items()},
         "production_admission_applicable": False, "paper_evidence": False}
     atomic_json(root / "comparison.json", row)
