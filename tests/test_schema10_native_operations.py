@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace as NS
 
 from probekv.v8_schema10_native_operations import (NativeOperationDispatcher, OperationSpec,
@@ -24,7 +25,11 @@ class NativeOperationContractTests(unittest.TestCase):
 
     def test_cost_collector_is_not_replaced_by_a_fake_dispatcher(self):
         from probekv.v8_schema10_cost_collection import CudaCostCollector
-        with self.assertRaises(RuntimeError):
+        provenance = {k: "test" for k in ("model", "code", "patch", "gpu", "config", "timing_scope")}
+        provenance.update(runtime_profile="test-profile")
+        with patch("torch.cuda.is_available", return_value=False), self.assertRaises(RuntimeError):
+            CudaCostCollector(provenance=provenance)
+        with self.assertRaises(ValueError):
             CudaCostCollector(provenance={})
 
     def test_registered_session_rejects_missing_or_duplicate_cells(self):
