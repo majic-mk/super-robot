@@ -116,13 +116,14 @@ class ProfiledJointTimelineEstimator:
     """
     def __init__(self, *, provenance: Mapping, shape: RequestExecutionShape,
                  measurements, measurement_digest: str, allow_test_measurements=False,
-                 key_contract=LEGACY_IDENTITY_KEY):
+                 key_contract=LEGACY_IDENTITY_KEY, query_audit=None):
         validate_measurement_provenance(provenance)
         self.provenance, self.shape = dict(provenance), shape
         if key_contract not in {EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY}:
             raise ValueError("unknown measurement key contract")
         self.key_contract = key_contract
         self.measurement_digest, self.rows = measurement_digest, {}
+        self.query_audit = query_audit
         self.formal_profile_frozen = False
         for raw in measurements:
             row = dict(raw)
@@ -201,6 +202,8 @@ class ProfiledJointTimelineEstimator:
         except UnsupportedTimelineCost as exc:
             result = CostLookup("UNSUPPORTED", "", None, str(exc), self.measurement_digest)
             self.queries.append(asdict(result))
+            if self.query_audit is not None:
+                self.query_audit.append({"query": None, **asdict(result)})
             return result
         key = digest_json(query)
         row = self.rows.get(key)
@@ -214,6 +217,8 @@ class ProfiledJointTimelineEstimator:
                                              row.get("per_segment_attribution_ms", {}))
             result = CostLookup("SUPPORTED", key, estimate, None, self.measurement_digest)
         self.queries.append(asdict(result))
+        if self.query_audit is not None:
+            self.query_audit.append({"query": query, **asdict(result)})
         return result
 
     def estimate(self, context):

@@ -215,6 +215,32 @@ class StableCostTests(unittest.TestCase):
         self.assertEqual(first, estimator.query(replace(ctx, scheduler_state_id="snapshot-new")))
         self.assertNotEqual(first, estimator.query(replace(ctx, reuse_segment_ids=(), dense_fallback_segment_ids=("s",), boundary_by_segment={})))
 
+    def test_joint_query_audit_preserves_supported_and_unsupported_queries(self):
+        shape = RequestExecutionShape(12, 0, 3, 1, {"s": (2,3,4)},
+            {"s": {2: (2,), 3: (2,)}}, {},
+            {"s": {"tier": "pinned_cpu", "bytes": 36, "ready_layers": [2,3], "layout": "bf16"}},
+            {"sampling": {"temperature": 0}})
+        provenance = {k: k for k in ("model", "code", "patch", "gpu", "config", "runtime_profile", "timing_scope")}
+        ctx = JointTimelineContext(("s",), ("s",), (), (), {"s": 2}, "a", "snapshot")
+        query = ProfiledJointTimelineEstimator(provenance=provenance, shape=shape, measurements=[],
+            measurement_digest="d", allow_test_measurements=True,
+            key_contract=EXECUTION_SHAPE_KEY).query(ctx)
+        row = {"query": query, "provenance": provenance, "origin": "real_cuda_execution",
+               "fake_timing": False, "warmup_excluded": True, "outlier_policy": "none",
+               "joint_future_wall_ms_samples": [1.0]}
+        row["row_sha256"] = digest_json(row)
+        audit = []
+        estimator = ProfiledJointTimelineEstimator(provenance=provenance, shape=shape, measurements=[row],
+            measurement_digest="d", allow_test_measurements=True, key_contract=EXECUTION_SHAPE_KEY,
+            query_audit=audit)
+        self.assertEqual(estimator.lookup(ctx).status, "SUPPORTED")
+        self.assertEqual(audit[-1]["query"], query)
+        self.assertEqual(audit[-1]["status"], "SUPPORTED")
+        unsupported = replace(ctx, reuse_segment_ids=(), dense_fallback_segment_ids=("s",), boundary_by_segment={})
+        self.assertEqual(estimator.lookup(unsupported).status, "UNSUPPORTED")
+        self.assertEqual(audit[-1]["query"], estimator.query(unsupported))
+        self.assertEqual(audit[-1]["reason"], "no_exact_joint_measurement")
+
 
 class QAClosureTests(unittest.TestCase):
     def test_missing_reference_is_null_not_zero_violation(self):

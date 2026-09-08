@@ -214,15 +214,18 @@ def main():
     outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
     backend.finalize_request(request, outcome)
     atomic_json(output / "outcome.json", outcome)
+    atomic_json(output / "joint_query_audit.json", backend.costs.joint_query_audit)
     closed = bool(outcome.get("committed_source_variant_ids"))
     summary = {"code_commit": code, "source_variant_id": source.source_variant_id,
                "runtime_correctness_prerequisite_passed": True,
                "online_closed_loop_passed": closed,
                "execution_disposition": outcome.get("execution_disposition"),
                "actual_ttft_ms": outcome.get("request_ttft_ms"),
-               "matched_dense_ttft_ms": outcome.get("matched_dense_ttft_ms"),
+               "matched_dense_ttft_ms": outcome.get("coverage_event", {}).get("matched_dense_ttft_ms"),
                "final_predicted_request_total_ms": outcome.get("final_predicted_request_total_ms"),
                "runtime_events": outcome.get("runtime_events"),
+               "joint_query_statuses": [{k: row.get(k) for k in ("status", "query_digest", "reason")}
+                                        for row in backend.costs.joint_query_audit],
                "runtime_cost_profile_frozen": False, "gpu_runtime_qualified": False,
                "paper_evidence": False, "locked_test_accessed": False}
     atomic_json(output / "summary.json", summary)

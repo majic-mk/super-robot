@@ -21,6 +21,7 @@ class MeasuredRequestCostProvider:
         if data.get("provenance") != provenance or data.get("formal_profile_frozen") is not False:
             raise ValueError("sentinel costs have different provenance or pretend formal freezing")
         self.provenance, self.sha = provenance, expected_sha256
+        self.joint_query_audit = []
         self.key_contract = data.get("key_contract", LEGACY_IDENTITY_KEY)
         if self.key_contract not in {EXECUTION_SHAPE_KEY, LEGACY_IDENTITY_KEY}:
             raise ValueError("unknown measurement key contract")
@@ -136,4 +137,4 @@ class MeasuredRequestCostProvider:
     def joint_estimator(self, context):
         return ProfiledJointTimelineEstimator(provenance=self.provenance,
             shape=context.execution_shape(), measurements=self.joint_rows, measurement_digest=self.sha,
-            key_contract=self.key_contract)
+            key_contract=self.key_contract, query_audit=self.joint_query_audit)
