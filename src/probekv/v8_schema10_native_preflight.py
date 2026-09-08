@@ -194,3 +194,52 @@ def run_r1_equivalence_sentinel(*, request, dense_executor, reuse_executor,
     validate_correctness_observation("r1", row)
     row["raw_observation_sha256"] = digest_json(row)
     return row
+
+
+def run_native_teacher_forced_observation(adapter, request, *, origin_expected=None):
+    """Execute one real teacher-forced observation and return raw CPU traces.
+
+    This is diagnostic-only.  It is intentionally separate from
+    ``NativeExperimentBackend.execute`` so a correctness request can never
+    enter the production admission path by adding a request flag.
+    """
+    req = dict(request)
+    validate_tokens = req.get("teacher_token_ids")
+    if not req.get("capture_logits") or not isinstance(validate_tokens, (list, tuple)):
+        raise ValueError("teacher-forced observation requires capture_logits and teacher tokens")
+    started = time.perf_counter_ns()
+    with adapter.open_request(req, arrival_ns=time.perf_counter_ns()) as context:
+        first = []
+        output = context.finish(lambda: first.append(time.perf_counter_ns()))
+        traces = [tensor.detach().float().cpu().tolist() for tensor in context.logit_trace]
+        origin = output.get("whole_request_origin")
+    if len(first) != 1 or len(traces) < 32:
+        raise RuntimeError("teacher-forced observation lacks first-token/logit coverage")
+    if origin_expected is not None and origin != origin_expected:
+        raise RuntimeError(f"unexpected r=1 execution origin: {origin}")
+    row = {"token_ids": output["token_ids"], "logits": traces,
+        "first_token_ns": first[0], "origin": "real_cuda_execution", "fake_timing": False,
+        "whole_request_origin": origin,
+        "diagnostic_total_host_ms": (time.perf_counter_ns() - started) / 1e6,
+        "paper_evidence": False}
+    row["raw_observation_sha256"] = digest_json(row)
+    return row
+
+
+def run_native_r1_equivalence_sentinel(*, adapter, request, reuse_executor,
+                                       expected_logit_tokens=32, max_relative_l2=1e-4):
+    """Run the dense half natively and inject only the Source preparation half.
+
+    ``reuse_executor`` must perform real Source freeze, winner preparation and
+    r=1 commit using the same request.  It is not allowed to return a claimed
+    flag; the generic comparator validates raw generated IDs/logits and real
+    CUDA provenance.
+    """
+    if not callable(reuse_executor):
+        raise TypeError("r=1 native sentinel requires a real reuse executor")
+    dense = lambda req: run_native_teacher_forced_observation(
+        adapter, req, origin_expected="exact_dense_full_prefill")
+    reuse = lambda req: reuse_executor(adapter, req)
+    return run_r1_equivalence_sentinel(request=request, dense_executor=dense,
+        reuse_executor=reuse, expected_logit_tokens=expected_logit_tokens,
+        max_relative_l2=max_relative_l2)

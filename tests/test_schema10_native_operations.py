@@ -1,7 +1,8 @@
 import unittest
 from types import SimpleNamespace as NS
 
-from probekv.v8_schema10_native_operations import NativeOperationDispatcher, OperationSpec
+from probekv.v8_schema10_native_operations import (NativeOperationDispatcher, OperationSpec,
+    NativeMeasurementSession, RegisteredOperation)
 
 
 class NativeOperationContractTests(unittest.TestCase):
@@ -25,3 +26,17 @@ class NativeOperationContractTests(unittest.TestCase):
         from probekv.v8_schema10_cost_collection import CudaCostCollector
         with self.assertRaises(RuntimeError):
             CudaCostCollector(provenance={})
+
+    def test_registered_session_rejects_missing_or_duplicate_cells(self):
+        class Collector:
+            provenance = {"actual": True}
+            def measure(self, **kwargs):
+                return {"origin": "real_cuda_execution", "fake_timing": False,
+                        "row_sha256": "row"}
+        d = NativeOperationDispatcher(adapter=object(), collector=Collector())
+        session = NativeMeasurementSession(d)
+        spec = OperationSpec("comparison_batch", {"k": 1})
+        session.register(RegisteredOperation(spec, lambda: None, lambda: {}))
+        self.assertEqual(len(session.run()), 1)
+        with self.assertRaises(ValueError):
+            session.register(RegisteredOperation(spec, lambda: None, lambda: {}))
