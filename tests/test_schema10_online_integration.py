@@ -260,6 +260,24 @@ class OnlineIntegration(unittest.TestCase):
         self.assertIsNone(row["final_predicted_request_total_ms"])
         self.assertEqual(self.backend.hbm.active_reserved_bytes, 0)
 
+    def test_final_admission_includes_time_spent_inside_planner(self):
+        from probekv.v8_schema7_planner import FinalCommitPlanner
+        self.execute(1)
+        real_clock = time.perf_counter_ns
+        plan = FinalCommitPlanner.plan_ready_subset
+        offset = [0]
+        def slow_plan(planner, **kwargs):
+            result = plan(planner, **kwargs)
+            offset[0] += 1_000_000_000
+            return result
+        with patch.object(FinalCommitPlanner, "plan_ready_subset", slow_plan), \
+                patch.object(time, "perf_counter_ns", side_effect=lambda: real_clock() + offset[0]):
+            row = self.execute(2)
+        self.assertFalse(row["committed_source_variant_ids"])
+        self.assertTrue(row["selected_source_variant_ids"])
+        self.assertTrue(any(e.get("reason") == "planner_elapsed_exceeds_gamma" for e in row["runtime_events"]))
+        self.assertEqual(self.backend.hbm.active_reserved_bytes, 0)
+
     def test_quarantined_hbm_cannot_be_reset_to_free_space(self):
         from probekv.v8_schema6_hbm import HBMReservationKind
         self.backend.hbm.reserve_batch(owner_request_id="crashed", rows=(("s", 100, HBMReservationKind.WINNER_PREFETCH),))

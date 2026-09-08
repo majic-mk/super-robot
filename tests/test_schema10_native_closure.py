@@ -246,6 +246,11 @@ class StableCostTests(unittest.TestCase):
             estimator.shape = replace(shape, source_state_by_segment={
                 "s": {**shape.source_state_by_segment["s"], "ready_layers": layers}})
             self.assertEqual(estimator.lookup(ctx).status, "UNSUPPORTED")
+        rebound = estimator.for_shape(shape)
+        self.assertEqual(rebound.lookup(ctx).status, "SUPPORTED")
+        self.assertIs(rebound.rows, estimator.rows)
+        self.assertIsNot(rebound.queries, estimator.queries)
+        self.assertNotEqual(estimator.shape, rebound.shape)
 
 
 class QAClosureTests(unittest.TestCase):

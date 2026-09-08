@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 import json
+from copy import copy
 from typing import Mapping
 
 from .v8_schema10_execution import digest_json
@@ -43,15 +44,18 @@ class MeasurementKey:
     def query(self):
         forbidden = {"source_id", "source_variant_id", "request_id", "scheduler_snapshot",
                      "generation", "placement_epoch", "replica_id"}
+        scalar_types = (int, float, str, bool, type(None))
         def check(value):
             if isinstance(value, Mapping):
                 if forbidden.intersection(value):
                     raise ValueError("ephemeral identity in execution-shape measurement key")
                 for child in value.values():
-                    check(child)
+                    if type(child) not in scalar_types:
+                        check(child)
             elif isinstance(value, (tuple, list)):
                 for child in value:
-                    check(child)
+                    if type(child) not in scalar_types:
+                        check(child)
         check(self.geometry)
         return {"key_contract": EXECUTION_SHAPE_KEY, "category": self.category,
                 "geometry": dict(self.geometry)}
@@ -142,6 +146,16 @@ class ProfiledJointTimelineEstimator:
                 raise ValueError("duplicate exact-support measurement cell")
             self.rows[key] = row
         self.queries = []
+
+    def for_shape(self, shape):
+        """Bind immutable, already verified samples to one request snapshot.
+
+        File/row validation is a table-load operation. The request still builds
+        and checks its own exact query, masks and ownership snapshot.
+        """
+        result = copy(self)
+        result.shape, result.queries = shape, []
+        return result
 
     @classmethod
     def from_file(cls, path, *, expected_file_sha256, provenance, shape):

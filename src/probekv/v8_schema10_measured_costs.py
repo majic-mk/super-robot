@@ -43,6 +43,9 @@ class MeasuredRequestCostProvider:
             if key in self.rows:
                 raise ValueError("duplicate measurement cell")
             self.rows[key] = row
+        self._joint_template = ProfiledJointTimelineEstimator(provenance=self.provenance,
+            shape=None, measurements=self.joint_rows, measurement_digest=self.sha,
+            key_contract=self.key_contract, query_audit=self.joint_query_audit)
 
     @staticmethod
     def identity(context):
@@ -135,6 +138,4 @@ class MeasuredRequestCostProvider:
                 "measurement_sha256": self.sha}
 
     def joint_estimator(self, context):
-        return ProfiledJointTimelineEstimator(provenance=self.provenance,
-            shape=context.execution_shape(), measurements=self.joint_rows, measurement_digest=self.sha,
-            key_contract=self.key_contract, query_audit=self.joint_query_audit)
+        return self._joint_template.for_shape(context.execution_shape())

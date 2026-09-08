@@ -188,7 +188,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--correctness-root", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--replays", type=int, default=1,
+                        help="independent identical-state replays; preserve cold and warm results")
     args = parser.parse_args()
+    if not 1 <= args.replays <= 20:
+        raise ValueError("closure replay count must be between 1 and 20")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[2]
@@ -203,7 +207,7 @@ def main():
     cost_sha = file_digest(cost_path)
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
-                    locked_test_accessed=False)
+                    locked_test_accessed=False, closure_replays=args.replays)
     manifest["binding"]["runtime_measurement_sha256"] = cost_sha
     runtime = manifest["native_runtime"]
     runtime.update(cost_table_path=str(cost_path), cost_table_sha256=cost_sha,
@@ -228,15 +232,27 @@ def main():
     with adapter.open_request({**requests["warm"], "capture_original_full_prefill": True},
                               arrival_ns=time.perf_counter_ns()) as context:
         context.finish(lambda: None)
-    initial = backend.snapshot(retain_backing=False)
+    initial = backend.snapshot(retain_backing=True)
     dispatch = {"selection_path": "legacy_multicheckpoint", "gate1_mode": "explicit_barrier",
                 "selection_budget_policy": "end_to_end_aware"}
     event_binding = {**manifest["binding"], "dispatch": digest_json(dispatch),
                      "initial_state_sha256": digest_json(initial), "job_id": "mistral-online-closure"}
     backend.event_log = OnlineEventLog(output / "events.jsonl", binding=event_binding)
-    request = requests["target"]
-    outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
-    backend.finalize_request(request, outcome)
+    replay_summaries = []
+    for replay in range(args.replays):
+        if replay:
+            backend.restore(initial)
+        request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay)}
+        outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
+        backend.finalize_request(request, outcome)
+        atomic_json(output / ("outcome-%02d.json" % replay), outcome)
+        replay_summaries.append({"replay": replay, "kernel_state": "cold_selector" if replay == 0 else "after_prior_replay",
+            "source_committed": bool(outcome.get("committed_source_variant_ids")),
+            "actual_ttft_ms": outcome.get("request_ttft_ms"),
+            "matched_dense_ttft_ms": outcome.get("coverage_event", {}).get("matched_dense_ttft_ms"),
+            "final_predicted_request_total_ms": outcome.get("final_predicted_request_total_ms"),
+            "initial_pool_snapshot_sha256": outcome.get("initial_pool_snapshot_sha256")})
+    backend.release_snapshot(initial)
     atomic_json(output / "outcome.json", outcome)
     atomic_json(output / "joint_query_audit.json", backend.costs.joint_query_audit)
     closed = bool(outcome.get("committed_source_variant_ids"))
@@ -250,6 +266,7 @@ def main():
                "runtime_events": outcome.get("runtime_events"),
                "joint_query_statuses": [{k: row.get(k) for k in ("status", "query_digest", "reason")}
                                         for row in backend.costs.joint_query_audit],
+               "replay_summaries": replay_summaries,
                "runtime_cost_profile_frozen": False, "gpu_runtime_qualified": False,
                "paper_evidence": False, "locked_test_accessed": False}
     atomic_json(output / "summary.json", summary)

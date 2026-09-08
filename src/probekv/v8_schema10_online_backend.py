@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import math
 from threading import RLock
 import time
@@ -358,15 +358,27 @@ class Schema10OnlineExperimentBackend:
             snapshot = context.planner_snapshot(self.hbm.epoch)
             try:
                 estimator = self.costs.joint_estimator(context)
+                planner_started_ns = time.perf_counter_ns()
                 result = FinalCommitPlanner(estimator).plan_ready_subset(inventory_segment_ids=tuple(inventory),
                     eligible_ready_segment_ids=tuple(ready_boundaries), committed_segment_ids=(),
-                    actual_boundary_by_segment=ready_boundaries, actual_sunk_ms=(time.perf_counter_ns() - arrival_ns) / 1e6,
+                    actual_boundary_by_segment=ready_boundaries, actual_sunk_ms=(planner_started_ns - arrival_ns) / 1e6,
                     dense_reference_total_ms=dense, snapshot=snapshot,
                     current_snapshot=context.planner_snapshot(self.hbm.epoch), union_mask_digest=union_digest)
                 snapshot.assert_current(context.planner_snapshot(self.hbm.epoch))
-                context.commit_reuse(result)
-                accepted, final_total = result.accepted_ready_segment_ids, result.request_total_ms
-                runtime_events.append({"kind": "final_commit", "decision": asdict(result)})
+                planner_elapsed_ms = (time.perf_counter_ns() - planner_started_ns) / 1e6
+                result = replace(result, request_total_ms=result.request_total_ms + planner_elapsed_ms)
+                if result.accepted_ready_segment_ids and result.request_total_ms > .8 * dense:
+                    # The actual planner is part of request sunk time. A slow
+                    # query must not authorize a path with an obsolete budget.
+                    runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
+                        "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None,
+                        "proposed_request_total_ms": result.request_total_ms,
+                        "planner_elapsed_ms": planner_elapsed_ms, "reason": "planner_elapsed_exceeds_gamma"})
+                else:
+                    context.commit_reuse(result)
+                    accepted, final_total = result.accepted_ready_segment_ids, result.request_total_ms
+                    runtime_events.append({"kind": "final_commit", "decision": asdict(result),
+                                           "planner_elapsed_ms": planner_elapsed_ms})
             except UnsupportedTimelineCost as exc:
                 runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
                     "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None, "reason": str(exc)})
