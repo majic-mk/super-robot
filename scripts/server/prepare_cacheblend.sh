@@ -86,6 +86,7 @@ if [[ "$mode" == "probekv_v8_variant_growth_counterfactual" ]]; then
   patches+=("0009-probekv-native-prefix-owned-slots.patch")
   patches+=("0010-probekv-composite-rope-flat-heads.patch")
   patches+=("0011-probekv-matched-prefill-kernel.patch")
+  patches+=("0012-probekv-bounded-fused-norm.patch")
 fi
 
 case "$target" in

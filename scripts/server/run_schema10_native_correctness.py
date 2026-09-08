@@ -91,7 +91,7 @@ def main():
     config_sha = file_digest(Path(args.config))
     requests = diagnostic_requests(tokenizer, model, token_hash)
     numerical_policy = {"allow_bf16_reduced_precision_reduction": False,
-                        "prefill_attention_kernel": "cutlass_mha"}
+                        "prefill_attention_kernel": "cutlass_mha", "fused_norm_max_rows": 128}
     plan_sha = digest_json({"requests": requests, "code": sha, "model": model, "patch": patch_sha,
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()

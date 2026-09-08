@@ -54,8 +54,10 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
                     handles.append(layer.register_forward_pre_hook(hook(depth)))
                     if depth < 10:
                         for name, module in (
+                            ("input_norm", layer.input_layernorm),
                             ("attention", layer.self_attn.attn),
                             ("output_projection", layer.self_attn.o_proj),
+                            ("post_attention_norm", layer.post_attention_layernorm),
                             ("gate_up_projection", layer.mlp.gate_up_proj),
                             ("activation", layer.mlp.act_fn),
                             ("down_projection", layer.mlp.down_proj),
@@ -141,4 +143,7 @@ def run_prefix_layer_controls(adapter, *, request, warm_request):
         "projection_shape_controls": projection_shape_controls,
         "diagnostic_only": True, "qualification_passed": False, "paper_evidence": False,
         "retained_cpu_capture_bytes": sum(t.numel()*t.element_size() for rows in captures.values()
-                                          for triple in rows.values() for t in triple)}
+                                          for triple in rows.values() for t in triple)
+            + sum(t.numel()*t.element_size() for stages in stage_captures.values()
+                  for tensors in stages.values() for t in tensors)
+            + sum(t.numel()*t.element_size() for t in projection_inputs.values())}

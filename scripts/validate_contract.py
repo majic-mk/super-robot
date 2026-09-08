@@ -534,8 +534,8 @@ def main() -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         errors.append("schema10 CacheBlend patch contract is invalid: %s" % error)
     else:
-        if len(schema10_patches) != 11:
-            errors.append("schema10 CacheBlend patchset must contain eleven patches")
+        if len(schema10_patches) != 12:
+            errors.append("schema10 CacheBlend patchset must contain twelve patches")
     try:
         schema7_lock = json.loads(
             Path("configs/a800_server_lock_v8_schema7.json").read_text(

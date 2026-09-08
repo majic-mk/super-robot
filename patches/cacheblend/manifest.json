@@ -98,7 +98,8 @@
       "0008-probekv-resumable-active-kv-writeback.patch",
       "0009-probekv-native-prefix-owned-slots.patch",
       "0010-probekv-composite-rope-flat-heads.patch",
-      "0011-probekv-matched-prefill-kernel.patch"
+      "0011-probekv-matched-prefill-kernel.patch",
+      "0012-probekv-bounded-fused-norm.patch"
     ]
   },
   "runtime_modes": {

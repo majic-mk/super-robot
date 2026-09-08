@@ -1,0 +1,29 @@
+diff --git a/vllm_blend/vllm/model_executor/layers/layernorm.py b/vllm_blend/vllm/model_executor/layers/layernorm.py
+--- a/vllm_blend/vllm/model_executor/layers/layernorm.py
++++ b/vllm_blend/vllm/model_executor/layers/layernorm.py
+@@ -8,0 +9,20 @@
++# Opt-in numerical policy: keep the pinned fused reduction launch invariant.
++_PROBEKV_FUSED_NORM_MAX_ROWS = None
++
++
++def _probekv_fused_add_rms_norm(x, residual, weight, epsilon):
++    limit = _PROBEKV_FUSED_NORM_MAX_ROWS
++    if limit is None:
++        return ops.fused_add_rms_norm(x, residual, weight, epsilon)
++    if limit != 128:
++        raise RuntimeError("unsupported fused RMSNorm row policy")
++    if (x.ndim != 2 or residual.shape != x.shape
++            or not x.is_contiguous() or not residual.is_contiguous()):
++        raise ValueError("bounded fused RMSNorm requires contiguous token rows")
++    # The pinned kernel changes reduction width at num_tokens=256.
++    # Each call stays below it; preserve BOTH in-place output contracts.
++    for start in range(0, x.shape[0], limit):
++        ops.fused_add_rms_norm(
++            x[start:start + limit], residual[start:start + limit], weight, epsilon)
++
++
+@@ -53,3 +73,3 @@
+         if residual is not None:
+-            ops.fused_add_rms_norm(
++            _probekv_fused_add_rms_norm(
+                 x,
