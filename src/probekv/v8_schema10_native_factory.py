@@ -22,7 +22,7 @@ from .v8_schema10_prefix_shadow import PrefixShadowStore
 from .v8_schema10_pool import Schema10SourcePool
 from .v8_schema10_profile import VariantAdmissionProfileV10, PreparationPolicyProfile
 from .v8_schema10_selector import Schema10CheckpointSelector
-from .v8_schema9_contracts import AbsoluteResidualThreshold
+from .v8_schema10_contracts import AbsoluteResidualThreshold
 from .model_adapters import SCHEMA6_MODEL_SPECS
 from .v8_schema6_hbm import UnifiedHBMReservationManager
 
@@ -58,8 +58,8 @@ def validate_native_attachment(manifest, *, allow_unmeasured=False):
             or audit.get("tokenizer_assets_sha256") != source["tokenizer_hash"]):
         raise ValueError("native model/revision/tokenizer audit differs")
     for relative, sha in audit.get("files", {}).items():
-        path = (Path(runtime["model_path"]) / relative).resolve()
-        if not path.is_relative_to(Path(runtime["model_path"]).resolve()) or file_digest(path) != sha:
+        path = verified_model_asset_path(runtime["model_path"], relative)
+        if file_digest(path) != sha:
             raise ValueError("model asset changed since audit")
     if not audit.get("files"):
         raise ValueError("model audit contains no actual asset hashes")
@@ -70,6 +70,20 @@ def validate_native_attachment(manifest, *, allow_unmeasured=False):
         if runtime["cost_provenance"].get(cost_field) != manifest["binding"].get(binding_field):
             raise ValueError("cost/manifest provenance differs: " + cost_field)
     return runtime
+
+
+def verified_model_asset_path(model_path, relative):
+    """Permit HF snapshot -> same-repository blobs, never arbitrary traversal."""
+    root, name = Path(model_path).resolve(), Path(relative)
+    if name.is_absolute() or ".." in name.parts:
+        raise ValueError("invalid model asset relative path")
+    resolved = (root / name).resolve()
+    allowed = [root]
+    if root.parent.name == "snapshots":
+        allowed.append((root.parent.parent / "blobs").resolve())
+    if not any(resolved.is_relative_to(base) for base in allowed) or not resolved.is_file():
+        raise ValueError("model asset escapes snapshot and same-repository HF blobs")
+    return resolved
 
 
 def verify_installed_runtime_sources(runtime, vllm_root):

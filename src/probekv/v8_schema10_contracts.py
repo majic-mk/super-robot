@@ -2,9 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Mapping, Optional
 
-from .v8_schema9_contracts import AbsoluteResidualThreshold, DenseKVProvenance
+from .v8_schema9_contracts import DenseKVProvenance
+
+
+@dataclass(frozen=True)
+class AbsoluteResidualThreshold:
+    """Schema10 supports legacy completed depths as well as FAST d1/d2.
+
+    Keep the schema9 d1/d2-only type unchanged for historical readers.
+    """
+    completed_depth: int
+    upper_residual: float
+
+    def __post_init__(self):
+        if type(self.completed_depth) is not int or self.completed_depth < 1:
+            raise ValueError("schema10 threshold requires a positive completed depth")
+        if not math.isfinite(self.upper_residual) or self.upper_residual < 0:
+            raise ValueError("schema10 threshold must be finite and nonnegative")
 
 
 V8_SCHEMA10_PROTOCOL_VERSION = 8

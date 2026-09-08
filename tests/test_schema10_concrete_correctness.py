@@ -1,0 +1,42 @@
+"""CPU interface tests only; these do not generate native/GPU evidence."""
+import math
+from pathlib import Path
+import tempfile
+import unittest
+
+from probekv.v8_schema10_contracts import AbsoluteResidualThreshold
+from probekv.v8_schema9_contracts import AbsoluteResidualThreshold as OldThreshold
+from probekv.v8_schema10_native_factory import verified_model_asset_path
+from probekv.v8_schema10_native_correctness import run_combined_native_r1
+
+
+class ConcreteCorrectnessTests(unittest.TestCase):
+    def test_legacy_depths_do_not_use_schema9_d1d2_constraint(self):
+        for d in (1, 2, 4, 5, 7, 8):
+            self.assertEqual(AbsoluteResidualThreshold(d, .25).completed_depth, d)
+        with self.assertRaises(ValueError):
+            OldThreshold(8, .25)
+        for d, value in ((0, .25), (True, .25), (1, math.nan), (1, math.inf), (1, -.1)):
+            with self.assertRaises(ValueError):
+                AbsoluteResidualThreshold(d, value)
+
+    def test_asset_path_rejects_traversal_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "config.json").write_text("{}")
+            self.assertEqual(verified_model_asset_path(path, "config.json"), (path / "config.json").resolve())
+            for name in ("../config.json", "missing.json", str(path / "config.json")):
+                with self.assertRaises(ValueError):
+                    verified_model_asset_path(path, name)
+
+    def test_short_teacher_trace_fails_before_gpu_or_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "not-created"
+            with self.assertRaises(ValueError):
+                run_combined_native_r1(None, request={}, warm_request={}, source_id="s", segment_id="c",
+                                      teacher_token_ids=[1] * 30, output_dir=output)
+            self.assertFalse(output.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
