@@ -40,8 +40,14 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                  max_new_tokens=len(teacher_token_ids) + 1)
     first, ticket, layers, reservation = [], None, None, None
     boundary_ready_ns = source_ready_ns = None
+    winner_ready_layers = []
+    cuda_start = torch.cuda.Event(enable_timing=True)
+    cuda_boundary = torch.cuda.Event(enable_timing=True)
+    cuda_source_ready = torch.cuda.Event(enable_timing=True)
+    cuda_first_token = torch.cuda.Event(enable_timing=True)
     before = destination = after = None
     started = time.perf_counter_ns()
+    cuda_start.record()
     with ExitStack() as leases:
         with adapter.open_request(q, arrival_ns=started) as context:
             try:
@@ -51,6 +57,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     context.advance_to_depth(diagnostic_completed_depth)
                     context.synchronize()
                     boundary_ready_ns = time.perf_counter_ns()
+                    cuda_boundary.record()
                 if source_id is not None:
                     descriptor = context.segments[segment_id]
                     if not 2 <= boundary <= adapter.spec.num_layers:
@@ -63,6 +70,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     context.advance_to_depth(boundary - 1)
                     context.synchronize()
                     boundary_ready_ns = time.perf_counter_ns()
+                    cuda_boundary.record()
                     model, content = backend.provenance["model_signature"], descriptor["content_key"]
                     layers = leases.enter_context(backend.store.leased_winner(model, content, source_id,
                         expected_generation=backend.store.pool.content_generation(model, content)))
@@ -78,6 +86,9 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     context.finish_selection({segment_id: source_id}, {segment_id: ticket})
                     ready, _ = context.ready_for_final_commit({segment_id: ticket})
                     source_ready_ns = time.perf_counter_ns()
+                    cuda_source_ready.record()
+                    winner_ready_layers = sorted(layer for layer, event in ticket.layer_events.items()
+                                                 if event.query())
                     if ready != {segment_id: boundary}:
                         raise RuntimeError("fixed diagnostic boundary changed")
                     support = context.supports[segment_id][boundary]
@@ -94,7 +105,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     backend.hbm.promote(reservation.reservation_id,
                         expected=HBMReservationKind.WINNER_PREFETCH,
                         target=HBMReservationKind.COMMITTED_EXECUTION)
-                output = context.finish(lambda: first.append(time.perf_counter_ns()))
+                def mark_first_token():
+                    cuda_first_token.record()
+                    first.append(time.perf_counter_ns())
+                output = context.finish(mark_first_token)
                 context.synchronize()
                 if len(first) != 1:
                     raise RuntimeError("native action needs exactly one first-token event")
@@ -140,6 +154,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "layer_rows": layer_rows, "committed_segments": dict(context.committed),
                     "first_token_ns": first[0], "diagnostic_start_ns": started,
                     "first_token_host_ms": (first[0] - started) / 1e6,
+                    "first_token_cuda_ms": float(cuda_start.elapsed_time(cuda_first_token)),
                     "prompt_token_count": len(q["token_ids"]),
                     "prefix_cache_mode": context.prefix_cache_mode,
                     "sampling_signature": dict(context.sampling_signature),
@@ -150,12 +165,24 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     ),
                     "selection_boundary_ready_ns": boundary_ready_ns,
                     "winner_source_ready_ns": source_ready_ns,
+                    "winner_ready_layers": winner_ready_layers,
+                    "winner_copy_in_flight_at_commit_check": bool(
+                        ticket is not None and len(winner_ready_layers) < len(ticket.layer_events)
+                    ),
                     "boundary_to_first_token_ms": (
                         (first[0] - boundary_ready_ns) / 1e6
                         if boundary_ready_ns is not None else None
                     ),
+                    "boundary_to_first_token_cuda_ms": (
+                        float(cuda_boundary.elapsed_time(cuda_first_token))
+                        if boundary_ready_ns is not None else None
+                    ),
                     "winner_preparation_ms": (
                         (source_ready_ns - boundary_ready_ns) / 1e6
+                        if source_ready_ns is not None and boundary_ready_ns is not None else None
+                    ),
+                    "winner_preparation_cuda_ms": (
+                        float(cuda_boundary.elapsed_time(cuda_source_ready))
                         if source_ready_ns is not None and boundary_ready_ns is not None else None
                     ),
                     "repair_check_ms": (
@@ -163,6 +190,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     ),
                     "ready_to_first_token_ms": (
                         (first[0] - source_ready_ns) / 1e6
+                        if source_ready_ns is not None else None
+                    ),
+                    "ready_to_first_token_cuda_ms": (
+                        float(cuda_source_ready.elapsed_time(cuda_first_token))
                         if source_ready_ns is not None else None
                     ),
                     "origin": "real_cuda_execution", "fake_timing": False,

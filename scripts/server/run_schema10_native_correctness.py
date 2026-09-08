@@ -212,9 +212,13 @@ def main():
                 "origin": "real_cuda_execution", "fake_timing": False,
                 "timing_scope": "matched_prefix_completed_depth_to_first_token",
                 "dense_boundary_to_first_token_ms": dense_cost["boundary_to_first_token_ms"],
+                "dense_boundary_to_first_token_cuda_ms": dense_cost["boundary_to_first_token_cuda_ms"],
                 "fixed15_boundary_to_first_token_ms": source_cost["boundary_to_first_token_ms"],
+                "fixed15_boundary_to_first_token_cuda_ms": source_cost["boundary_to_first_token_cuda_ms"],
                 "fixed15_ready_to_first_token_ms": source_cost["ready_to_first_token_ms"],
+                "fixed15_ready_to_first_token_cuda_ms": source_cost["ready_to_first_token_cuda_ms"],
                 "winner_preparation_ms": source_cost["winner_preparation_ms"],
+                "winner_preparation_cuda_ms": source_cost["winner_preparation_cuda_ms"],
                 "repair_check_ms": source_cost["repair_check_ms"],
                 "request_full_kv_digest_performed": False,
                 "formal_profile_frozen": False, "paper_evidence": False})
