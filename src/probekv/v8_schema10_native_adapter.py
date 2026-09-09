@@ -365,7 +365,12 @@ class NativeRequestContext:
                 # Query first; retain the blocking wait for an in-flight copy.
                 event = self.prepared[sid].layer_events[layer]
                 if not event.query():
-                    event.synchronize()
+                    # Keep the dependency on the GPU timeline.  A host-side
+                    # synchronize here serializes Python submission with the
+                    # layerwise H2D copy; Event.wait inserts the same ordering
+                    # on the active compute stream while allowing the host to
+                    # continue preparing the layer call.
+                    event.wait(self.adapter.torch.cuda.current_stream())
             self.engine.advance_to_layer(layer)
             self.generation += 1
 
