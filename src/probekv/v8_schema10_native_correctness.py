@@ -174,6 +174,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "diagnostic_completed_depth": diagnostic_completed_depth or (boundary - 1 if source_id else 0),
                     "diagnostic_repair_ratio": float(repair_ratio) if source_id is not None else None,
                     "executed_prefetch_window": int(q.get("prefetch_window", 0)),
+                    "defer_layer_timing": bool(q.get("defer_layer_timing", False)),
                     "expected_source_layers": ticket.expected_layer_count if ticket else None,
                     "source_fully_ready_at_finish": ticket.fully_ready() if ticket else None,
                     "loader_full_digest_verified": ticket.per_request_full_digest_verified if ticket else None,

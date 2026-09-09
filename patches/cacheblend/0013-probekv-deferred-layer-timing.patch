@@ -1,0 +1,101 @@
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -390,2 +390,6 @@
+-        metadata = self.cache_fuse_metadata
+-        metadata["active_positions"] = active
++        metadata = self.cache_fuse_metadata
++        defer_timing = bool(metadata.get("probekv_defer_layer_timing", False))
++        active_cpu = tuple(active_positions)
++        target_cpu = tuple(target_active_positions)
++        same_target = (active_cpu == target_cpu) if defer_timing else bool(torch.equal(active, target))
++        metadata["active_positions"] = active
+@@ -396,1 +400,1 @@
+-        shrinking = not torch.equal(active, target)
++        shrinking = not same_target
+@@ -401,7 +405,8 @@
+-        dense_full_repair = (
+-            transition
+-            and not prefix_active
+-            and not metadata["reuse_active"]
+-            and torch.equal(active, target)
+-            and torch.equal(active, full_prompt_positions)
+-        )
++        same_full = (active_cpu == tuple(range(metadata["org_seq_len"]))) if defer_timing else bool(torch.equal(active, full_prompt_positions))
++        dense_full_repair = (
++            transition
++            and not prefix_active
++            and not metadata["reuse_active"]
++            and same_target
++            and same_full
++        )
+@@ -420,2 +425,3 @@
+-        end.record()
+-        end.synchronize()
++        end.record()
++        if not defer_timing:
++            end.synchronize()
+@@ -427,2 +433,3 @@
+-            "gpu_ms": float(start.elapsed_time(end)),
+-            "host_ms": 0.0,
++            "gpu_ms": None if defer_timing else float(start.elapsed_time(end)),
++            "timing_events": (start, end) if defer_timing else None,
++            "host_ms": 0.0,
+@@ -437,4 +444,3 @@
+-                "active_equals_target": bool(torch.equal(active, target)),
+-                "active_equals_full_prompt": bool(
+-                    torch.equal(active, full_prompt_positions)
+-                ),
++                "active_equals_target": same_target,
++                "active_equals_full_prompt": same_full,
++                "deferred_layer_timing": defer_timing,
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -340,2 +340,6 @@
+-        metadata = self.cache_fuse_metadata
+-        metadata["active_positions"] = active
++        metadata = self.cache_fuse_metadata
++        defer_timing = bool(metadata.get("probekv_defer_layer_timing", False))
++        active_cpu = tuple(active_positions)
++        target_cpu = tuple(target_active_positions)
++        same_target = (active_cpu == target_cpu) if defer_timing else bool(torch.equal(active, target))
++        metadata["active_positions"] = active
+@@ -346,1 +350,1 @@
+-        shrinking = not torch.equal(active, target)
++        shrinking = not same_target
+@@ -351,7 +355,8 @@
+-        dense_full_repair = (
+-            transition
+-            and not prefix_active
+-            and not metadata["reuse_active"]
+-            and torch.equal(active, target)
+-            and torch.equal(active, full_prompt_positions)
+-        )
++        same_full = (active_cpu == tuple(range(metadata["org_seq_len"]))) if defer_timing else bool(torch.equal(active, full_prompt_positions))
++        dense_full_repair = (
++            transition
++            and not prefix_active
++            and not metadata["reuse_active"]
++            and same_target
++            and same_full
++        )
+@@ -370,2 +375,3 @@
+-        end.record()
+-        end.synchronize()
++        end.record()
++        if not defer_timing:
++            end.synchronize()
+@@ -377,1 +383,3 @@
+-            "gpu_ms": float(start.elapsed_time(end)), "host_ms": 0.0,
++            "gpu_ms": None if defer_timing else float(start.elapsed_time(end)),
++            "timing_events": (start, end) if defer_timing else None,
++            "host_ms": 0.0,
+@@ -387,4 +395,3 @@
+-                "active_equals_target": bool(torch.equal(active, target)),
+-                "active_equals_full_prompt": bool(
+-                    torch.equal(active, full_prompt_positions)
+-                ),
++                "active_equals_target": same_target,
++                "active_equals_full_prompt": same_full,
++                "deferred_layer_timing": defer_timing,

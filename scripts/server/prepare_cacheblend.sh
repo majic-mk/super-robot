@@ -89,6 +89,14 @@ if [[ "$mode" == "probekv_v8_variant_growth_counterfactual" ]]; then
   patches+=("0012-probekv-bounded-fused-norm.patch")
 fi
 
+if [[ "${PROBEKV_DEFERRED_LAYER_TIMING:-0}" == "1" ]]; then
+  if [[ "$mode" != "probekv_v8_variant_growth_counterfactual" ]]; then
+    echo "deferred timing diagnostic requires the schema10 base patch set" >&2
+    exit 2
+  fi
+  patches+=("0013-probekv-deferred-layer-timing.patch")
+fi
+
 case "$target" in
   /*) ;;
   *) echo "target must be an absolute path" >&2; exit 2 ;;

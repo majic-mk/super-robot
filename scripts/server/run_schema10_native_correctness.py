@@ -78,6 +78,8 @@ def main():
                    help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
     p.add_argument("--hardware-trace", action="store_true",
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
+    p.add_argument("--defer-layer-timing", action="store_true",
+                   help="opt-in audited 0013 patch: resolve timing after prefill, preserve layer dependency waits")
     args = p.parse_args()
     if args.hardware_trace and not args.cost_probe:
         p.error("--hardware-trace requires --cost-probe")
@@ -112,6 +114,8 @@ def main():
     requests = diagnostic_requests(tokenizer, model, token_hash,
                                    segment_tokens=args.segment_tokens,
                                    prefetch_window=args.prefetch_window)
+    for request_name in ("target", "warm", "source"):
+        requests[request_name]["defer_layer_timing"] = args.defer_layer_timing
     if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:
         raise ValueError("eager CFO reference requires total Source request <=512 tokens; "
                          "preregister --skip-eager-cfo for longer overlap-only diagnostics")
@@ -156,6 +160,7 @@ def main():
         "cost_probe": args.cost_probe,
         "diagnostic_segment_tokens": args.segment_tokens,
         "hardware_trace": args.hardware_trace,
+        "defer_layer_timing": args.defer_layer_timing,
         "eager_cfo_reference": not args.skip_eager_cfo,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}

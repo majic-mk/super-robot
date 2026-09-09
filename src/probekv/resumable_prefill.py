@@ -11,14 +11,17 @@ class LayerAdvanceResult:
     hidden_states: Any
     residual: Any
     working_kv: Any
-    gpu_ms: float = 0.0
+    gpu_ms: Optional[float] = 0.0
     host_ms: float = 0.0
     union_mask_digest: str = ""
     runtime_debug: Mapping[str, Any] = field(default_factory=dict)
+    timing_events: Optional[Tuple[Any, Any]] = None
 
     def __post_init__(self) -> None:
-        if self.gpu_ms < 0 or self.host_ms < 0:
+        if (self.gpu_ms is not None and self.gpu_ms < 0) or self.host_ms < 0:
             raise ValueError("layer timings must be non-negative")
+        if self.gpu_ms is None and (self.timing_events is None or len(self.timing_events) != 2):
+            raise ValueError("pending layer timing requires actual CUDA events")
 
 
 class ResumablePrefillAdapter(Protocol):
@@ -129,6 +132,7 @@ class ProbeKVResumablePrefillSession:
         default_factory=dict
     )
     layer_audit: list[Dict[str, Any]] = field(default_factory=list)
+    pending_timing_events: Dict[int, Tuple[Any, Any]] = field(default_factory=dict)
     _pending_target_positions: Optional[Tuple[int, ...]] = None
     _pending_reuse_commit: bool = False
     _started: bool = False
@@ -365,6 +369,8 @@ class ProbeKVResumablePrefillSession:
             self.working_kv = result.working_kv
             self.active_positions = target
             self.current_layer = layer
+            if result.timing_events is not None:
+                self.pending_timing_events[layer] = result.timing_events
             self.layer_audit.append(
                 {
                     "layer": layer,
@@ -378,6 +384,19 @@ class ProbeKVResumablePrefillSession:
             )
             self._pending_target_positions = None
             self._pending_reuse_commit = False
+
+    def resolve_completed_layer_timings(self) -> None:
+        """Resolve only after completion; never insert a per-layer host fence."""
+        for row in self.layer_audit:
+            layer = row.get("layer")
+            if layer not in self.pending_timing_events or "active_after" not in row:
+                continue
+            start, end = self.pending_timing_events[layer]
+            if not end.query():
+                raise RuntimeError("layer timing is not complete at audit finalization")
+            row["gpu_ms"] = float(start.elapsed_time(end))
+            row["timing_resolution"] = "after_prefill_completion"
+            del self.pending_timing_events[layer]
 
     def finish_prefill(self) -> Any:
         if not self._started or self._finished:

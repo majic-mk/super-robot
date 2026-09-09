@@ -250,6 +250,12 @@ class NativeRequestContext:
             raise RuntimeError("missing Prefix shadow must use native dense fallback")
         a = self.adapter
         n = len(self.request["token_ids"])
+        defer_timing = bool(self.request.get("defer_layer_timing", False))
+        if defer_timing:
+            import inspect
+            if "probekv_defer_layer_timing" not in inspect.getsource(a.inner.probekv_advance_prefill):
+                raise RuntimeError("deferred timing requires the independently audited 0013 patch")
+        a.inner.cache_fuse_metadata["probekv_defer_layer_timing"] = defer_timing
         # Full request working composite, not just per-winner rows. This was
         # previously an unaccounted HBM allocation inside the engine.
         layer = a.inner.layers[0].self_attn
@@ -519,6 +525,8 @@ class NativeRequestContext:
                 self.logit_trace.append(logits.detach().float().cpu())
             self.native.finish_decode_step()
         self.finished = True
+        if self.engine:
+            self.engine.session.resolve_completed_layer_timings()
         origin = "selective_reuse" if self.committed else "native_prefix_dense_remaining" if self.cached_prefix_tokens else "exact_dense_full_prefill"
         # Only dense requests rebuild exact Prefix state during paired replay.
         if not self.committed and not teacher_forced:
