@@ -29,7 +29,9 @@ def summarize_hardware_overlap(trace):
               and e.get("name", "").startswith(("probekv.copy_layer.", "probekv.compute_layer."))]
     owners = {}
     for event in events:
-        if event.get("cat") != "cpu_op":
+        # Kineto may correlate GPU activities directly with cuda_runtime API
+        # IDs instead of the surrounding aten operation's External id.
+        if event.get("cat") not in {"cpu_op", "cuda_runtime"}:
             continue
         external = event.get("args", {}).get("External id")
         if external is None:
@@ -77,3 +79,25 @@ def summarize_hardware_overlap(trace):
                              "overlap_union_ms": union_duration(v) / 1000}
                             for (c, k), v in sorted(pair_intervals.items())],
             "raw_attributed_h2d_intervals": copies, "raw_attributed_kernel_intervals": kernels}
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import subprocess
+    from pathlib import Path
+    from .v8_schema10_storage import file_digest
+    from .v8_schema10_event_log import atomic_json
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--trace", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    source, output = Path(args.trace), Path(args.output)
+    if output.exists():
+        raise ValueError("hardware reanalysis must not overwrite prior evidence")
+    result = summarize_hardware_overlap(json.loads(source.read_text()))
+    result.update(trace_sha256=file_digest(source),
+                  analysis_code_commit=subprocess.check_output(
+                      ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
+                  input_trace_path=str(source.resolve()), instrumented_timing_not_performance_evidence=True)
+    atomic_json(output, result)

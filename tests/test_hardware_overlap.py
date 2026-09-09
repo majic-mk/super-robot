@@ -28,6 +28,14 @@ class HardwareOverlapTests(unittest.TestCase):
         self.assertEqual(result["copy_kernel_overlap_union_ms"], .005)
         self.assertEqual(result["layer_pairs"][0]["copy_layer"], 3)
 
+    def test_kineto_cuda_runtime_external_id_correlation(self):
+        t = trace()
+        t["traceEvents"].extend([event("cuda_runtime", "cudaMemcpyAsync", 0, 1, 110),
+                                event("cuda_runtime", "cudaLaunchKernel", 3, 1, 111)])
+        t["traceEvents"][4]["args"]["External id"] = 110
+        t["traceEvents"][5]["args"]["External id"] = 111
+        self.assertEqual(summarize_hardware_overlap(t)["copy_kernel_overlap_union_ms"], .005)
+
     def test_does_not_sum_duplicate_or_overlapping_intervals(self):
         t = trace()
         t["traceEvents"].append(t["traceEvents"][-1].copy())

@@ -155,6 +155,7 @@ def main():
         "layer_controls": args.layer_controls,
         "cost_probe": args.cost_probe,
         "diagnostic_segment_tokens": args.segment_tokens,
+        "hardware_trace": args.hardware_trace,
         "eager_cfo_reference": not args.skip_eager_cfo,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
