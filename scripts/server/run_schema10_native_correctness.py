@@ -82,9 +82,18 @@ def main():
                    help="opt-in audited 0013 patch: resolve timing after prefill, preserve layer dependency waits")
     p.add_argument("--gpu-hot-cache", action="store_true",
                    help="diagnostic only: retain the first winner GPU tensors for the subsequent all-ready arm")
+    p.add_argument("--kv-layout-mode", choices=("legacy", "packed_slice"), default="legacy",
+                   help="opt-in private packed composite and contiguous Source row copy")
+    p.add_argument("--component-timing", action="store_true",
+                   help="instrument KV setup phases; timings are diagnostic, not performance evidence")
+    p.add_argument("--layout-ab-repeats", type=int, default=0,
+                   help="paired resident legacy/packed/native costs after two warmups; no selector/QA qualification")
     args = p.parse_args()
     if args.hardware_trace and not args.cost_probe:
         p.error("--hardware-trace requires --cost-probe")
+    if args.layout_ab_repeats and (not args.gpu_hot_cache or not args.cost_probe
+                                   or not 1 <= args.layout_ab_repeats <= 20):
+        p.error("--layout-ab-repeats requires --gpu-hot-cache --cost-probe and 1..20 repeats")
     root = Path(args.output).resolve()
     if root.exists():
         raise ValueError("correctness run needs a fresh output directory")
@@ -118,6 +127,9 @@ def main():
                                    prefetch_window=args.prefetch_window)
     for request_name in ("target", "warm", "source"):
         requests[request_name]["defer_layer_timing"] = args.defer_layer_timing
+        requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
+        requests[request_name]["component_timing"] = args.component_timing
+    requests["target"]["layout_ab_repeats"] = args.layout_ab_repeats
     if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:
         raise ValueError("eager CFO reference requires total Source request <=512 tokens; "
                          "preregister --skip-eager-cfo for longer overlap-only diagnostics")
@@ -276,6 +288,45 @@ def main():
                     output_dir=root / "gpu-hot-r1", boundary=args.reuse_boundary,
                     use_gpu_hot_cache=True)
                 atomic_json(root / "gpu-hot-r1-summary.json", gpu_hot_r1)
+            if args.layout_ab_repeats:
+                # Paired arms share the same model, immutable resident Source,
+                # request tokens and deterministic Prefix rebuild. No model
+                # initialization or full digest belongs to these TTFT samples.
+                from probekv.v8_schema10_storage import tensor_digest
+                hot = adapter.hot_layer_cache[source.source_variant_id]
+                before_hot = tensor_digest(t for layer in sorted(hot) for t in hot[layer])
+                ab_root = root / "layout-ab"
+                ab_root.mkdir()
+                for repeat in range(args.layout_ab_repeats + 2):
+                    order = ["native", "legacy", "packed_slice"]
+                    if repeat % 2:
+                        order.reverse()
+                    for name in order:
+                        q = {**requests["target"], "component_timing": False,
+                             "kv_layout_mode": "legacy" if name == "native" else name}
+                        kwargs = {} if name == "native" else dict(
+                            source_id=source.source_variant_id, segment_id="C",
+                            boundary=args.reuse_boundary, repair_ratio=.15,
+                            wait_all_source_layers=True, use_gpu_hot_cache=True)
+                        observed, _ = execute_fixed_source_arm(backend, request=q,
+                            warm_request=requests["warm"], verify_full_digests=False, **kwargs)
+                        observed.update(repeat=repeat, warmup=repeat < 2, arm=name,
+                                        arm_order=order, selection_cost_included=False)
+                        observed["raw_observation_sha256"] = digest_json(observed)
+                        atomic_json(ab_root / f"{repeat:02d}-{name}.json", observed)
+                for name in ("legacy", "packed_slice"):
+                    observed, _ = execute_fixed_source_arm(backend,
+                        request={**requests["target"], "kv_layout_mode": name, "component_timing": True},
+                        warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
+                        boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
+                        wait_all_source_layers=True, use_gpu_hot_cache=True)
+                    observed["raw_observation_sha256"] = digest_json(observed)
+                    atomic_json(ab_root / f"instrumented-{name}.json", observed)
+                after_hot = tensor_digest(t for layer in sorted(hot) for t in hot[layer])
+                if before_hot != after_hot:
+                    raise RuntimeError("paired layout arms mutated the resident canonical Source")
+                atomic_json(ab_root / "integrity.json", dict(before=before_hot, after=after_hot,
+                    unchanged=True, hashing_outside_timing=True, paper_evidence=False))
         if args.hardware_trace:
             import torch
             from probekv.v8_schema10_hardware_overlap import summarize_hardware_overlap

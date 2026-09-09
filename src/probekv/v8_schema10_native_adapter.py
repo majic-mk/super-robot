@@ -286,7 +286,9 @@ class NativeRequestContext:
                 shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec,
                 source_loader=a.loader,
-                prefetch_window=int(self.request.get("prefetch_window", 0)))
+                prefetch_window=int(self.request.get("prefetch_window", 0)),
+                kv_layout_mode=self.request.get("kv_layout_mode", "legacy"),
+                component_timing=bool(self.request.get("component_timing", False)))
             self.engine.begin_prefill(model_signature=a.provenance["model_signature"],
                 token_ids=tuple(self.request["token_ids"][self.cached_prefix_tokens:]),
                 absolute_positions=tuple(range(self.cached_prefix_tokens, n)),

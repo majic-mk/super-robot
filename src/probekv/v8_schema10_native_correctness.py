@@ -170,6 +170,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "layer_rows": layer_rows, "committed_segments": dict(context.committed),
                     "overlap_trace": list(output.get("overlap_trace", ())),
                     "resumable_engine_used": context.engine is not None,
+                    "kv_layout_mode": q.get("kv_layout_mode", "legacy"),
+                    "instrumented_timing_not_performance_evidence": bool(q.get("component_timing", False)),
+                    "component_observations": (
+                        context.engine.component_observations() if context.engine else []),
                     "first_token_ns": first[0], "diagnostic_start_ns": started,
                     "first_token_host_ms": (first[0] - started) / 1e6,
                     "first_token_cuda_ms": float(cuda_start.elapsed_time(cuda_first_token)),

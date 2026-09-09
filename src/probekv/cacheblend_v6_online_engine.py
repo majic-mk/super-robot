@@ -5,7 +5,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .model_adapters import PinnedCacheBlendResumableAdapter, ResumableModelSpec
@@ -19,6 +19,36 @@ def integrity_mode_performs_full_digest(mode: str) -> bool:
         "legacy_source_full",
         IntegrityVerificationMode.QUALIFICATION_FULL.value,
     }
+
+
+def source_row_index(positions: Sequence[int], *, contiguous_copy: bool):
+    """Use a strided view only for an exactly ascending, contiguous span."""
+    positions = tuple(positions)
+    if contiguous_copy and positions and all(
+        p == positions[0] + i for i, p in enumerate(positions)
+    ):
+        return slice(positions[0], positions[-1] + 1)
+    return list(positions)
+
+
+def allocate_working_composite(torch, pairs, request_span, device, *, packed=False):
+    """Private request storage; never aliases canonical Source/Prefix tensors.
+
+    Packed allocation replaces 2*L independent zero kernels with one while
+    retaining the historical per-layer contiguous K/V ABI and zeroed holes.
+    """
+    if not packed:
+        return [[torch.zeros((request_span,) + tuple(t.shape[1:]),
+                             dtype=t.dtype, device=device) for t in pair]
+                for pair in pairs]
+    template = pairs[0][0]
+    geometry = tuple(template.shape[1:])
+    if any(tuple(t.shape[1:]) != geometry or t.dtype != template.dtype
+           for pair in pairs for t in pair):
+        raise ValueError("packed composite requires homogeneous K/V geometry and dtype")
+    storage = torch.zeros((len(pairs), 2, request_span) + geometry,
+                          dtype=template.dtype, device=device)
+    return [[storage[layer, 0], storage[layer, 1]] for layer in range(len(pairs))]
 
 
 @dataclass
@@ -479,7 +509,11 @@ class CacheBlendV6OnlineEngine:
         model_spec: ResumableModelSpec,
         source_loader: TorchLayerwiseSourceLoader,
         prefetch_window: int = 0,
+        kv_layout_mode: str = "legacy",
+        component_timing: bool = False,
     ) -> None:
+        if kv_layout_mode not in {"legacy", "packed_slice"}:
+            raise ValueError("unknown working KV layout mode")
         self.model_spec = model_spec
         self.adapter = PinnedCacheBlendResumableAdapter(inner_model, model_spec)
         self.source_loader = source_loader
@@ -490,6 +524,33 @@ class CacheBlendV6OnlineEngine:
         self._composite_old_kvs: list[list[Any]] = []
         self._exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
         self._compute_events: Dict[int, Tuple[Any, Any]] = {}
+        self.kv_layout_mode = kv_layout_mode
+        self.component_timing = component_timing
+        self._component_events = []
+        self._source_row_indices = {}
+
+    @contextmanager
+    def _component(self, name):
+        if not self.component_timing:
+            yield
+            return
+        torch = self.source_loader.torch
+        start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        host_start = time.perf_counter_ns()
+        start.record(torch.cuda.current_stream())
+        with torch.profiler.record_function("probekv." + name):
+            yield
+        end.record(torch.cuda.current_stream())
+        self._component_events.append((name, host_start, time.perf_counter_ns(), start, end))
+
+    def component_observations(self):
+        # Caller must finish/fence first. Never introduce an online sync here.
+        if any(not end.query() for _, _, _, _, end in self._component_events):
+            raise RuntimeError("component timing requested before completion")
+        return [{"name": name, "host_enqueue_ms": (finish - begin) / 1e6,
+                 "cuda_envelope_ms": float(start.elapsed_time(end)),
+                 "timing_semantics": "nested_diagnostic_envelope_not_additive_ttft"}
+                for name, begin, finish, start, end in self._component_events]
 
     @staticmethod
     def capabilities() -> Mapping[str, bool]:
@@ -535,22 +596,17 @@ class CacheBlendV6OnlineEngine:
         if prefix_layers:
             request_span = session.absolute_positions[-1] + 1
             prefix = session.exact_prefix_tokens
-            for key, value in prefix_layers:
-                composite_key = self.source_loader.torch.zeros(
-                    (request_span,) + tuple(key.shape[1:]),
-                    dtype=key.dtype,
-                    device=key.device,
-                )
-                composite_value = self.source_loader.torch.zeros(
-                    (request_span,) + tuple(value.shape[1:]),
-                    dtype=value.dtype,
-                    device=value.device,
-                )
-                composite_key[:prefix] = key
-                composite_value[:prefix] = value
-                self._composite_old_kvs.append(
-                    [composite_key, composite_value]
-                )
+            with self._component("composite_allocate_zero"):
+                self._composite_old_kvs = allocate_working_composite(
+                    self.source_loader.torch, prefix_layers, request_span,
+                    prefix_layers[0][0].device,
+                    packed=self.kv_layout_mode == "packed_slice")
+            with self._component("prefix_shadow_install"):
+                for (key, value), (composite_key, composite_value) in zip(
+                    prefix_layers, self._composite_old_kvs
+                ):
+                    composite_key[:prefix] = key
+                    composite_value[:prefix] = value
             self.adapter.inner_model.old_kvs = self._composite_old_kvs
             self.adapter.inner_model.cache_fuse_metadata[
                 "exact_prefix_tokens"
@@ -596,13 +652,12 @@ class CacheBlendV6OnlineEngine:
             raise ValueError("canonical Source rows differ from Segment length")
         if not self._composite_old_kvs:
             request_span = self.session.absolute_positions[-1] + 1
+            with self._component("composite_allocate_zero"):
+                self._composite_old_kvs = allocate_working_composite(
+                    self.source_loader.torch, canonical_layers, request_span,
+                    self.source_loader.device, packed=self.kv_layout_mode == "packed_slice")
             for layer, (key, value) in enumerate(canonical_layers, start=1):
-                composite_key = self.source_loader.torch.zeros(
-                    (request_span,) + tuple(key.shape[1:]),
-                    dtype=key.dtype, device=self.source_loader.device)
-                composite_value = self.source_loader.torch.zeros(
-                    (request_span,) + tuple(value.shape[1:]),
-                    dtype=value.dtype, device=self.source_loader.device)
+                composite_key, composite_value = self._composite_old_kvs[layer - 1]
                 if self._exact_prefix_layers:
                     prefix_key, prefix_value = self._exact_prefix_layers[layer - 1]
                     for observed, expected in (
@@ -620,7 +675,6 @@ class CacheBlendV6OnlineEngine:
                     prefix = self.session.exact_prefix_tokens
                     composite_key[:prefix] = prefix_key
                     composite_value[:prefix] = prefix_value
-                self._composite_old_kvs.append([composite_key, composite_value])
             self.adapter.inner_model.old_kvs = self._composite_old_kvs
         else:
             for layer, (key, value) in ticket.layer_tensors.items():
@@ -635,6 +689,8 @@ class CacheBlendV6OnlineEngine:
                 ):
                     raise ValueError("locked Sources have incompatible KV geometry")
         self.tickets[segment_id] = ticket
+        self._source_row_indices[segment_id] = source_row_index(
+            ticket.segment_positions, contiguous_copy=self.kv_layout_mode == "packed_slice")
         self.session.register_source_handle(segment_id, source_id, ticket)
         self.audit.transferred_bytes_by_segment[segment_id] = ticket.requested_bytes
         self.audit.integrity_mode_by_segment[segment_id] = ticket.integrity_mode
@@ -655,7 +711,7 @@ class CacheBlendV6OnlineEngine:
                     "committed Source layer is not ready; scheduler must wait"
                 )
             key, value = ticket.layer_tensors[layer]
-            positions = list(ticket.segment_positions)
+            positions = self._source_row_indices[segment_id]
             self._composite_old_kvs[layer - 1][0][positions] = key
             self._composite_old_kvs[layer - 1][1][positions] = value
 
@@ -739,7 +795,8 @@ class CacheBlendV6OnlineEngine:
             for ticket in self.tickets.values():
                 if ticket.pending_layers:
                     self.source_loader.prefetch_pending(ticket, next_layer + max(1, self.prefetch_window))
-            self._install_ready_source_rows(next_layer)
+            with self._component("source_rows_install"):
+                self._install_ready_source_rows(next_layer)
             with (torch.profiler.record_function(f"probekv.compute_layer.{next_layer}")
                   if getattr(self.source_loader, "capture_hardware_trace", False) else nullcontext()):
                 self.session.advance_to_layer(next_layer)
