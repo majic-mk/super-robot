@@ -280,11 +280,14 @@ class ProbeKVResumablePrefillSession:
         if any(v < self.exact_prefix_tokens for v in segment):
             raise ValueError("exact Prefix Cache tokens cannot enter ProbeKV")
         active = set(self.active_positions)
-        if not set(segment).issubset(active):
+        segment_set, repair_set = set(segment), set(repair)
+        if not segment_set.issubset(active):
             raise ValueError("Segment contains an inactive token")
-        if not set(repair).issubset(segment):
+        if not repair_set.issubset(segment_set):
             raise ValueError("repair positions must lie inside the Segment")
-        target = tuple(v for v in self.active_positions if v not in set(segment) or v in set(repair))
+        # Build membership tables once, not once per active token.  Preserve
+        # absolute-position order and all Prefix/repair validation above.
+        target = tuple(v for v in self.active_positions if v not in segment_set or v in repair_set)
         if self._pending_target_positions is not None:
             pending = set(self._pending_target_positions)
             target = tuple(v for v in target if v in pending)
@@ -326,8 +329,9 @@ class ProbeKVResumablePrefillSession:
         removed = set(previous) - set(updated)
         target = tuple(value for value in self.active_positions if value not in removed)
         if self._pending_target_positions is not None:
+            pending = set(self._pending_target_positions)
             target = tuple(
-                value for value in target if value in set(self._pending_target_positions)
+                value for value in target if value in pending
             )
         self.current_repair_positions_by_segment[segment_id] = updated
         self._pending_target_positions = target

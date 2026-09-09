@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from probekv.model_adapters import (
@@ -60,6 +61,29 @@ class CpuLayerAdapter:
 
 
 class ResumableSessionTests(unittest.TestCase):
+    def test_single_segment_mask_membership_tables_are_constant_count(self):
+        for size in (128, 512, 640):
+            with self.subTest(size=size):
+                positions = tuple(range(256, 288 + size + 32))
+                segment = tuple(range(288, 288 + size))
+                repair = segment[:(size * 15 + 99) // 100]
+                session = ProbeKVResumablePrefillSession(
+                    adapter=CpuLayerAdapter(), model_signature="m",
+                    token_ids=positions, absolute_positions=positions,
+                    attention_metadata={}, working_kv=[], exact_prefix_tokens=256,
+                )
+                session.begin_prefill()
+                session.register_source_handle("c", "s", object())
+                with patch("probekv.resumable_prefill.set", wraps=set, create=True) as membership:
+                    session.commit_segment_reuse(
+                        segment_id="c", source_id="s", boundary=1,
+                        segment_positions=segment, repair_positions=repair,
+                    )
+                self.assertLessEqual(membership.call_count, 8)
+                session.advance_to_layer(1)
+                self.assertEqual(session.active_positions,
+                                 tuple(range(256, 288)) + repair + tuple(range(288 + size, 320 + size)))
+
     def session(self):
         return ProbeKVResumablePrefillSession(
             adapter=CpuLayerAdapter(),
