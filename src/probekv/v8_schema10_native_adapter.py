@@ -358,7 +358,14 @@ class NativeRequestContext:
                 ticket = self.prepared[sid]
                 if layer not in ticket.layer_events:
                     self.engine.source_loader.prefetch_pending(ticket, layer)
-                self.prepared[sid].layer_events[layer].synchronize()
+                # A layer event is often already complete for a GPU-resident
+                # winner.  Calling synchronize() unconditionally still enters
+                # the CUDA runtime once per layer and serializes the host even
+                # when no wait is needed (the profiler showed 102 such calls).
+                # Query first; retain the blocking wait for an in-flight copy.
+                event = self.prepared[sid].layer_events[layer]
+                if not event.query():
+                    event.synchronize()
             self.engine.advance_to_layer(layer)
             self.generation += 1
 
