@@ -91,8 +91,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if wait_all_source_layers:
                         # A separate measured cell, not a relabelled streaming
                         # sample. The wait is part of preparation/sunk TTFT.
-                        for event in ticket.layer_events.values():
-                            event.synchronize()
+                        ticket.wait_all(adapter.loader)
                     source_ready_ns = time.perf_counter_ns()
                     cuda_source_ready.record()
                     winner_ready_layers = sorted(layer for layer, event in ticket.layer_events.items()
@@ -128,6 +127,9 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if output["whole_request_origin"] != expected:
                         raise RuntimeError("reference/control arm changed its prefill origin")
                 if ticket is not None and verify_full_digests:
+                    if not ticket.fully_ready():
+                        raise RuntimeError("integrity evidence requires the complete Source, not submitted layers only")
+                    ticket.finalize_integrity(layers, lambda pairs: tensor_digest(t for pair in pairs for t in pair))
                     destination = tensor_digest(t for layer in sorted(ticket.layer_tensors)
                                                 for t in ticket.layer_tensors[layer])
                     after = tensor_digest(t for pair in layers for t in pair)
@@ -171,6 +173,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "sampling_signature": dict(context.sampling_signature),
                     "diagnostic_completed_depth": diagnostic_completed_depth or (boundary - 1 if source_id else 0),
                     "diagnostic_repair_ratio": float(repair_ratio) if source_id is not None else None,
+                    "executed_prefetch_window": int(q.get("prefetch_window", 0)),
+                    "expected_source_layers": ticket.expected_layer_count if ticket else None,
+                    "source_fully_ready_at_finish": ticket.fully_ready() if ticket else None,
+                    "loader_full_digest_verified": ticket.per_request_full_digest_verified if ticket else None,
                     "integrity_verification_mode": (
                         "qualification_full" if verify_full_digests else "online_immutable"
                     ),
@@ -180,7 +186,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "diagnostic_commit_source": commit_source,
                     "winner_ready_layers": winner_ready_layers,
                     "winner_copy_in_flight_at_commit_check": bool(
-                        ticket is not None and len(winner_ready_layers) < len(ticket.layer_events)
+                        ticket is not None and len(winner_ready_layers) < ticket.expected_layer_count
                     ),
                     "boundary_to_first_token_ms": (
                         (first[0] - boundary_ready_ns) / 1e6

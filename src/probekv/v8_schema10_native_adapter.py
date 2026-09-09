@@ -328,7 +328,7 @@ class NativeRequestContext:
         pool = self.adapter.store_provider().pool
         model = self.adapter.provenance["model_signature"]
         for sid, ticket in self.prepared.items():
-            if sid in self.hot_replicas or not all(e.query() for e in ticket.layer_events.values()):
+            if sid in self.hot_replicas or not ticket.fully_ready() or ticket.integrity_verification_pending:
                 continue
             source = pool._get(model, self.segments[sid]["content_key"], ticket.source_id)
             backing = source.healthy_backing_replicas[0]
@@ -447,7 +447,7 @@ class NativeRequestContext:
             ticket = self.prepared.get(sid)
             physical[sid] = {k: shape[k] for k in ("tier", "bytes", "layout")}
             physical[sid]["ready_layers"] = [l for l in ticket.layer_events if ticket.layer_ready(l)] if ticket else []
-            physical[sid]["copy_in_flight"] = bool(ticket and len(physical[sid]["ready_layers"]) < len(ticket.layer_events))
+            physical[sid]["copy_in_flight"] = bool(ticket and not ticket.fully_ready())
         return RequestExecutionShape(len(self.request["token_ids"]), self.cached_prefix_tokens,
             self.adapter.spec.num_layers, self.current_completed_depth,
             {sid: o.remaining_positions for sid, o in self.execution_inventory.items()}, self.supports,

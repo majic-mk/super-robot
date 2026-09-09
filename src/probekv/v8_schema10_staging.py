@@ -153,7 +153,7 @@ class PhysicalLayerwiseSourceLoader:
                         if slot and slot.leased:
                             self.pool.release_after(slot, None)
                         raise
-            if self.integrity_mode == "qualification_full":
+            if self.integrity_mode == "qualification_full" and not pending_layers:
                 self.stream.synchronize()
                 t = time.perf_counter()
                 destination = tensor_digest(tensor for pair in tensors.values() for tensor in pair)
@@ -172,25 +172,37 @@ class PhysicalLayerwiseSourceLoader:
                 integrity_mode=self.integrity_mode,
                 expected_artifact_digest=expected_artifact_digest, destination_digest=destination,
                 hash_host_ms=hash_ms, d2h_hash_host_ms=d2h_ms,
-                per_request_full_digest_verified=self.integrity_mode == "qualification_full")
+                expected_layer_count=len(canonical_layers),
+                integrity_verification_pending=self.integrity_mode == "qualification_full" and bool(pending_layers),
+                per_request_full_digest_verified=self.integrity_mode == "qualification_full" and not pending_layers)
         except Exception:
             self.stream.synchronize()
             raise
 
     def prefetch_pending(self, ticket, through_layer):
+        if ticket.transfer_failed:
+            raise RuntimeError("failed transfer cannot be resumed")
         pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
         if not pending:
             return
         with self.torch.cuda.stream(self.stream):
             for layer in pending:
-                key, value = ticket.pending_layers.pop(layer)
+                key, value = ticket.pending_layers[layer]
                 if key.device.type != "cpu" or value.device.type != "cpu" or not key.is_pinned() or not value.is_pinned():
                     raise ValueError("windowed CPU backing must be pinned")
                 start = self.torch.cuda.Event(enable_timing=True)
                 start.record(self.stream)
-                gpu_key, gpu_value = key.to(self.device, non_blocking=True), value.to(self.device, non_blocking=True)
-                done = self.torch.cuda.Event(enable_timing=True)
-                done.record(self.stream)
+                gpu_key = gpu_value = None
+                try:
+                    gpu_key = key.to(self.device, non_blocking=True)
+                    gpu_value = value.to(self.device, non_blocking=True)
+                    done = self.torch.cuda.Event(enable_timing=True)
+                    done.record(self.stream)
+                except Exception:
+                    ticket.transfer_failed = True
+                    self.stream.synchronize()
+                    raise
                 ticket.layer_tensors[layer] = (gpu_key, gpu_value)
                 ticket.layer_start_events[layer] = start
                 ticket.layer_events[layer] = done
+                del ticket.pending_layers[layer]

@@ -43,8 +43,49 @@ class LayerwiseLoadTicket:
     sampled_digest_verified: bool = False
     pinning_copy_bytes: int = 0
     pinning_host_ms: float = 0.0
+    expected_layer_count: int = 0
+    integrity_verification_pending: bool = False
+    transfer_failed: bool = False
+
+    def fully_ready(self) -> bool:
+        expected = set(range(1, self.expected_layer_count + 1))
+        return bool(expected and not self.transfer_failed and not self.pending_layers
+                    and set(self.layer_tensors) == set(self.layer_events) == expected
+                    and all(event.query() for event in self.layer_events.values()))
+
+    def wait_all(self, loader) -> None:
+        if self.transfer_failed:
+            raise RuntimeError("cannot complete a failed transfer")
+        loader.prefetch_pending(self, self.expected_layer_count)
+        for event in self.layer_events.values():
+            event.synchronize()
+        if not self.fully_ready():
+            raise RuntimeError("full Source readiness requires every expected layer")
+
+    def finalize_integrity(self, canonical_layers, digest) -> None:
+        if not self.integrity_verification_pending:
+            return
+        if not self.fully_ready():
+            raise RuntimeError("integrity verification requires all Source layers ready")
+        started = time.perf_counter()
+        destination = digest(tuple(self.layer_tensors[l] for l in sorted(self.layer_tensors)))
+        self.d2h_hash_host_ms += (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        after = digest(canonical_layers)
+        self.hash_host_ms += (time.perf_counter() - started) * 1000
+        self.destination_digest, self.source_digest_after = destination, after
+        if not self.source_digest_before == destination == after == self.expected_artifact_digest:
+            self.transfer_failed = True
+            raise RuntimeError("qualification Source/destination digest mismatch")
+        self.per_request_full_digest_verified = True
+        self.integrity_verification_pending = False
 
     def __post_init__(self) -> None:
+        if not self.expected_layer_count:
+            self.expected_layer_count = len(self.layer_tensors) + len(self.pending_layers)
+        if (set(self.layer_tensors) & set(self.pending_layers) or
+                set(self.layer_tensors) | set(self.pending_layers) != set(range(1, self.expected_layer_count + 1))):
+            raise ValueError("Source layer inventory must be complete and disjoint")
         if not self.segment_id or not self.source_id:
             raise ValueError("load ticket identifiers are required")
         if self.started_host_ms < 0 or self.requested_bytes < 0:
@@ -55,14 +96,18 @@ class LayerwiseLoadTicket:
             raise ValueError("digest timings must be non-negative")
         if self.pinning_copy_bytes < 0 or self.pinning_host_ms < 0:
             raise ValueError("pinning accounting must be non-negative")
-        if self.source_digest_before != self.source_digest_after:
+        if self.source_digest_before != self.source_digest_after and not self.integrity_verification_pending:
             raise RuntimeError("async staging mutated a canonical Source")
         if self.integrity_mode == IntegrityVerificationMode.QUALIFICATION_FULL.value:
             if not self.expected_artifact_digest:
                 raise RuntimeError("qualification requires the Artifact digest")
-            if not self.per_request_full_digest_verified:
+            if self.integrity_verification_pending:
+                if (not self.pending_layers or self.per_request_full_digest_verified or self.destination_digest
+                        or self.source_digest_after or self.source_digest_before != self.expected_artifact_digest):
+                    raise RuntimeError("invalid deferred qualification integrity state")
+            elif not self.per_request_full_digest_verified:
                 raise RuntimeError("qualification mode requires a full destination digest")
-            if not (
+            if not self.integrity_verification_pending and not (
                 self.source_digest_before
                 == self.destination_digest
                 == self.source_digest_after
@@ -74,6 +119,8 @@ class LayerwiseLoadTicket:
             ):
                 raise RuntimeError("qualification digest differs from Artifact identity")
         if self.integrity_mode == IntegrityVerificationMode.ONLINE_IMMUTABLE.value:
+            if self.integrity_verification_pending:
+                raise RuntimeError("online immutable mode forbids deferred full hashing")
             if self.per_request_full_digest_verified:
                 raise RuntimeError("online immutable mode forbids per-request full hashing")
             if any((self.source_digest_before, self.source_digest_after, self.destination_digest)):
@@ -244,6 +291,8 @@ class TorchLayerwiseSourceLoader:
         pending_layers = {} if not prefetch_window else {
             i + 1: pair for i, pair in enumerate(canonical_layers[prefetch_window:], start=prefetch_window)
         }
+        if pending_layers and mode == IntegrityVerificationMode.ONLINE_SAMPLED.value:
+            raise ValueError("windowed sampled integrity is not implemented; use immutable or qualification_full")
         with self.torch.cuda.stream(self.stream):
             start_event = self.torch.cuda.Event(enable_timing=True)
             start_event.record(self.stream)
@@ -284,7 +333,7 @@ class TorchLayerwiseSourceLoader:
         destination_digest = ""
         sampled_verified = False
         d2h_hash_host_ms = 0.0
-        if mode == IntegrityVerificationMode.QUALIFICATION_FULL.value:
+        if mode == IntegrityVerificationMode.QUALIFICATION_FULL.value and not pending_layers:
             for event in layer_events.values():
                 event.synchronize()
             destination_started = time.perf_counter()
@@ -305,14 +354,16 @@ class TorchLayerwiseSourceLoader:
             if not sampled_verified:
                 raise RuntimeError("sampled destination KV integrity mismatch")
         hash_started = time.perf_counter()
-        after = self._digest(self.torch, canonical_layers) if full_verify else ""
+        deferred_integrity = mode == IntegrityVerificationMode.QUALIFICATION_FULL.value and bool(pending_layers)
+        after = self._digest(self.torch, canonical_layers) if full_verify and not deferred_integrity else ""
         if full_verify:
             hash_host_ms += (time.perf_counter() - hash_started) * 1000.0
         return LayerwiseLoadTicket(
             segment_id=segment_id,
             source_id=source_id,
             started_host_ms=started,
-            requested_bytes=requested_bytes,
+            requested_bytes=requested_bytes + sum(t.numel() * t.element_size()
+                for pair in pending_layers.values() for t in pair if t.device.type == "cpu"),
             layer_tensors=layer_tensors,
             start_event=start_event,
             layer_events=layer_events,
@@ -321,13 +372,15 @@ class TorchLayerwiseSourceLoader:
             segment_positions=positions,
             layer_start_events=layer_start_events,
             pending_layers=pending_layers,
+            expected_layer_count=len(canonical_layers),
+            integrity_verification_pending=deferred_integrity,
             integrity_mode=mode,
             expected_artifact_digest=expected_artifact_digest,
             destination_digest=destination_digest,
             hash_host_ms=hash_host_ms,
             d2h_hash_host_ms=d2h_hash_host_ms,
             per_request_full_digest_verified=(
-                mode == IntegrityVerificationMode.QUALIFICATION_FULL.value
+                mode == IntegrityVerificationMode.QUALIFICATION_FULL.value and not deferred_integrity
             ),
             sampled_digest_verified=sampled_verified,
             pinning_copy_bytes=pinning_copy_bytes,
@@ -340,25 +393,34 @@ class TorchLayerwiseSourceLoader:
         This is the diagnostic windowed path: callers submit the next layer
         after the current compute starts, allowing a real copy/compute overlap.
         """
+        if ticket.transfer_failed:
+            raise RuntimeError("failed transfer cannot be resumed")
         pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
         if not pending:
             return
         with self.torch.cuda.stream(self.stream):
             for layer in pending:
-                key, value = ticket.pending_layers.pop(layer)
+                key, value = ticket.pending_layers[layer]
                 if key.device.type != "cpu" or value.device.type != "cpu":
                     raise ValueError("windowed pending layers must be CPU backed")
                 if not key.is_pinned() or not value.is_pinned():
                     raise ValueError("windowed CPU backing must be pinned")
                 start = self.torch.cuda.Event(enable_timing=True)
                 start.record(self.stream)
-                gpu_key = key.to(self.device, non_blocking=True)
-                gpu_value = value.to(self.device, non_blocking=True)
-                done = self.torch.cuda.Event(enable_timing=True)
-                done.record(self.stream)
+                gpu_key = gpu_value = None
+                try:
+                    gpu_key = key.to(self.device, non_blocking=True)
+                    gpu_value = value.to(self.device, non_blocking=True)
+                    done = self.torch.cuda.Event(enable_timing=True)
+                    done.record(self.stream)
+                except Exception:
+                    ticket.transfer_failed = True
+                    self.stream.synchronize()
+                    raise
                 ticket.layer_tensors[layer] = (gpu_key, gpu_value)
                 ticket.layer_start_events[layer] = start
                 ticket.layer_events[layer] = done
+                del ticket.pending_layers[layer]
 
 
 @dataclass
@@ -531,13 +593,13 @@ class CacheBlendV6OnlineEngine:
             raise ValueError("canonical Source rows differ from Segment length")
         if not self._composite_old_kvs:
             request_span = self.session.absolute_positions[-1] + 1
-            for layer, (key, value) in ticket.layer_tensors.items():
+            for layer, (key, value) in enumerate(canonical_layers, start=1):
                 composite_key = self.source_loader.torch.zeros(
                     (request_span,) + tuple(key.shape[1:]),
-                    dtype=key.dtype, device=key.device)
+                    dtype=key.dtype, device=self.source_loader.device)
                 composite_value = self.source_loader.torch.zeros(
                     (request_span,) + tuple(value.shape[1:]),
-                    dtype=value.dtype, device=value.device)
+                    dtype=value.dtype, device=self.source_loader.device)
                 if self._exact_prefix_layers:
                     prefix_key, prefix_value = self._exact_prefix_layers[layer - 1]
                     for observed, expected in (
@@ -673,7 +735,7 @@ class CacheBlendV6OnlineEngine:
             # Transformer block instead of being awaited after it finishes.
             for ticket in self.tickets.values():
                 if ticket.pending_layers:
-                    self.source_loader.prefetch_pending(ticket, next_layer + 1)
+                    self.source_loader.prefetch_pending(ticket, next_layer + max(1, self.prefetch_window))
             self._install_ready_source_rows(next_layer)
             self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
@@ -701,7 +763,10 @@ class CacheBlendV6OnlineEngine:
                              "compute_start_gpu_ms": compute_begin,
                              "compute_end_gpu_ms": compute_finish,
                              "overlap_gpu_ms": overlap,
-                             "copy_waited_before_compute": copy_end > compute_begin})
+                             "copy_waited_before_compute": None,
+                             "copy_completed_after_compute_start": copy_end > compute_begin,
+                             "interval_semantics": "cuda_event_envelope_not_kernel_busy",
+                             "hardware_kernel_overlap_proven": False})
         return rows
 
     def finish_prefill(self) -> Any:
