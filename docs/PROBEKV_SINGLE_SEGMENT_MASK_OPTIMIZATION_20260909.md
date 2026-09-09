@@ -74,3 +74,30 @@ GitHub连接暂时失败，新代码通过经验证Git bundle同步并按精确S
 
 本次结束GPU进程清空、显存0MiB；实例未自动关机，费用单价未知而非零。
 保持 `gpu_runtime_qualified=false`、`online_trace_execution_allowed=false`、`paper_evidence=false`、`locked_test_accessed=false`。
+
+## GPU-resident winner 诊断（ece472f，Mistral，512 tokens）
+
+本次补充实验验证了此前性能差距的关键原因：旧路径的“GPU hot Replica”只有元数据，
+每个新请求仍会把完整 Source 从 CPU 重新 H2D；CacheBlend 类后端则可以复用实际驻留的 GPU KV。
+因此新增了仅用于诊断的 `--gpu-hot-cache` 路径：首个 winner 完整 ready 后保留 GPU tensor，后续
+all-ready arm 通过 `GPU_RESIDENT` 路径，不重复搬运完整 KV。该路径不代表已完成生产级 LRU/驱逐策略。
+
+三次独立运行结果如下（真实 CUDA timing，非 fake timing）：
+
+| repeat | native Prefix + dense (ms) | GPU-resident fixed15 (ms) | saving |
+|---|---:|---:|---:|
+| 1 | 53.373 | 51.091 | 4.28% |
+| 2 | 53.242 | 50.428 | 5.29% |
+| 3 | 53.436 | 50.847 | 4.84% |
+| mean | 53.350 | 50.789 | 4.80% |
+
+三次均观察到 `GPU_RESIDENT` transfer event；固定 source 的 r=1 诊断均通过：生成 token IDs
+完全一致，32 个 teacher-forced logit 的 relative-L2 为 0，Source digest 不变。该结果说明
+持久 GPU residency 确实能把 ProbeKV 从“每请求重新加载 Source”的负收益路径推进到略优于
+原生 Prefix+dense 的方向，但仍只是单模型、单Segment、固定 winner 的诊断证据。尚未计入真实
+Residual-K 选择、多Source 竞争、真实 QA、长期 LRU/eviction 或正式 FinalCommit 资格。
+
+首次 GPU-hot 运行曾因 adapter 初始化缺陷在模型加载前退出；该次不计为实验结果。修复后以新
+SHA `ece472f600b5fcaddfbcdad62fa2a37a31602990` 和独立输出目录重新完成三次运行。在线路径仍
+保持 immutable digest，不在每请求执行完整 KV SHA256；热副本 reservation 的释放目前由诊断脚本
+显式完成，生产级容量管理仍是后续工作。
