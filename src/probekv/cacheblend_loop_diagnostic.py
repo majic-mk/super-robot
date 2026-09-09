@@ -134,7 +134,7 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
 
 
 def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token_ids,
-                                  output_dir, boundary=2, repeats=3):
+                                  output_dir, boundary=2, repeats=3, matched_mask=False):
     import torch
     from .v8_schema10_native_correctness import execute_fixed_source_arm
     root = Path(output_dir)
@@ -142,15 +142,21 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
     a = backend.adapters["legacy_multicheckpoint"]
     hot = a.hot_layer_cache[source_id]
     before = tensor_digest(t for l in sorted(hot) for t in hot[l])
+    plans = {}
     def arm(name, *, ratio=.15, teacher=None, instrumented=False):
         q = {**request, "component_timing": instrumented}
         if name == "cacheblend_loop":
-            return execute_cacheblend_loop_arm(backend, request=q, source_id=source_id,
+            row, logits = execute_cacheblend_loop_arm(backend, request=q, source_id=source_id,
                 boundary=boundary, ratio=ratio, teacher_token_ids=teacher)
+            if ratio in plans:
+                plans[ratio].assert_execution(row["selected_segment_positions"], row["active_positions"])
+                row["external_repair_mask_sha256"] = plans[ratio].mask_digest
+            return row, logits
         kwargs = {} if name == "dense" else dict(source_id=source_id, segment_id="C",
             boundary=boundary, repair_ratio=ratio, use_gpu_hot_cache=True, wait_all_source_layers=True)
         return execute_fixed_source_arm(backend, request=q, teacher_token_ids=teacher,
-                                        verify_full_digests=False, **kwargs)
+            verify_full_digests=False,
+            resident_repair_plan=plans.get(ratio) if name == "probekv" else None, **kwargs)
     def save(name, row, logits=None):
         if logits is not None:
             p = root / (name + ".pt")
@@ -158,6 +164,22 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
             row.update(logits_path=p.name, logits_sha256=file_digest(p))
         row["raw_observation_sha256"] = digest_json(row)
         atomic_json(root / (name + ".json"), row)
+    if matched_mask:
+        from dataclasses import asdict
+        from .repair_backend_contract import ResidentRepairPlan
+        # One untimed setup run supplies CacheBlend's mask. Each measured CB run
+        # must reproduce it exactly; ProbeKV still pays its normal repair-check
+        # cost before adopting this diagnostic mask. No live selector claim.
+        bootstrap, _ = arm("cacheblend_loop")
+        save("mask-bootstrap", bootstrap)
+        descriptor = next(s for s in request["segments"] if s["segment_id"] == "C")
+        positions = tuple(descriptor["positions"])
+        for ratio in (.15, 1.0):
+            plans[ratio] = ResidentRepairPlan(source_id, before, digest_json(request["token_ids"]),
+                boundary, ratio, positions,
+                tuple(bootstrap["selected_segment_positions"]) if ratio == .15 else positions,
+                len(request["token_ids"]), len(request["token_ids"]) - positions[-1] - 1)
+        atomic_json(root / "repair-plans.json", {str(r): asdict(p) for r, p in plans.items()})
     records, tensors = {}, {}
     for name in ("dense", "cacheblend_loop", "probekv"):
         for teacher in (None, teacher_token_ids):
@@ -177,6 +199,26 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
     atomic_json(root / "r1-comparison.json", checks)
     if not all(c["passed"] for c in checks.values()):
         raise RuntimeError("native CacheBlend loop r1 failed; no timing comparison permitted")
+    if matched_mask:
+        fixed = {}
+        for name in ("cacheblend_loop", "probekv"):
+            for teacher in (None, teacher_token_ids):
+                key = name + ("_free" if teacher is None else "_teacher")
+                row, logits = arm(name, teacher=teacher)
+                save("fixed15-" + key, row, logits)
+                fixed[key] = (row, logits)
+        ref = fixed["cacheblend_loop_teacher"][1].float()
+        obs = fixed["probekv_teacher"][1].float()
+        if obs.shape != ref.shape or ref.shape[0] < 32 or not torch.isfinite(obs).all() or not torch.isfinite(ref).all():
+            raise RuntimeError("matched fixed15 has invalid logits")
+        l2 = float((obs-ref).norm() / ref.norm().clamp_min(1e-12))
+        equal = fixed["cacheblend_loop_free"][0]["token_ids"] == fixed["probekv_free"][0]["token_ids"]
+        match = dict(token_ids_equal=equal, logit_relative_l2=l2, passed=equal and l2 <= 1e-4,
+            mask_sha256=plans[.15].mask_digest, comparison="backend_equivalence_not_dense_quality",
+            selection_cost_included=False, native_prefix_supported=False, paper_evidence=False)
+        atomic_json(root / "fixed15-equivalence.json", match)
+        if not match["passed"]:
+            raise RuntimeError("matched fixed15 backend equivalence failed; no timing comparison permitted")
     for i in range(2 + repeats):
         order = ["dense", "cacheblend_loop", "probekv"]
         if i % 2:

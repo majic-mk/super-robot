@@ -21,9 +21,13 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                              diagnostic_completed_depth=0, repair_ratio=1.0,
                              verify_full_digests=True, wait_all_source_layers=False,
                              commit_source=True, use_gpu_hot_cache=False,
-                             retain_gpu_hot_cache=False):
+                             retain_gpu_hot_cache=False, resident_repair_plan=None):
     """Actual native request action; the forced action is diagnostic only."""
     import torch
+    if resident_repair_plan is not None:
+        from .repair_backend_contract import ResidentRepairPlan
+        if not isinstance(resident_repair_plan, ResidentRepairPlan) or source_id is None or not commit_source:
+            raise ValueError("resident repair plan requires a typed fixed-Source diagnostic")
     if isinstance(repair_ratio, bool) or not isinstance(repair_ratio, (int, float)) or not 0 < repair_ratio <= 1:
         raise ValueError("diagnostic repair ratio must be in (0, 1]")
     if source_id is None and repair_ratio != 1.0:
@@ -67,6 +71,10 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     cuda_boundary.record()
                 if source_id is not None:
                     descriptor = context.segments[segment_id]
+                    if resident_repair_plan is not None:
+                        resident_repair_plan.assert_binding(source_id=source_id, token_ids=q["token_ids"],
+                            positions=descriptor["positions"], boundary=boundary, ratio=repair_ratio,
+                            cached_prefix_tokens=context.cached_prefix_tokens)
                     if not 2 <= boundary <= adapter.spec.num_layers:
                         raise ValueError("r=1 boundary must follow a completed block")
                     eligible = {v.source_variant_id for v in backend._lookup(descriptor, q["request_epoch"])[1]}
@@ -82,6 +90,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     layers = leases.enter_context(backend.store.leased_winner(model, content, source_id,
                         expected_generation=backend.store.pool.content_generation(model, content)))
                     row = backend.store.pool._get(model, content, source_id)
+                    if resident_repair_plan is not None and row.canonical_source_state_digest != resident_repair_plan.source_digest:
+                        raise ValueError("resident repair plan Source digest differs from canonical Artifact")
                     if verify_full_digests:
                         before = tensor_digest(t for pair in layers for t in pair)
                         if before != row.canonical_source_state_digest:
@@ -104,6 +114,13 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     if ready != {segment_id: boundary}:
                         raise RuntimeError("fixed diagnostic boundary changed")
                     support = context.supports[segment_id][boundary]
+                    if resident_repair_plan is not None:
+                        # Diagnostic backend isolation: retain the ordinary repair-check
+                        # computation in timing, but execute exactly the external mask.
+                        # Never used by production Source selection/admission.
+                        support = resident_repair_plan.repair_positions
+                        context.supports[segment_id] = {l: support for l in
+                            range(boundary, adapter.spec.num_layers + 1)}
                     expected_count = min(len(descriptor["positions"]),
                                          math.ceil(len(descriptor["positions"]) * repair_ratio))
                     if len(support) != expected_count or not set(support) <= set(descriptor["positions"]):
@@ -160,11 +177,17 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                         "fake_timing": False, "layer_rows": layer_rows, "cached_prefix_tokens": prefix})
                     if len(layer_rows) != adapter.spec.num_layers:
                         raise RuntimeError("mask audit omitted executed Transformer layers")
+                if resident_repair_plan is not None:
+                    for audit in layer_rows:
+                        if audit["layer"] >= boundary:
+                            resident_repair_plan.assert_execution(support, audit["active_positions"])
                 logits = torch.cat(context.logit_trace, dim=0) if teacher_token_ids is not None else None
                 result = {"token_ids": output["token_ids"], "whole_request_origin": output["whole_request_origin"],
                     "request_tokens_sha256": digest_json(q["token_ids"]),
                     "teacher_tokens_sha256": digest_json(teacher_token_ids) if teacher_token_ids is not None else None,
                     "source_id": source_id, "cached_prefix_tokens": prefix,
+                    "external_repair_mask_sha256": resident_repair_plan.mask_digest if resident_repair_plan else None,
+                    "selection_cost_included": False,
                     "cached_prefix_blocks": len(context.native.cached_block_ids),
                     "block_size": adapter.scheduler.block_manager.block_size,
                     "source_digest_before": before, "destination_digest": destination, "source_digest_after": after,

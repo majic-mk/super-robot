@@ -90,7 +90,11 @@ def main():
                    help="paired resident legacy/packed/native costs after two warmups; no selector/QA qualification")
     p.add_argument("--cacheblend-loop-control", action="store_true",
                    help="matched zero-Prefix native CacheBlend loop adapter; NOT unmodified upstream")
+    p.add_argument("--matched-repair-backends", action="store_true",
+                   help="fixed-winner zero-Prefix common-mask backend equivalence; not live selector")
     args = p.parse_args()
+    if args.matched_repair_backends and not args.cacheblend_loop_control:
+        p.error("--matched-repair-backends requires --cacheblend-loop-control")
     if args.hardware_trace and not args.cost_probe:
         p.error("--hardware-trace requires --cost-probe")
     if args.layout_ab_repeats and (not args.gpu_hot_cache or not args.cost_probe
@@ -360,7 +364,8 @@ def main():
             run_cacheblend_loop_comparison(backend,
                 request={**requests["target"], "component_timing": False},
                 source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
-                output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary)
+                output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary,
+                matched_mask=args.matched_repair_backends)
         for hot in tuple(adapter.hot_reservations.values()):
             if not hot.released:
                 backend.hbm.release(hot.reservation_id)
