@@ -56,3 +56,21 @@ separate layerwise transfer/compute analysis.
 
 The modified server tree is retained separately from the pinned original;
 old failure and comparison artifacts are not overwritten.
+
+## Remaining copy/compute diagnosis
+
+The same trace was correlated by CPU operation and GPU memcpy kind. The
+position-cache change removes the large per-layer Python position material
+copy, but the prefill still contains approximately 1,589 `aten::to`, 1,501
+`aten::copy_`, and 337 `_to_copy` CPU operations in the profiled request.
+The profiler reports many device-to-device copies (the common 8-KB class is
+not by itself proof of KV transfer) and only eight 6,656-byte pageable-to-GPU
+copies. Therefore the remaining 10--11 ms gap cannot safely be labelled
+“H2D loading”; it is a mixture of model-side indexed KV writeback, tensor
+materialization, and attention execution.
+
+The next experiment is a source-level operation split, not another blind
+optimization: separately time (a) composite old-KV row installation, (b)
+indexed active-row writeback, and (c) the attention/MLP layer body. Any
+replacement of advanced indexing by contiguous-run copies must preserve the
+absolute union mask and pass the existing r=1 token/logit gate.
