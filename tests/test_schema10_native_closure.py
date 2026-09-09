@@ -306,9 +306,10 @@ class FailClosedNativeGates(unittest.TestCase):
 
     def test_collector_refuses_cpu_fake_timings(self):
         from probekv.v8_schema10_cost_collection import CudaCostCollector
+        provenance = {k: "test" for k in ("model", "code", "patch", "gpu", "config", "timing_scope", "runtime_profile")}
         with patch.object(torch.cuda, "is_available", return_value=False):
             with self.assertRaises(RuntimeError):
-                CudaCostCollector(provenance={})
+                CudaCostCollector(provenance=provenance)
 
     def test_pass_flag_does_not_unlock_correctness(self):
         from probekv.v8_schema10_native_validation import validate_correctness_observation

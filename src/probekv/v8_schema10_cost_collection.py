@@ -28,10 +28,12 @@ def measurement_endpoint(category, result, *, begin, finish, joint=False):
 
 class CudaCostCollector:
     def __init__(self, *, provenance, deadline=math.inf):
+        # Invalid evidence is rejected deterministically before inspecting the
+        # host. Valid inputs still require actual CUDA; no CPU timing fallback.
+        validate_measurement_provenance(provenance)
         import torch
         if not torch.cuda.is_available():
             raise RuntimeError("cost collector requires actual CUDA, not fake timing")
-        validate_measurement_provenance(provenance)
         self.torch, self.provenance, self.deadline = torch, dict(provenance), deadline
         self.rows, self.joint_rows, self.raw_intervals = [], [], []
         self.started = time.perf_counter_ns()

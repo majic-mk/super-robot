@@ -1,5 +1,15 @@
 # ProbeKV v8 schema10: dynamic Variant growth and Gate1 counterfactual
 
+## Current next-phase execution priority (2026-09-08)
+
+The historical contract below remains readable. The current single-Segment-first
+sequence and review of the proposed "v9" research directions are recorded in
+[the single-Segment Oracle next-phase plan](PROBEKV_SINGLE_SEGMENT_ORACLE_NEXT_PHASE_PLAN.md).
+That addendum is a plan, not a new runtime schema or a qualification result:
+windowed r=1 and overlap evidence precede signal/depth/repair studies. Online
+r_safe prediction, conformal calibration, a second backend, and diversity-based
+eviction are not enabled by the document update.
+
 Schema10 preserves the schema8/9 execution data plane and separates three
 questions that must not share one state or Profile:
 

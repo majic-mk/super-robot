@@ -29,7 +29,7 @@ class NativeOperationContractTests(unittest.TestCase):
         provenance.update(runtime_profile="test-profile")
         with patch("torch.cuda.is_available", return_value=False), self.assertRaises(RuntimeError):
             CudaCostCollector(provenance=provenance)
-        with self.assertRaises(ValueError):
+        with patch("torch.cuda.is_available", side_effect=AssertionError("validate provenance before CUDA")), self.assertRaises(ValueError):
             CudaCostCollector(provenance={})
 
     def test_registered_session_rejects_missing_or_duplicate_cells(self):
