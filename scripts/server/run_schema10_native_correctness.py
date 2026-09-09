@@ -92,7 +92,11 @@ def main():
                    help="matched zero-Prefix native CacheBlend loop adapter; NOT unmodified upstream")
     p.add_argument("--matched-repair-backends", action="store_true",
                    help="fixed-winner zero-Prefix common-mask backend equivalence; not live selector")
+    p.add_argument("--repair-backend-continuation", action="store_true",
+                   help="diagnose one-shot dense hidden/residual handoff; not production selector")
     args = p.parse_args()
+    if args.repair_backend_continuation and not args.matched_repair_backends:
+        p.error("--repair-backend-continuation requires --matched-repair-backends")
     if args.matched_repair_backends and not args.cacheblend_loop_control:
         p.error("--matched-repair-backends requires --cacheblend-loop-control")
     if args.hardware_trace and not args.cost_probe:
@@ -365,7 +369,8 @@ def main():
                 request={**requests["target"], "component_timing": False},
                 source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
                 output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary,
-                matched_mask=args.matched_repair_backends)
+                matched_mask=args.matched_repair_backends,
+                continuation=args.repair_backend_continuation)
         for hot in tuple(adapter.hot_reservations.values()):
             if not hot.released:
                 backend.hbm.release(hot.reservation_id)

@@ -60,7 +60,7 @@ def install_loop_metadata(target, **kwargs):
 
 
 def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
-                               ratio=.15, teacher_token_ids=None):
+                               ratio=.15, teacher_token_ids=None, continuation=False):
     import torch
     a = backend.adapters["legacy_multicheckpoint"]
     if a.active or backend.pending or backend.hbm.active_reserved_bytes != a.persistent_hot_hbm_bytes:
@@ -68,6 +68,8 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
     if source_id not in a.hot_layer_cache:
         raise RuntimeError("CacheBlend control requires an already resident canonical Source")
     capability_started = time.perf_counter_ns()
+    if continuation and not request.get("matched_boundary_source_kv", False):
+        raise ValueError("continuation requires matched boundary semantics")
     if request.get("matched_boundary_source_kv", False):
         from vllm.attention.backends.xformers import XFormersImpl
         require_matched_boundary_patch(XFormersImpl.forward)
@@ -94,12 +96,28 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                 model, content = backend.provenance["model_signature"], segment["content_key"]
                 leases.enter_context(backend.store.leased_winner(model, content, source_id,
                     expected_generation=backend.store.pool.content_generation(model, content)))
+                handoff = None
+                observation_shape = None
+                if continuation:
+                    from .cacheblend_continuation import DenseLoopContinuation
+                    ctx.advance_to_depth(boundary - 1)
+                    # Real current-state K projection, included in TTFT. This
+                    # first gate does NOT claim live multi-Source comparison.
+                    observed = ctx.engine.session.observe_pre_rope_k(boundary - 1)
+                    observation_shape = list(observed.shape)
+                    del observed
+                    handoff = DenseLoopContinuation.detach(ctx.engine.session,
+                        request_id=q["request_id"], generation=ctx.generation,
+                        inner_model=a.inner, boundary=boundary, positions=ctx._prepared_inputs[1])
                 hot = a.hot_layer_cache[source_id]
                 pairs = [hot[layer] for layer in sorted(hot)]
                 n = len(q["token_ids"])
                 size = n * sum(t[0].numel() * t.element_size() for t in pairs[0]) * a.spec.num_layers
-                reservation = backend.hbm.reserve_batch(owner_request_id=q["request_id"],
-                    rows=(("native_loop_working_kv", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
+                if not continuation:
+                    reservation = backend.hbm.reserve_batch(owner_request_id=q["request_id"],
+                        rows=(("native_loop_working_kv", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
+                elif ctx.workspace.bytes < size:
+                    raise RuntimeError("continuation working KV exceeds held reservation")
                 old = allocate_working_composite(torch, pairs, n, a.runner.device, packed=True)
                 index = source_row_index(segment["positions"], contiguous_copy=True)
                 for out, src in zip(old, pairs):
@@ -116,8 +134,12 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                 # Source observation projection or resumable session is used.
                 with (torch.profiler.record_function("cacheblend.native_prefill")
                       if q.get("component_timing") else nullcontext()):
-                    hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv,
-                                     attn_metadata=ctx.attention)
+                    if handoff is None:
+                        hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv,
+                                         attn_metadata=ctx.attention)
+                    else:
+                        hidden = handoff.run(request_id=q["request_id"], generation=ctx.generation,
+                            positions=pos, working_kv=a.kv, attention_metadata=ctx.attention)
                 a.inner.cache_fuse_metadata["check"] = False
                 ctx.committed["C"] = boundary
                 def mark_first():
@@ -147,6 +169,20 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     setup_component_observations=ctx.setup_observations(),
                     instrumented_timing_not_performance_evidence=bool(q.get("component_timing")),
                     origin="real_cuda_execution", fake_timing=False, paper_evidence=False)
+                if handoff is not None:
+                    prefix_layers = [x["layer"] for x in ctx.engine.session.layer_audit
+                                     if "layer" in x]
+                    executed = prefix_layers + handoff.executed_layers
+                    if executed != list(range(1, a.spec.num_layers + 1)):
+                        raise RuntimeError("continuation duplicated or omitted Transformer layers")
+                    row.update(control="cacheblend_pinned_decoder_continuation",
+                        resumable_engine_used=True, native_loop_executed=False,
+                        pinned_decoder_continuation_executed=True,
+                        completed_depth_at_handoff=handoff.completed_depth,
+                        prefill_layer_execution_order=executed,
+                        current_k_observation_shape=observation_shape,
+                        current_k_observation_cost_included=True,
+                        live_source_comparison_executed=False)
                 logits = torch.cat(ctx.logit_trace) if teacher_token_ids is not None else None
             finally:
                 ctx.synchronize()
@@ -158,7 +194,8 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
 
 
 def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token_ids,
-                                  output_dir, boundary=2, repeats=3, matched_mask=False):
+                                  output_dir, boundary=2, repeats=3, matched_mask=False,
+                                  continuation=False):
     import torch
     from .v8_schema10_native_correctness import execute_fixed_source_arm
     root = Path(output_dir)
@@ -167,12 +204,16 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
     hot = a.hot_layer_cache[source_id]
     before = tensor_digest(t for l in sorted(hot) for t in hot[l])
     plans = {}
+    if continuation and not matched_mask:
+        raise ValueError("continuation comparison needs shared-mask mode")
+    backend_names = ("cacheblend_loop", "probekv") + (("continuation",) if continuation else ())
     def arm(name, *, ratio=.15, teacher=None, instrumented=False):
         q = {**request, "component_timing": instrumented,
              "matched_boundary_source_kv": matched_mask}
-        if name == "cacheblend_loop":
+        if name in ("cacheblend_loop", "continuation"):
             row, logits = execute_cacheblend_loop_arm(backend, request=q, source_id=source_id,
-                boundary=boundary, ratio=ratio, teacher_token_ids=teacher)
+                boundary=boundary, ratio=ratio, teacher_token_ids=teacher,
+                continuation=name == "continuation")
             if ratio in plans:
                 plans[ratio].assert_execution(row["selected_segment_positions"], row["active_positions"])
                 row["external_repair_mask_sha256"] = plans[ratio].mask_digest
@@ -206,7 +247,7 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
                 len(request["token_ids"]), len(request["token_ids"]) - positions[-1] - 1)
         atomic_json(root / "repair-plans.json", {str(r): asdict(p) for r, p in plans.items()})
     records, tensors = {}, {}
-    for name in ("dense", "cacheblend_loop", "probekv"):
+    for name in ("dense",) + backend_names:
         for teacher in (None, teacher_token_ids):
             key = name + ("_free" if teacher is None else "_teacher")
             row, logits = arm(name, ratio=1.0, teacher=teacher)
@@ -214,7 +255,7 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
             records[key], tensors[key] = row, logits
     checks = {}
     reference = tensors["dense_teacher"]
-    for name in ("cacheblend_loop", "probekv"):
+    for name in backend_names:
         observed = tensors[name + "_teacher"]
         if observed.shape != reference.shape or reference.shape[0] < 32 or not torch.isfinite(observed).all():
             raise RuntimeError("native loop control has invalid teacher logits")
@@ -226,7 +267,7 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
         raise RuntimeError("native CacheBlend loop r1 failed; no timing comparison permitted")
     if matched_mask:
         fixed = {}
-        for name in ("cacheblend_loop", "probekv"):
+        for name in backend_names:
             for teacher in (None, teacher_token_ids):
                 key = name + ("_free" if teacher is None else "_teacher")
                 row, logits = arm(name, teacher=teacher)
@@ -244,8 +285,21 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
         atomic_json(root / "fixed15-equivalence.json", match)
         if not match["passed"]:
             raise RuntimeError("matched fixed15 backend equivalence failed; no timing comparison permitted")
+        if continuation:
+            obs = fixed["continuation_teacher"][1].float()
+            if obs.shape != ref.shape or not torch.isfinite(obs).all():
+                raise RuntimeError("continuation fixed15 invalid teacher logits")
+            l2 = float((obs-ref).norm() / ref.norm().clamp_min(1e-12))
+            equal = fixed["continuation_free"][0]["token_ids"] == fixed["cacheblend_loop_free"][0]["token_ids"]
+            passed = equal and l2 <= 1e-4
+            atomic_json(root / "continuation-fixed15-equivalence.json", dict(
+                token_ids_equal=equal, logit_relative_l2=l2, passed=passed,
+                selection_cost_included=False, current_k_observation_cost_included=True,
+                paper_evidence=False))
+            if not passed:
+                raise RuntimeError("continuation fixed15 failed; no timing comparison permitted")
     for i in range(2 + repeats):
-        order = ["dense", "cacheblend_loop", "probekv"]
+        order = ["dense"] + list(backend_names)
         if i % 2:
             order.reverse()
         for name in order:
@@ -253,7 +307,7 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
             row.update(repeat=i, warmup=i < 2, arm_order=order, arm=name)
             save(f"{i:02d}-{name}", row)
     from .prefill_phase_diagnostic import summarize_prefill_phase
-    for name in ("cacheblend_loop", "probekv"):
+    for name in backend_names:
         a.loader.capture_hardware_trace = True
         try:
             with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
