@@ -9,10 +9,16 @@ def summarize_prefill_phase(trace, arm):
     if any(not all(math.isfinite(float(e.get(k, float("nan")))) for k in ("ts", "dur"))
            or e["dur"] < 0 for e in events):
         raise ValueError("invalid profiler intervals")
-    names = (("cacheblend.native_prefill",) if arm == "cacheblend_loop" else
-             ("probekv.compute_layer.1", "probekv.compute_layer.32"))
-    if arm not in {"cacheblend_loop", "probekv"}:
+    markers = {
+        "cacheblend_loop": ("cacheblend.native_prefill",),
+        "probekv": ("probekv.compute_layer.1", "probekv.compute_layer.32"),
+        # Include early dense layers, observation/handoff/setup and the decoder
+        # continuation. Using only native_prefill would hide the first stages.
+        "continuation": ("probekv.compute_layer.1", "cacheblend.native_prefill"),
+    }
+    if arm not in markers:
         raise ValueError("unknown control arm")
+    names = markers[arm]
     bounds = []
     for name in names:
         found = [e for e in events if e.get("name") == name and e.get("cat") == "user_annotation"]
