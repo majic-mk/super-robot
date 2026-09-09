@@ -65,15 +65,15 @@ class NativeOnlineAdapter:
         self.retained_shadows = {}
         self.hot_layer_cache = {}
         self.hot_reservations = {}
-
-    @property
-    def persistent_hot_hbm_bytes(self):
-        return sum(r.bytes for r in self.hot_reservations.values() if not r.released)
         self.shared = shared_runtime_state if shared_runtime_state is not None else {"active": None, "warm_history": [], "generation": 1}
         self.deadline = math.inf
         self.projection = PinnedCacheBlendResumableAdapter(self.inner, self.spec)
         params = inspect.signature(self.runner.prepare_input_tensors).parameters
         self.prepare_accepts_cache = len(params) >= 2  # pinned CacheBlend adds kv_caches
+
+    @property
+    def persistent_hot_hbm_bytes(self):
+        return sum(r.bytes for r in self.hot_reservations.values() if not r.released)
 
     @property
     def active(self):
