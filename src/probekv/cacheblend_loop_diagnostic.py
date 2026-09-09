@@ -36,6 +36,15 @@ def loop_metadata(*, positions, prompt_tokens, suffix_tokens, boundary, ratio,
         segment_repair_audit=None, imp_indices=None, attn_bias=None)
 
 
+def install_loop_metadata(target, **kwargs):
+    values = loop_metadata(**kwargs)
+    # The shared patched layer uses dict.get(local, absolute). A present None
+    # does NOT fall back: residual[None] would insert a dimension. The original
+    # forward owns absolute imp_indices and must not inherit resumable locals.
+    target.pop("local_imp_indices", None)
+    target.update(values)
+
+
 def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                                ratio=.15, teacher_token_ids=None):
     import torch
@@ -78,9 +87,9 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     out[0][index], out[1][index] = src
                 a.inner.old_kvs = old
                 suffix = n - segment["positions"][-1] - 1
-                a.inner.cache_fuse_metadata.update(loop_metadata(positions=segment["positions"],
+                install_loop_metadata(a.inner.cache_fuse_metadata, positions=segment["positions"],
                     prompt_tokens=n, suffix_tokens=suffix, boundary=boundary, ratio=ratio,
-                    cached_prefix_tokens=ctx.cached_prefix_tokens))
+                    cached_prefix_tokens=ctx.cached_prefix_tokens)
                 ids, pos = ctx._prepared_inputs[:2]
                 # This is the existing pinned CacheBlend forward loop. No
                 # Source observation projection or resumable session is used.
