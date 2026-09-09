@@ -76,7 +76,11 @@ def main():
                    help="diagnostic layerwise prefetch window; 0 keeps eager loading")
     p.add_argument("--skip-eager-cfo", action="store_true",
                    help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
+    p.add_argument("--hardware-trace", action="store_true",
+                   help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
     args = p.parse_args()
+    if args.hardware_trace and not args.cost_probe:
+        p.error("--hardware-trace requires --cost-probe")
     root = Path(args.output).resolve()
     if root.exists():
         raise ValueError("correctness run needs a fresh output directory")
@@ -108,6 +112,9 @@ def main():
     requests = diagnostic_requests(tokenizer, model, token_hash,
                                    segment_tokens=args.segment_tokens,
                                    prefetch_window=args.prefetch_window)
+    if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:
+        raise ValueError("eager CFO reference requires total Source request <=512 tokens; "
+                         "preregister --skip-eager-cfo for longer overlap-only diagnostics")
     if args.reuse_boundary - 1 not in spec.checkpoints:
         raise ValueError("diagnostic reuse boundary must follow a legal model checkpoint")
     numerical_policy = {"allow_bf16_reduced_precision_reduction": False,
@@ -118,6 +125,7 @@ def main():
                            "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens,
                            "cost_probe_readiness_cells": ["streaming", "all_ready_reuse", "all_ready_dense"],
                            "prefetch_window": args.prefetch_window,
+                           "hardware_trace": args.hardware_trace,
                            "eager_cfo_reference": not args.skip_eager_cfo})
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).strip()
     binding = {"code_commit": sha, "patch_sha256": patch_sha, "config_sha256": config_sha,
@@ -250,6 +258,27 @@ def main():
                 "repair_check_ms": source_cost["repair_check_ms"],
                 "request_full_kv_digest_performed": False,
                 "formal_profile_frozen": False, "paper_evidence": False})
+        if args.hardware_trace:
+            import torch
+            from probekv.v8_schema10_hardware_overlap import summarize_hardware_overlap
+            trace_root = root / "hardware-trace"
+            trace_root.mkdir()
+            loader.capture_hardware_trace = True
+            try:
+                with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                                       torch.profiler.ProfilerActivity.CUDA]) as profiler:
+                    traced, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                        warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
+                        boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False)
+                trace_path = trace_root / "trace.json"
+                profiler.export_chrome_trace(str(trace_path))
+                summary = summarize_hardware_overlap(json.loads(trace_path.read_text()))
+                summary.update(trace_sha256=file_digest(trace_path), code_commit=sha,
+                               instrumented_timing_not_performance_evidence=True)
+                atomic_json(trace_root / "summary.json", summary)
+                atomic_json(trace_root / "instrumented_arm.json", traced)
+            finally:
+                loader.capture_hardware_trace = False
         if (backend.hbm.active_reserved_bytes or adapter.active is not None
                 or any(slot.leased or slot.completion is not None and not slot.completion.query()
                        for slot in loader.pool.slots)):

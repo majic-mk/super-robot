@@ -5,6 +5,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .model_adapters import PinnedCacheBlendResumableAdapter, ResumableModelSpec
@@ -737,7 +738,9 @@ class CacheBlendV6OnlineEngine:
                 if ticket.pending_layers:
                     self.source_loader.prefetch_pending(ticket, next_layer + max(1, self.prefetch_window))
             self._install_ready_source_rows(next_layer)
-            self.session.advance_to_layer(next_layer)
+            with (torch.profiler.record_function(f"probekv.compute_layer.{next_layer}")
+                  if getattr(self.source_loader, "capture_hardware_trace", False) else nullcontext()):
+                self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
             self._compute_events[next_layer] = (compute_start, compute_end)
 

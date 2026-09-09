@@ -6,6 +6,7 @@ until its copy event completes. CPU buffers are allocated lazily within 2 GiB.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from threading import RLock
 import math
 import time
@@ -194,8 +195,10 @@ class PhysicalLayerwiseSourceLoader:
                 start.record(self.stream)
                 gpu_key = gpu_value = None
                 try:
-                    gpu_key = key.to(self.device, non_blocking=True)
-                    gpu_value = value.to(self.device, non_blocking=True)
+                    with (self.torch.profiler.record_function(f"probekv.copy_layer.{layer}")
+                          if getattr(self, "capture_hardware_trace", False) else nullcontext()):
+                        gpu_key = key.to(self.device, non_blocking=True)
+                        gpu_value = value.to(self.device, non_blocking=True)
                     done = self.torch.cuda.Event(enable_timing=True)
                     done.record(self.stream)
                 except Exception:
