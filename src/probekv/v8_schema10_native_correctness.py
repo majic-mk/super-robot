@@ -240,7 +240,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
 
 
 def run_combined_native_r1(backend, *, request, warm_request, source_id, segment_id,
-                           teacher_token_ids, output_dir, boundary=2):
+                           teacher_token_ids, output_dir, boundary=2,
+                           use_gpu_hot_cache=False):
     import torch
     if len(teacher_token_ids) < 31:
         raise ValueError("r1 requires at least 32 common-teacher logit positions")
@@ -257,7 +258,8 @@ def run_combined_native_r1(backend, *, request, warm_request, source_id, segment
         try:
             row, logits = execute_fixed_source_arm(backend, request=request, source_id=source,
                 segment_id=segment_id, boundary=boundary, teacher_token_ids=teacher, warm_request=warm,
-                diagnostic_completed_depth=depth)
+                diagnostic_completed_depth=depth,
+                use_gpu_hot_cache=bool(use_gpu_hot_cache and source is not None))
             if logits is not None:
                 path = root / (name + ".pt")
                 torch.save(logits.detach().cpu(), path)

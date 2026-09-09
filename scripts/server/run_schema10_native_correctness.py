@@ -268,6 +268,14 @@ def main():
                 "repair_check_ms": source_cost["repair_check_ms"],
                 "request_full_kv_digest_performed": False,
                 "formal_profile_frozen": False, "paper_evidence": False})
+            if args.gpu_hot_cache:
+                gpu_hot_r1 = run_combined_native_r1(
+                    backend, request=correctness_target, warm_request=requests["warm"],
+                    source_id=source.source_variant_id, segment_id="C",
+                    teacher_token_ids=requests["teacher_token_ids"],
+                    output_dir=root / "gpu-hot-r1", boundary=args.reuse_boundary,
+                    use_gpu_hot_cache=True)
+                atomic_json(root / "gpu-hot-r1-summary.json", gpu_hot_r1)
         if args.hardware_trace:
             import torch
             from probekv.v8_schema10_hardware_overlap import summarize_hardware_overlap
