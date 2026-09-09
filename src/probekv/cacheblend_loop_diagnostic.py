@@ -7,6 +7,7 @@ Original loop cannot compose native Prefix with arbitrary sparse queries;
 only the matched zero-Prefix stratum is supported here.
 """
 from contextlib import ExitStack, nullcontext
+from functools import lru_cache
 from pathlib import Path
 import math
 import time
@@ -16,6 +17,18 @@ from .v8_schema6_hbm import HBMReservationKind
 from .v8_schema10_execution import digest_json
 from .v8_schema10_event_log import atomic_json
 from .v8_schema10_storage import tensor_digest, file_digest
+
+
+@lru_cache(maxsize=8)
+def require_matched_boundary_patch(forward):
+    """Process capability validation, keyed by the loaded implementation.
+
+    The runner separately validates the frozen on-disk tree and source hashes.
+    Replacing a function invalidates this cache; no per-request source parsing.
+    """
+    import inspect
+    if "probekv_matched_boundary_source_kv" not in inspect.getsource(forward):
+        raise RuntimeError("matched backend needs independently audited 0016 boundary patch")
 
 
 def loop_metadata(*, positions, prompt_tokens, suffix_tokens, boundary, ratio,
@@ -54,6 +67,11 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
         raise RuntimeError("CacheBlend control requires quiescence")
     if source_id not in a.hot_layer_cache:
         raise RuntimeError("CacheBlend control requires an already resident canonical Source")
+    capability_started = time.perf_counter_ns()
+    if request.get("matched_boundary_source_kv", False):
+        from vllm.attention.backends.xformers import XFormersImpl
+        require_matched_boundary_patch(XFormersImpl.forward)
+    capability_ms = (time.perf_counter_ns() - capability_started) / 1e6
     a.reset()  # no warm request: Prefix condition is explicitly zero for BOTH arms
     q = {**request, "capture_original_full_prefill": False}
     if teacher_token_ids is not None:
@@ -92,10 +110,6 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     prompt_tokens=n, suffix_tokens=suffix, boundary=boundary, ratio=ratio,
                     cached_prefix_tokens=ctx.cached_prefix_tokens)
                 if q.get("matched_boundary_source_kv", False):
-                    import inspect
-                    from vllm.attention.backends.xformers import XFormersImpl
-                    if "probekv_matched_boundary_source_kv" not in inspect.getsource(XFormersImpl.forward):
-                        raise RuntimeError("matched backend needs independently audited 0016 boundary patch")
                     a.inner.cache_fuse_metadata["probekv_matched_boundary_source_kv"] = True
                 ids, pos = ctx._prepared_inputs[:2]
                 # This is the existing pinned CacheBlend forward loop. No
@@ -127,6 +141,8 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     control="cacheblend_pinned_segment_adapter", unmodified_upstream=False,
                     resumable_engine_used=False, native_loop_executed=True,
                     setup_included=True, selection_cost_included=False,
+                    process_capability_check_ms=capability_ms,
+                    process_capability_outside_warm_hit_ttft=True,
                     boundary_kv_policy="source_mixed" if q.get("matched_boundary_source_kv") else "current_dense",
                     setup_component_observations=ctx.setup_observations(),
                     instrumented_timing_not_performance_evidence=bool(q.get("component_timing")),

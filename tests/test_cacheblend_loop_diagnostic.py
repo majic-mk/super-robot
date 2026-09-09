@@ -1,8 +1,27 @@
 import unittest
+from unittest.mock import patch
 from probekv.cacheblend_loop_diagnostic import loop_metadata, install_loop_metadata
+from probekv.cacheblend_loop_diagnostic import require_matched_boundary_patch
 
 
 class CacheBlendLoopDiagnosticTests(unittest.TestCase):
+    def test_static_capability_cached_by_implementation_not_every_request(self):
+        require_matched_boundary_patch.cache_clear()
+        first, second = lambda: None, lambda: None
+        with patch("inspect.getsource", return_value="probekv_matched_boundary_source_kv") as get:
+            require_matched_boundary_patch(first)
+            require_matched_boundary_patch(first)
+            self.assertEqual(get.call_count, 1)
+            require_matched_boundary_patch(second)
+            self.assertEqual(get.call_count, 2)
+        require_matched_boundary_patch.cache_clear()
+
+    def test_unpatched_implementation_rejected(self):
+        require_matched_boundary_patch.cache_clear()
+        with patch("inspect.getsource", return_value="old implementation"):
+            with self.assertRaisesRegex(RuntimeError, "0016"):
+                require_matched_boundary_patch(lambda: None)
+
     def metadata(self, **changes):
         values = dict(positions=range(288, 800), prompt_tokens=832,
                       suffix_tokens=32, boundary=2, ratio=.15, cached_prefix_tokens=0)
