@@ -124,3 +124,19 @@ window1首次汇总因未解析runtime外部ID而没有归属H2D；该文件保�
 2. 分离request setup、Prefix shadow/composite构造、逐层位置索引、Source加载和真正selective compute成本；保留真实原生Prefix基线。
 3. 优先减少重复CPU→GPU索引构造和可避免的host同步，不降低gamma、不引入slack repair调参。
 4. executor存在稳定收益空间后，再接入真实Source选择和QA匹配质量实验；只有单Segment闭环成功后扩展多Segment。
+
+## 三次 matched 重复（window=1，512 tokens）
+
+同一代码、补丁、GPU和请求规格下交错执行三次；每次仍包含完整诊断控制臂。
+
+| 指标 | mean ms | sample std ms |
+| --- | ---: | ---: |
+| native Prefix + dense remainder | 53.331 | 0.110 |
+| resumable dense remainder | 71.704 | 0.248 |
+| fixed15 Source reuse | 55.659 | 0.256 |
+| fixed15 all-ready control | 56.858 | 0.206 |
+| prepared-dense control | 76.363 | 0.133 |
+
+因此 fixed15 相对**同一 resumable执行器的 dense remainder**节省约22.4%；相对优化的 native Prefix + dense remainder 仍慢约2.33ms（约4.4%）。前者是执行器增量收益，后者是最终用户可见的强基线差距，两者都必须报告。这里仍没有加入真实 Source selection、QA质量或多请求并发，故不能称为最终系统收益。
+
+三次输出目录为 `native-mistral-56a100e-matched-r{1,2,3}-512`，GPU已再次确认空闲。
