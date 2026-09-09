@@ -29,6 +29,7 @@ def loop_metadata(*, positions, prompt_tokens, suffix_tokens, boundary, ratio,
         raise ValueError("invalid CacheBlend loop diagnostic shape")
     return dict(check=True, collect=False, probekv_cfo_collector=None,
         probekv_resumable=False, exact_prefix_tokens=0, reuse_active=False,
+        probekv_matched_boundary_source_kv=False,
         check_layers=[boundary - 1], recomp_ratio=ratio, repair_rounding_policy="ceil",
         prefix_len=0, suffix_len=suffix_tokens, segment_start=positions[0],
         segment_len=len(positions), repair_regions=[dict(segment_id="C",
@@ -90,6 +91,12 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                 install_loop_metadata(a.inner.cache_fuse_metadata, positions=segment["positions"],
                     prompt_tokens=n, suffix_tokens=suffix, boundary=boundary, ratio=ratio,
                     cached_prefix_tokens=ctx.cached_prefix_tokens)
+                if q.get("matched_boundary_source_kv", False):
+                    import inspect
+                    from vllm.attention.backends.xformers import XFormersImpl
+                    if "probekv_matched_boundary_source_kv" not in inspect.getsource(XFormersImpl.forward):
+                        raise RuntimeError("matched backend needs independently audited 0016 boundary patch")
+                    a.inner.cache_fuse_metadata["probekv_matched_boundary_source_kv"] = True
                 ids, pos = ctx._prepared_inputs[:2]
                 # This is the existing pinned CacheBlend forward loop. No
                 # Source observation projection or resumable session is used.
@@ -120,6 +127,7 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     control="cacheblend_pinned_segment_adapter", unmodified_upstream=False,
                     resumable_engine_used=False, native_loop_executed=True,
                     setup_included=True, selection_cost_included=False,
+                    boundary_kv_policy="source_mixed" if q.get("matched_boundary_source_kv") else "current_dense",
                     setup_component_observations=ctx.setup_observations(),
                     instrumented_timing_not_performance_evidence=bool(q.get("component_timing")),
                     origin="real_cuda_execution", fake_timing=False, paper_evidence=False)
@@ -144,7 +152,8 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
     before = tensor_digest(t for l in sorted(hot) for t in hot[l])
     plans = {}
     def arm(name, *, ratio=.15, teacher=None, instrumented=False):
-        q = {**request, "component_timing": instrumented}
+        q = {**request, "component_timing": instrumented,
+             "matched_boundary_source_kv": matched_mask}
         if name == "cacheblend_loop":
             row, logits = execute_cacheblend_loop_arm(backend, request=q, source_id=source_id,
                 boundary=boundary, ratio=ratio, teacher_token_ids=teacher)

@@ -16,6 +16,7 @@ class CacheBlendLoopDiagnosticTests(unittest.TestCase):
     def test_original_forward_check_layer_with_segment_adaptation(self):
         m = self.metadata()
         self.assertFalse(m["probekv_resumable"])
+        self.assertFalse(m["probekv_matched_boundary_source_kv"])
         self.assertEqual(m["check_layers"], [1])
         self.assertEqual(m["prefix_len"], 0)  # current prefix/bridge stay dense
         self.assertEqual(m["repair_regions"], [dict(segment_id="C", start=288,

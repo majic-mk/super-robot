@@ -1,0 +1,16 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -485,3 +485,12 @@
+         if status in [1] and not resumable_mode:
+             imp_indices = cache_fuse_metadata["imp_indices"]
++            # Opt-in backend equivalence experiment, NOT upstream CacheBlend:
++            # match ProbeKV's first reuse layer by keeping historical KV for
++            # inactive rows already at this boundary, not one layer later.
++            if cache_fuse_metadata.get("probekv_matched_boundary_source_kv", False):
++                if repair_regions is None:
++                    raise ValueError("matched boundary requires explicit repair regions")
++                key_old[imp_indices] = key[imp_indices]
++                value_old[imp_indices] = value[imp_indices]
++                key, value = key_old, value_old
+             #key_old[imp_indices] = key[imp_indices]
