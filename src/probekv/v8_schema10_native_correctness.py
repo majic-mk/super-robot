@@ -20,7 +20,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                              boundary=2, teacher_token_ids=None, warm_request=None,
                              diagnostic_completed_depth=0, repair_ratio=1.0,
                              verify_full_digests=True, wait_all_source_layers=False,
-                             commit_source=True):
+                             commit_source=True, use_gpu_hot_cache=False,
+                             retain_gpu_hot_cache=False):
     """Actual native request action; the forced action is diagnostic only."""
     import torch
     if isinstance(repair_ratio, bool) or not isinstance(repair_ratio, (int, float)) or not 0 < repair_ratio <= 1:
@@ -30,14 +31,17 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
     if source_id is None and (wait_all_source_layers or not commit_source):
         raise ValueError("preparation controls require a fixed Source")
     adapter = backend.adapters["legacy_multicheckpoint"]
-    if adapter.active or backend.pending or backend.hbm.active_reserved_bytes:
+    non_hot_reserved = backend.hbm.active_reserved_bytes - adapter.persistent_hot_hbm_bytes
+    if adapter.active or backend.pending or non_hot_reserved:
         raise RuntimeError("correctness arm requires a quiescent backend")
     adapter.reset()
     if warm_request is not None:
         with adapter.open_request({**warm_request, "capture_original_full_prefill": True},
                                   arrival_ns=time.perf_counter_ns()) as context:
             context.finish(lambda: None)
-    q = {**request, "correctness_repair_ratio": float(repair_ratio)}
+    q = {**request, "correctness_repair_ratio": float(repair_ratio),
+         "use_gpu_hot_cache": bool(use_gpu_hot_cache),
+         "retain_gpu_hot_cache": bool(retain_gpu_hot_cache)}
     if teacher_token_ids is not None:
         q.update(capture_logits=True, teacher_token_ids=list(teacher_token_ids),
                  max_new_tokens=len(teacher_token_ids) + 1)
@@ -224,6 +228,11 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                 context.synchronize()
         if ticket is not None:
             ticket.layer_tensors.clear()
+        if (reservation is not None and not reservation.released
+                and retain_gpu_hot_cache and source_id is not None
+                and source_id in adapter.hot_layer_cache):
+            adapter.hot_reservations[source_id] = reservation
+            reservation = None
         if reservation is not None and not reservation.released:
             backend.hbm.release(reservation.reservation_id)
     return result, logits

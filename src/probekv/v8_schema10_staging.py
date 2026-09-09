@@ -87,7 +87,8 @@ class PhysicalLayerwiseSourceLoader:
         self.events = []
 
     def begin(self, *, segment_id, source_id, canonical_layers, segment_positions,
-              expected_artifact_digest, request_id="", replica_id="", prefetch_window=0):
+              expected_artifact_digest, request_id="", replica_id="", prefetch_window=0,
+              resident_layers=None):
         torch = self.torch
         size = getattr(canonical_layers, "full_kv_bytes", None)
         if size is None:
@@ -112,6 +113,30 @@ class PhysicalLayerwiseSourceLoader:
             raise ValueError("prefetch_window must be non-negative")
         if prefetch_window and isinstance(canonical_layers, LayerFile):
             raise ValueError("windowed prefetch requires an in-memory CPU backing")
+        if resident_layers is not None:
+            expected = set(range(1, len(canonical_layers) + 1))
+            if set(resident_layers) != expected:
+                raise ValueError("GPU-resident Source layer inventory is incomplete")
+            if any(key.device.type != "cuda" or value.device.type != "cuda"
+                   for key, value in resident_layers.values()):
+                raise ValueError("GPU-resident Source tensors must remain on CUDA")
+            with torch.cuda.stream(self.stream):
+                start.record()
+                for layer in sorted(resident_layers):
+                    ready = torch.cuda.Event(enable_timing=True)
+                    ready.record()
+                    tensors[layer] = resident_layers[layer]
+                    events[layer] = ready
+                    layer_start_events[layer] = ready
+            self.events.append({"source_id": source_id, "staging_host_ms": 0.0,
+                "staging_wait_ms": 0.0, "full_kv_bytes": size,
+                "path": "GPU_RESIDENT", "resident": True})
+            return LayerwiseLoadTicket(segment_id, source_id, started, size, tensors, start, events,
+                "", "", tuple(segment_positions), layer_start_events=layer_start_events,
+                pending_layers={}, integrity_mode=self.integrity_mode,
+                expected_artifact_digest=expected_artifact_digest, destination_digest="",
+                expected_layer_count=len(canonical_layers),
+                per_request_full_digest_verified=False)
         copy_layers = canonical_layers if not prefetch_window else canonical_layers[:prefetch_window]
         pending_layers = {} if not prefetch_window else {
             i + 1: pair for i, pair in enumerate(canonical_layers[prefetch_window:], start=prefetch_window)

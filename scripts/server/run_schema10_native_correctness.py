@@ -80,6 +80,8 @@ def main():
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
     p.add_argument("--defer-layer-timing", action="store_true",
                    help="opt-in audited 0013 patch: resolve timing after prefill, preserve layer dependency waits")
+    p.add_argument("--gpu-hot-cache", action="store_true",
+                   help="diagnostic only: retain the first winner GPU tensors for the subsequent all-ready arm")
     args = p.parse_args()
     if args.hardware_trace and not args.cost_probe:
         p.error("--hardware-trace requires --cost-probe")
@@ -229,11 +231,12 @@ def main():
                 boundary=args.reuse_boundary, verify_full_digests=False)
             source_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
-                boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False)
+                boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
+                retain_gpu_hot_cache=args.gpu_hot_cache)
             source_all_ready, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
-                wait_all_source_layers=True)
+                wait_all_source_layers=True, use_gpu_hot_cache=args.gpu_hot_cache)
             prepared_dense, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
@@ -285,12 +288,18 @@ def main():
                 atomic_json(trace_root / "instrumented_arm.json", traced)
             finally:
                 loader.capture_hardware_trace = False
+        for hot in tuple(adapter.hot_reservations.values()):
+            if not hot.released:
+                backend.hbm.release(hot.reservation_id)
+        adapter.hot_reservations.clear()
+        adapter.hot_layer_cache.clear()
         if (backend.hbm.active_reserved_bytes or adapter.active is not None
                 or any(slot.leased or slot.completion is not None and not slot.completion.query()
                        for slot in loader.pool.slots)):
             raise RuntimeError("completed native sentinel retained active execution resources")
         expected_path = "CPU_PINNED_TO_GPU" if args.backing_tier == "cpu" else "SSD_STAGED_TO_GPU"
-        if not loader.events or any(e["path"] != expected_path or e["source_id"] != source.source_variant_id
+        allowed_paths = {expected_path, "GPU_RESIDENT"} if args.gpu_hot_cache else {expected_path}
+        if not loader.events or any(e["path"] not in allowed_paths or e["source_id"] != source.source_variant_id
                                     for e in loader.events):
             raise RuntimeError("physical transfer did not use only the frozen winner and declared tier")
         atomic_json(root / "transfer.json", {"origin": "real_cuda_execution", "fake_timing": False,

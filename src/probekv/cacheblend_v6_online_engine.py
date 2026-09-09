@@ -573,6 +573,7 @@ class CacheBlendV6OnlineEngine:
         expected_artifact_digest: str = "",
         request_id: str = "",
         replica_id: str = "",
+        resident_layers: Optional[Mapping[int, Tuple[Any, Any]]] = None,
     ) -> LayerwiseLoadTicket:
         if self.session is None:
             raise RuntimeError("prefetch requires an active request")
@@ -587,6 +588,7 @@ class CacheBlendV6OnlineEngine:
             request_id=request_id,
             replica_id=replica_id,
             prefetch_window=self.prefetch_window,
+            resident_layers=resident_layers,
         )
         if len(ticket.layer_tensors) + len(ticket.pending_layers) != self.model_spec.num_layers:
             raise ValueError("canonical Source layer count differs from model")

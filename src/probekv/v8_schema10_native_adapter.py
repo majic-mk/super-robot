@@ -63,6 +63,12 @@ class NativeOnlineAdapter:
         self.capabilities = {"native_prefix_block_allocator": True, "production_dispatch": selection_path,
                              "snapshot_accepts_retention": True}
         self.retained_shadows = {}
+        self.hot_layer_cache = {}
+        self.hot_reservations = {}
+
+    @property
+    def persistent_hot_hbm_bytes(self):
+        return sum(r.bytes for r in self.hot_reservations.values() if not r.released)
         self.shared = shared_runtime_state if shared_runtime_state is not None else {"active": None, "warm_history": [], "generation": 1}
         self.deadline = math.inf
         self.projection = PinnedCacheBlendResumableAdapter(self.inner, self.spec)
@@ -216,6 +222,8 @@ class NativeRequestContext:
         self.probe_fallback_reason = "native_prefix_shadow_unavailable" if native.shadow_missing else None
         self.prepared, self.replica_reservations, self.supports, self.committed = {}, {}, {}, {}
         self.hot_replicas, self.hot_leases = {}, ExitStack()
+        # Opt-in diagnostic cache.  Production requests never retain these
+        # tensors unless an explicit hot-cache lease is held by the backend.
         self.frozen, self.selection_closed = {}, False
         self.repair_ratio = float(request.get("correctness_repair_ratio", .15))
         if self.repair_ratio not in {.15, 1.0}:
@@ -350,6 +358,8 @@ class NativeRequestContext:
                     size_bytes=ticket.requested_bytes, derived_from_replica_id=backing.replica_id, is_backing=False)
                 self.hot_replicas[sid] = (source, replica)
                 self.hot_leases.enter_context(pool.lease_replica(model, self.segments[sid]["content_key"], ticket.source_id, replica.replica_id))
+            if self.request.get("retain_gpu_hot_cache"):
+                self.adapter.hot_layer_cache[ticket.source_id] = dict(ticket.layer_tensors)
 
     def observe_current_k(self, sid, depth):
         if not self.execution_inventory[sid].comparison_eligible:
@@ -380,10 +390,15 @@ class NativeRequestContext:
         row = store.pool._get(self.adapter.provenance["model_signature"], self.segments[sid]["content_key"], source_id)
         if reservation.released or not any(p.busy for p in row.healthy_backing_replicas):
             raise RuntimeError("transfer without physical backing lease and HBM reservation")
+        resident_layers = (
+            self.adapter.hot_layer_cache.get(source_id)
+            if self.request.get("use_gpu_hot_cache") else None
+        )
         ticket = self.engine.start_winner_prefetch(segment_id=sid, source_id=source_id,
             canonical_layers=layers, segment_positions=self.segments[sid]["positions"],
             expected_artifact_digest=row.canonical_source_state_digest,
-            request_id=self.request["request_id"], replica_id=row.healthy_backing_replicas[0].replica_id)
+            request_id=self.request["request_id"], replica_id=row.healthy_backing_replicas[0].replica_id,
+            resident_layers=resident_layers)
         self.prepared[sid] = ticket
         self.generation += 1
         return ticket
