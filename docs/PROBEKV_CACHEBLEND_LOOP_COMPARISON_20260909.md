@@ -133,6 +133,21 @@ Next bounded optimization experiments, each with new SHA/output and r=1 gate:
 Do not change repair ratio, shorten the request, drop mandatory rows, change
 timing endpoints or claim published CacheBlend speedups to close the gap.
 
+## Follow-up synchronization experiment
+
+Commit `05d630ad2e0a0524e3436fc16c828391f5c0ca08` changed the request adapter
+to use a GPU-side `Event.wait(current_stream)` for an in-flight layer copy,
+instead of a host-blocking `Event.synchronize()`, while retaining the blocking
+fallback only for the old event path. Local regression remained 748 tests
+(747 passed, one skipped) and the A800 r=1 gate still passed. With the same
+zero-Prefix control and `prefetch_window=32`, the means were dense 74.491 ms,
+CacheBlend loop 49.335 ms, and ProbeKV 65.089 ms. The result is a useful
+negative diagnostic: this adapter-level wait replacement is correct but does
+not remove the dominant synchronization/copy path (the instrumented trace
+still reports 102 stream synchronizations). It is not reported as a claimed
+performance improvement and should not be enabled as a final profile choice
+without a further source-level trace of the loader/stream calls.
+
 ## Failure preservation, tests and evidence
 
 The first `7ff71dc` run failed in the CacheBlend adapter before its paired
