@@ -88,12 +88,16 @@ def main():
                    help="instrument KV setup phases; timings are diagnostic, not performance evidence")
     p.add_argument("--layout-ab-repeats", type=int, default=0,
                    help="paired resident legacy/packed/native costs after two warmups; no selector/QA qualification")
+    p.add_argument("--cacheblend-loop-control", action="store_true",
+                   help="matched zero-Prefix native CacheBlend loop adapter; NOT unmodified upstream")
     args = p.parse_args()
     if args.hardware_trace and not args.cost_probe:
         p.error("--hardware-trace requires --cost-probe")
     if args.layout_ab_repeats and (not args.gpu_hot_cache or not args.cost_probe
                                    or not 1 <= args.layout_ab_repeats <= 20):
         p.error("--layout-ab-repeats requires --gpu-hot-cache --cost-probe and 1..20 repeats")
+    if args.cacheblend_loop_control and (not args.gpu_hot_cache or not args.cost_probe):
+        p.error("--cacheblend-loop-control requires --gpu-hot-cache --cost-probe")
     root = Path(args.output).resolve()
     if root.exists():
         raise ValueError("correctness run needs a fresh output directory")
@@ -130,6 +134,7 @@ def main():
         requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
         requests[request_name]["component_timing"] = args.component_timing
     requests["target"]["layout_ab_repeats"] = args.layout_ab_repeats
+    requests["target"]["cacheblend_loop_control"] = args.cacheblend_loop_control
     if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:
         raise ValueError("eager CFO reference requires total Source request <=512 tokens; "
                          "preregister --skip-eager-cfo for longer overlap-only diagnostics")
@@ -336,9 +341,11 @@ def main():
             try:
                 with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                        torch.profiler.ProfilerActivity.CUDA]) as profiler:
-                    traced, _ = execute_fixed_source_arm(backend, request=requests["target"],
+                    traced, _ = execute_fixed_source_arm(backend,
+                        request={**requests["target"], "component_timing": True},
                         warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
-                        boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False)
+                        boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
+                        use_gpu_hot_cache=args.gpu_hot_cache, wait_all_source_layers=args.gpu_hot_cache)
                 trace_path = trace_root / "trace.json"
                 profiler.export_chrome_trace(str(trace_path))
                 summary = summarize_hardware_overlap(json.loads(trace_path.read_text()))
@@ -348,6 +355,12 @@ def main():
                 atomic_json(trace_root / "instrumented_arm.json", traced)
             finally:
                 loader.capture_hardware_trace = False
+        if args.cacheblend_loop_control:
+            from probekv.cacheblend_loop_diagnostic import run_cacheblend_loop_comparison
+            run_cacheblend_loop_comparison(backend,
+                request={**requests["target"], "component_timing": False},
+                source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
+                output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary)
         for hot in tuple(adapter.hot_reservations.values()):
             if not hot.released:
                 backend.hbm.release(hot.reservation_id)

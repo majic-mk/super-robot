@@ -153,6 +153,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                             expected.update(context.supports[sid][layer])
                     layer_rows.append({"layer": layer, "active_positions": list(audit["active_after"]),
                                        "expected_positions": sorted(expected),
+                                       "gpu_ms": audit.get("gpu_ms"),
                                        "union_mask_digest": audit["union_mask_digest"]})
                 if source_id is not None:
                     validate_correctness_observation("absolute_mask", {"origin": "real_cuda_execution",
@@ -174,6 +175,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "instrumented_timing_not_performance_evidence": bool(q.get("component_timing", False)),
                     "component_observations": (
                         context.engine.component_observations() if context.engine else []),
+                    "setup_component_observations": context.setup_observations(),
                     "first_token_ns": first[0], "diagnostic_start_ns": started,
                     "first_token_host_ms": (first[0] - started) / 1e6,
                     "first_token_cuda_ms": float(cuda_start.elapsed_time(cuda_first_token)),

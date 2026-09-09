@@ -236,8 +236,32 @@ class NativeRequestContext:
         self.closed = self.finished = False
         self.generation = 1
         self._observation = {}
-        self._prepared_inputs = adapter.prepare(native.metadata(is_prompt=True))
+        self._setup_events = []
+        with self._setup_span("native_inputs_and_sampling"):
+            self._prepared_inputs = adapter.prepare(native.metadata(is_prompt=True))
         self.attention, self.sampling = self._prepared_inputs[2:4]
+
+    @contextmanager
+    def _setup_span(self, name):
+        if not self.request.get("component_timing", False):
+            yield
+            return
+        torch = self.adapter.torch
+        begin, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        host = time.perf_counter_ns()
+        begin.record()
+        with torch.profiler.record_function("probekv.setup." + name):
+            yield
+        end.record()
+        self._setup_events.append((name, host, time.perf_counter_ns(), begin, end))
+
+    def setup_observations(self):
+        if any(not end.query() for _, _, _, _, end in self._setup_events):
+            raise RuntimeError("setup observations require completed events")
+        return [dict(name=name, host_enqueue_ms=(stop-start)/1e6,
+                     cuda_envelope_ms=float(begin.elapsed_time(end)),
+                     timing_semantics="diagnostic_envelope_not_additive_ttft")
+                for name, start, stop, begin, end in self._setup_events]
 
     @property
     def current_completed_depth(self):
@@ -261,8 +285,9 @@ class NativeRequestContext:
         defer_timing = bool(self.request.get("defer_layer_timing", False))
         if defer_timing:
             import inspect
-            if "probekv_defer_layer_timing" not in inspect.getsource(a.inner.probekv_advance_prefill):
-                raise RuntimeError("deferred timing requires the independently audited 0013 patch")
+            with self._setup_span("patch_capability_check"):
+                if "probekv_defer_layer_timing" not in inspect.getsource(a.inner.probekv_advance_prefill):
+                    raise RuntimeError("deferred timing requires the independently audited 0013 patch")
         a.inner.cache_fuse_metadata["probekv_defer_layer_timing"] = defer_timing
         # Full request working composite, not just per-winner rows. This was
         # previously an unaccounted HBM allocation inside the engine.
@@ -280,8 +305,9 @@ class NativeRequestContext:
                 # engine retains layer-local views and the shadow store owns
                 # pinned immutable inputs; a batched stack can introduce a
                 # second allocation and erase the intended transfer benefit.
-                shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
-                                      for t in pair) for pair in prefix_cpu)
+                with self._setup_span("prefix_shadow_to_gpu"):
+                    shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
+                                          for t in pair) for pair in prefix_cpu)
             else:
                 shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec,
@@ -513,6 +539,17 @@ class NativeRequestContext:
         if self.capture_collector is not None and not self.committed and not self.cached_prefix_tokens:
             from .v8_schema10_canonical import export_original_full_prefill
             self.canonical_exports = export_original_full_prefill(a, self.request, self.capture_collector)
+        return self.finish_from_prefill_hidden(hidden, on_first_token)
+
+    def finish_from_prefill_hidden(self, hidden, on_first_token):
+        """Common sampling/decode endpoint, also used by isolated loop diagnostics.
+
+        The caller must have actually executed this request's prefill against
+        its native blocks. This is not a configuration-level admission bypass.
+        """
+        if self.finished:
+            raise RuntimeError("request finish is not repeatable")
+        a, torch = self.adapter, self.adapter.torch
         # No decode call may append to the full-prefill CFO capture.
         a.inner.cache_fuse_metadata.update(collect=False, probekv_cfo_collector=None)
         self.native.finish_prefill(exact_dense=not self.committed)
