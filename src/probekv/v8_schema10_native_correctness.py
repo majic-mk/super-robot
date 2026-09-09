@@ -96,6 +96,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                         # A separate measured cell, not a relabelled streaming
                         # sample. The wait is part of preparation/sunk TTFT.
                         ticket.wait_all(adapter.loader)
+                        context.register_ready_hot_replicas()
                     source_ready_ns = time.perf_counter_ns()
                     cuda_source_ready.record()
                     winner_ready_layers = sorted(layer for layer, event in ticket.layer_events.items()

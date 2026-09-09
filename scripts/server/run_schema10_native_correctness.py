@@ -232,7 +232,8 @@ def main():
             source_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
-                retain_gpu_hot_cache=args.gpu_hot_cache)
+                retain_gpu_hot_cache=args.gpu_hot_cache,
+                wait_all_source_layers=args.gpu_hot_cache)
             source_all_ready, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
