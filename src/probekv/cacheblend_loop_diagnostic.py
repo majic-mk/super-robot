@@ -6,7 +6,7 @@ policy. Calls the pinned inner model's normal forward, never resumable hooks.
 Original loop cannot compose native Prefix with arbitrary sparse queries;
 only the matched zero-Prefix stratum is supported here.
 """
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 import math
 import time
@@ -93,8 +93,10 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                 ids, pos = ctx._prepared_inputs[:2]
                 # This is the existing pinned CacheBlend forward loop. No
                 # Source observation projection or resumable session is used.
-                hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv,
-                                 attn_metadata=ctx.attention)
+                with (torch.profiler.record_function("cacheblend.native_prefill")
+                      if q.get("component_timing") else nullcontext()):
+                    hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv,
+                                     attn_metadata=ctx.attention)
                 a.inner.cache_fuse_metadata["check"] = False
                 ctx.committed["C"] = boundary
                 def mark_first():
@@ -118,6 +120,8 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
                     control="cacheblend_pinned_segment_adapter", unmodified_upstream=False,
                     resumable_engine_used=False, native_loop_executed=True,
                     setup_included=True, selection_cost_included=False,
+                    setup_component_observations=ctx.setup_observations(),
+                    instrumented_timing_not_performance_evidence=bool(q.get("component_timing")),
                     origin="real_cuda_execution", fake_timing=False, paper_evidence=False)
                 logits = torch.cat(ctx.logit_trace) if teacher_token_ids is not None else None
             finally:
@@ -138,13 +142,14 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
     a = backend.adapters["legacy_multicheckpoint"]
     hot = a.hot_layer_cache[source_id]
     before = tensor_digest(t for l in sorted(hot) for t in hot[l])
-    def arm(name, *, ratio=.15, teacher=None):
+    def arm(name, *, ratio=.15, teacher=None, instrumented=False):
+        q = {**request, "component_timing": instrumented}
         if name == "cacheblend_loop":
-            return execute_cacheblend_loop_arm(backend, request=request, source_id=source_id,
+            return execute_cacheblend_loop_arm(backend, request=q, source_id=source_id,
                 boundary=boundary, ratio=ratio, teacher_token_ids=teacher)
         kwargs = {} if name == "dense" else dict(source_id=source_id, segment_id="C",
             boundary=boundary, repair_ratio=ratio, use_gpu_hot_cache=True, wait_all_source_layers=True)
-        return execute_fixed_source_arm(backend, request=request, teacher_token_ids=teacher,
+        return execute_fixed_source_arm(backend, request=q, teacher_token_ids=teacher,
                                         verify_full_digests=False, **kwargs)
     def save(name, row, logits=None):
         if logits is not None:
@@ -180,6 +185,23 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
             row, _ = arm(name)
             row.update(repeat=i, warmup=i < 2, arm_order=order, arm=name)
             save(f"{i:02d}-{name}", row)
+    from .prefill_phase_diagnostic import summarize_prefill_phase
+    for name in ("cacheblend_loop", "probekv"):
+        a.loader.capture_hardware_trace = True
+        try:
+            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                                   torch.profiler.ProfilerActivity.CUDA]) as profiler:
+                row, _ = arm(name, instrumented=True)
+            p = root / ("trace-" + name + ".json")
+            profiler.export_chrome_trace(str(p))
+            import json
+            summary = summarize_prefill_phase(json.loads(p.read_text()), name)
+            summary.update(trace_sha256=file_digest(p),
+                           instrumented_timing_not_performance_evidence=True)
+            atomic_json(root / ("profile-" + name + ".json"), summary)
+            save("instrumented-" + name, row)
+        finally:
+            a.loader.capture_hardware_trace = False
     after = tensor_digest(t for l in sorted(hot) for t in hot[l])
     atomic_json(root / "source-integrity.json", dict(before=before, after=after,
         unchanged=before==after, hashing_outside_timing=True))
