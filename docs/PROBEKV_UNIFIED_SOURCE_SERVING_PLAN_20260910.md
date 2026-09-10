@@ -1,0 +1,722 @@
+# ProbeKV 统一方案：质量约束下的历史 Source 选择、修复与分层服务
+
+状态：**统一框架 + 用户确认后的无卡候选实现；不是已冻结的 GPU 执行合同。**
+
+日期：2026-09-10。审计基线：`73ec107`；最近已记录的后端实验运行 SHA：`3b365bc`。
+
+首次分析只阅读材料并核查证据。随后用户要求实施七项补充，本次已增加无卡策略组件、离线分块入口和测试，详见第13节。尚未切换生产默认、改动历史补丁或旧Gate，未连接服务器、未启动GPU、未提交或推送Git。
+
+## 1. 输入、证据边界与结论
+
+按用户要求先读文本，再读 PDF 全部 32 页，并对公式和关键页面做视觉核对。
+
+| 输入 | SHA256 |
+|---|---|
+| 文本附件 `b07b062e-9d33-4fa7-8f40-d42079fe4889/pasted-text.txt` | `e384501a5cc2b3152943d16d2c15d15be11979abc1e88ad8b7462fc877a8eda8` |
+| `计算机实验 - 连接Github分析代码.pdf` | `59b061d553b161c0ded9e7dc905fda4d372d370c5012e79a3d3277f719d54f97` |
+
+附件是设计讨论材料，不是实测证明。PDF 页码以下均指本文件第 1–32 页，不使用其原聊天导出的 51–82 页页脚。
+
+建议统一主线为：
+
+> 在相同修复后端上，根据当前左侧上下文状态，从同一 exact Segment 的历史 KV Variants 中选择质量代理合格且访问成本合理的 Source；对胜者执行有质量证据支持的修复，并由请求级最终成本准入决定 reuse/dense。另用独立、受预算约束的存储晋升改善未来请求。
+
+核心创新候选是 **Source-aware matched-quality efficiency**，而不是“对同一 Source、同一 mask 比 CacheBlend 的修复 kernel 更快”。是否形成有价值的贡献，必须先通过 Source-quality/repair-cost 实验，不能用系统复杂度代替证据。
+
+### 1.1 建议的采纳范围
+
+| 材料中的建议 | 处理 | 必须补充的限定 |
+|---|---|---|
+| 多历史 Source 改善质量—延迟关系，PDF 1–11 页 | 采纳，作为主问题 | 必须胜过 Latest/Random/CFO 的同后端比较，计入选择开销 |
+| 一次排序计算多个比例的剩余漂移，文本 | 采纳 | 这是 proxy，不是 QA 安全证明；K 选择分数与实际 V/KV repair 排名不能混用 |
+| 5–30% 在线比例候选，文本 | 作为新策略网格采纳 | 未经质量/成本支持的点不可上线；30% 是策略上限，不是所有更高比例都不经济的定理 |
+| 有余量多修复，文本 | 有条件采纳 | 主效率策略只利用不增加关键路径的余量；主动花完延迟预算作为独立质量优先模式 |
+| 质量合格后按总成本选 Source，PDF 12–17 页 | 采纳 | 只声称当前比较集合与冻结参考修复方案下的预测最优，不声称全局真实最优 |
+| CPU/SSD 的价值看 exposed load，PDF 18–22 页 | 采纳 | 不以裸带宽、线性 repair 比例或 PDF 的估算替代测量 |
+| 当前服务与未来晋升分离，PDF 23–32 页 | 采纳 | 后台搬运也计资源/字节/时间；不得暗中让未胜者完整 KV 进入 GPU |
+| 热 content 保留 1/2/4 个 CPU Variants | 采纳为软目标 | 全局容量优先，不能承诺每个 content 至少 4 个；不改成新的价值分数淘汰 |
+| SSD Source 的 SelectionState 常驻 CPU | 采纳为有预算的数据面目标 | SelectionState 与完整 KV backing 解耦，独立计字节；不能假定所有 content 的状态无限驻留 |
+| 根据并发负载决定访问成本，文本 | 保留到后续阶段 | 先完成单活跃请求；未知并发测量单元不外推、不给资格 |
+
+## 2. 当前系统真实起点
+
+### 2.1 已有内容与缺口
+
+| 模块 | 已有 | 本方案需要补齐 |
+|---|---|---|
+| `cacheblend_continuation.py` | 一次性移交真实 dense 层状态，避免重复执行已完成层 | live SelectionState 比较、冻结/租约、生产 FinalCommit；之后分别接 Prefix 和 streaming |
+| `v8_schema10_selector.py` | absolute threshold、早停、最终 residual band + 成本选择 | 新模式最终选择覆盖全部 proxy-qualified 候选；使用一致的访问计划成本，不能用 Gate1 乐观下界代表最终最快 |
+| `v8_schema10_online_backend.py` | 真状态比较、单活跃请求、Source Pool 接口 | 比较接入 continuation；保留排序/尾和；候选缺成本应逐候选处理，不能由一份未测 SSD Source 连带否定所有热 Source |
+| `v8_schema10_slack_repair.py` | 固定胜者、一次排名、多个嵌套 mask、逐计划查询成本 | 目前仅 development shadow，外部传入 quality support；尚不是在线质量准入器 |
+| `v8_schema10_cost_provider.py` | shape 查询与 PlannerSnapshot 分离、缺测量返回 UNSUPPORTED | 现有 exact-mask 支持范围窄；逐步引入经过 anchor 验证的 shape 类别，不静默泛化 |
+| `v8_schema10_storage.py` | 单请求静止状态下的 exclusive backing、迁移、LRU | SSD SelectionState 目前仍落盘；独立 CPU state budget、受控 promotion queue、事务化后台执行 |
+| `v8_schema10_native_oracle.py` | 真 dense/Source QA、静止池恢复 | 当前主要固定 0.15/1.0，需完整比例矩阵、teacher-logit 诊断、Source-quality 曲线 |
+
+### 2.2 最新记录不能被过度解释
+
+`docs/PROBEKV_CONTINUATION_HANDOFF_20260909.md` 记录：Mistral、单个 512-token Segment、零 cached Prefix、GPU-resident 固定 Source、两次 warm-up 后三次测量。
+
+| 首个复用层 | dense 均值 | continuation 均值 | matched pinned loop 均值 |
+|---|---:|---:|---:|
+| 2 | 73.923 ms | 50.474 ms | 48.537 ms |
+| 3 | 73.918 ms | 51.466 ms | 49.464 ms |
+
+这说明近期重复执行/setup 优化有效，且同后端差距明显收窄；不能证明真实 Source ranking、Prefix 组合、CPU/SSD 加载、自然 QA 或多请求并发已通过。这里的 matched loop 是经过审计的适配路径，不是未经修改的 upstream CacheBlend。此前测试记录为 764 项中 763 通过、1 项可选依赖跳过；本轮未重新运行测试，也不据此新增通过声明。
+
+## 3. 稳定大框架与不变量
+
+保持现有身份结构：
+
+```text
+canonical Segment provenance
+→ exact token content bucket
+→ 最多 16 个历史 Source Variants
+→ 每 Variant 一个 lossless BF16 canonical KV Artifact
+→ CPU 或 SSD 一个 authoritative backing
+→ 按需 GPU execution replica
+```
+
+1. canonical Source 只来自目标模型完整、无缓存的 exact dense full prefill；repair 派生、r=1 reuse、Prefix+仅剩余部分 dense 不得晋升。
+2. Source identity 绑定历史 prefix、位置、模型数学签名与 occurrence；迁移不改变身份。
+3. canonicalizer provenance 不混入 token 内容正确性身份；不按历史缓存长度重新切 Segment。
+4. Prefix 优先：完整覆盖的 Segment 不比较；部分覆盖的 Segment 剩余尾部 dense，不临时重切以制造匹配。Prefix/mandatory suffix 不进入 repair pool。
+5. Source 一旦冻结不可切换。胜者准备、质量确认或 FinalCommit 失败后 dense，不改选第二名。下一请求可重新选择。
+6. 物化在当前请求的 lookup/coverage 记录完成后发布，禁止未来信息泄漏。
+7. 当前仍为单活跃请求；多 Segment 和多请求并发不是同一能力。
+8. 不恢复固定 5% 选择时间硬门。选择成本仍须进入总账，并可基于剩余收益预算提前停止比较。
+
+## 4. 选择与修复：统一算法，但不混淆质量代理
+
+### 4.1 四个量必须分开
+
+| 量 | 含义 | 是否等于实际 repair |
+|---|---|---|
+| `source_residual_trim_ratio`，rho_trim | 多 Source 排名时去掉最大的部分 K 漂移 | 否 |
+| `r_reference` | 资格阈值及 Source 成本预览所绑定的统一参考修复方案 | 不一定；首轮固定 0.15 |
+| `r_min_proxy` | 胜者在有限测量网格中通过残余代理规则的最小点 | 不是数学安全下界 |
+| `r_execute` / layer support | 最终获质量与成本支持、实际执行的修复比例/位置 | 是 |
+
+不引入学习型 per-Source r_safe 模型。绝对阈值和 ratio support 是固定的 development Profile/查表规则，不是在线训练；但依然需要独立验证，不能因为“无训练”就免除质量审计。
+
+### 4.2 Source K 分数
+
+对 exact Segment 的 N 个 token：
+
+\[
+\delta^K_{s,j}=\frac{\|K^{cur}_j-K^{src}_{s,j}\|_2}{\max(\|K^{cur}_j\|_2,\epsilon)}.
+\]
+
+\[
+m_{score}=\min(N-1,\lceil\rho_{trim}N\rceil),\qquad
+J_s=\frac{\sum_{j\notin TopK_{m_{score}}}\delta^K_{s,j}}{N-m_{score}}.
+\]
+
+所有分数相同的 Top-K 按绝对位置确定性打破平局。N=1 不进入新在线 ratio-tail 路径，走 dense；r=1 作为独立正确性端点，不计算空残余集合均值。
+
+深度仍定义为已完成的 Transformer blocks：`K_obs[d]` 是完成 d 层之后观察到的第 d+1 层输入 K。d=0 只作负对照。Mistral legacy 为 `{1,2,4,5,8}`，Qwen 为 `{1,2,4,5,7}`。不得修改历史 adapter 常量后反向重释旧实验。
+
+重要限制：如果问题 Q 在 Segment C 后面，causal self-attention 下 C 的 K 不含未来 Q。因此本方法是 current left-context-conditioned selection，不能直接称作 query-aware selection。实验要加入“相同 C/左侧上下文、不同后置问题”的压力项来揭示此限制，而不是通过重排提示词偷偷改变任务。
+
+### 4.3 先把 Source 选择问题做清楚
+
+新主策略分两步，避免为比较 16 个 Source 加载 16 份完整 KV/V：
+
+1. 用各候选独立的轻量 pre-RoPE K SelectionState，筛出在冻结参考修复方案下 proxy-qualified 的候选。
+2. 在这些候选中，使用同一 `r_reference`、boundary、计时端点的访问计划，选择预测总成本最低者。
+
+\[
+\mathcal S_{proxy}=\{s\in\mathcal S_{compared}:J_s\le\theta_{model,d,\rho,reference-policy}\},
+\]
+
+\[
+s^*=\arg\min_{s\in\mathcal S_{proxy}\cap\mathcal S_{cost-supported}}
+\widehat C_q(s,r_{reference}).
+\]
+
+默认参考路径先用 fixed15；阈值必须与这个完整 repair policy 绑定。不能以 fixed15 的资格阈值声称 5% repair 也安全。也不能说该策略找到了全部 Source×ratio 的全局最优：未经比较的 Source、仅在另一修复方案下合格的 Source，都不在其声明范围。
+
+新策略最终层不再把相对最小 J 的 narrow band 作为唯一主选择范围。只要绝对代理质量资格成立，就允许选择 J 略高但当前访问更便宜的 Source。旧 residual-band 策略保留为隔离基线。
+
+早停仍保留，但不能只因 SSD Source 的 residual margin 很大，就跳过当前已知更经济的合格候选。第一版 d1 早停要求 residual 决策与支持成本的选择一致、且通过冻结早停规则；不一致则进入 d2/legacy 的下一 checkpoint。最终层才按完整的当前合格集合决策。整个新决策过程需重新评价 wrong lock/regret，不能继承旧策略资格。
+
+CFO 只负责预算不足时的排序/shortlist；不替代 Residual-K。真正唯一 correctness-eligible Source 可走 single-candidate 路径；16 个 eligible 但只比较 1 个不能伪装为确定胜者。部分候选不合格不能证明整个存储池没有兼容 Source。
+
+### 4.4 胜者确认与一次排序、多比例代理曲线
+
+freeze 后仅准备胜者。实际 repair-check 计算 winner-specific 漂移；兼容主线保留 V-only，K-only/KV 作为独立对照。
+
+记所选 repair metric 的每 token 漂移为 e_j，按从大到小排序为 e_(1)...e_(N)：
+
+\[
+m(r)=\min(N,\lceil rN\rceil),\qquad
+R_{tail}(r)=\frac{\sum_{j=m(r)+1}^{N}e_{(j)}}{N-m(r)}.
+\]
+
+对新的在线候选网格：
+
+\[
+\mathcal R_{online}=\{0.05,0.10,0.15,0.20,0.25,0.30\}.
+\]
+
+一次排序加尾和即可得到所有候选点；**不是执行六次 Transformer repair**。每个候选 mask 仍需要合法的成本查询，查询与 mask 构建 CPU/GPU 开销都进入账本。
+
+`R_tail <= theta` 只能给出 proxy pass。正式可用集合还必须满足：对应模型/depth/metric/support policy 的质量验证、非空 support 规则、真实成本支持和资源可用。
+
+尤其注意：R_tail 是**在修复前的观测中剔除拟重算 token 后**得到的统计，不是真正执行后再次测得的 KV 误差；后续 attention 会继续传播状态变化。论文和字段不能将它标成“已证明的修复后误差”。
+
+\[
+\mathcal R_{feasible}=\mathcal R_{proxy-pass}\cap\mathcal R_{quality-supported}\cap\mathcal R_{cost-supported}.
+\]
+
+如果没有不超过 30% 的合法计划，当前新模式 dense。30% 以上仍保留离线修复曲线及历史路径；这不是“更高比例绝对没有意义”的结论。r=1 永久保留正确性端点。旧 `{0.10,0.12,...,1.0}` Profile 不得静默改成新网格。
+
+K SelectionState 的 trim indices 不能直接用作 V-only repair mask；阈值也不能跨 metric 复用。更多 repair 不保证每个 QA case 单调变好，因此 quality support 是显式集合，不是看到最小点通过就默认所有更大点通过。
+
+ratio 是名义比例，实际数量使用 ceil，必须同时记录 `repair_count` 和 `effective_ratio=repair_count/N`。不在冻结长度支持范围内的短 Segment 走 dense，不能将小 N 的巨大取整偏差说成已经验证了30%上限。
+
+阈值冻结只在 group-isolated fit 集上枚举预注册 residual 阈值候选，结合真实 QA 标签选择；验证集只评估、不重调。先在 fixed15+explicit Gate1 下确定 Source selection/absolute admission，再固定它们评价 winner ratio 与存储成本；最终一致性失败则保留失败并开新一轮独立开发，不能反复用同一验证集调 Source 参数。这是固定规则的经验验证，不是数学安全证明或独立尾部风险认证。
+
+### 4.5 不把“花完余量”与“更快”混为一谈
+
+保留同一框架下两个明确命名的模式：
+
+- `efficiency_first`：在合格计划中最小化预测完整请求时间；在预注册测量误差容忍范围内时间等价时，选更多 repair。作为主系统效率结论的默认模式。
+- `quality_within_budget`：在同样通过 FinalCommit 的合格计划中选择更大 ratio。适合质量优先/低负载，作为独立结果报告；不冒充延迟最优策略。
+
+若 dense=55 ms，gamma=0.8，总预算是44 ms，不是50 ms。50 ms 即使比 dense 快，也不能通过本系统现行 FinalCommit。
+
+### 4.6 Gradual repair 不允许状态重入
+
+第一轮先使用所选 initial ratio 的 fixed-support continuation，单独识别 Source 与 ratio 的收益。之后再启用经过 oracle 验证的 gradual。
+
+首个 selective layer 前可在 5–30% 中选初始 pool；之后：
+
+\[
+M_{l+1}\subseteq M_l,\qquad r_{l+1}\le r_l.
+\]
+
+不能已经只保留15% hidden states，后层 I/O 变慢后又直接升到30%。若未来要允许 reentry，必须设计额外状态保存或重算并独立计费，本方案不包含它。
+
+逐层质量规则不可在 commit 后才发现其要求高于现存 support；必须在 commit 前选取有完整后续支持证据的计划。若实际运行发生超时，记录成本误差；若发生正确性异常，失败停止，不能称为无成本 dense 回滚。
+
+## 5. 成本、overlap 与准入
+
+### 5.1 不增加新的经济 Gate
+
+保留三种职责，不重复计算三次 Source winner：
+
+1. Gate1：source-local futility screening，保持当前 gamma=1.0，避免明显不值得的准备。
+2. Atomic Preparation Admission：租约、HBM、staging、copy/waste 预算，不是新的质量证明。
+3. FinalCommit：首个不可逆 selective layer 前的完整请求经济准入，gamma=0.8。
+
+无卡阶段不根据推测把 Gate1 融合；是否改为 advisory，仍需真实 paired A/B 和浪费收益证据。freeze 后 FinalCommit 拒绝就 dense。
+
+### 5.2 统一总式
+
+\[
+\widehat T_{reuse,q}=T_{elapsed,q}^{actual}+\widehat F_{joint,q}(s,r,\mathcal I,\mathbf b,\mathbf M,\mathbf S),
+\]
+
+\[
+\widehat T_{reuse,q}\le0.8\widehat T_{dense,q}^{matched}.
+\]
+
+- elapsed 从同一到达/计时起点算，包含排队、early layers、comparison、planner、已暴露的准备与等待；不是多个重叠事件持续时间之和。
+- joint future 是完整请求尚未执行的关键路径，包含 mandatory rows、选定 repair、必要 full KV attention、ready 等待、调度与收尾。
+- 不能将多个 Segment 的完整 remaining TTFT 相加。
+- matched dense 是相同 token、Prefix 条件、sampling、计时端点及可比外部负载下“不做本次 ProbeKV 选择/准备”的参考。
+- 不将已浪费的 ProbeKV 时间也加到 dense 分母，从而制造通过；也不只比较当前 remaining 而把历史选择时间抹掉。
+- 并发时可以使用同系统状态的 remaining 比较作为局部诊断，但不能替代到达时基线的整体 TTFT 报告。共同外部排队必须对齐；本算法导致的排队属于本算法成本。
+
+预测准入不等于测得的性能保证。所有实际超支、dense fallback、负收益请求都进入报告。
+
+### 5.3 真实 layer-wise overlap
+
+\[
+stall_l=\max(0,t_{ready,l}-t_{need,l}).
+\]
+
+保存每层 enqueue/start/end、t_need/t_ready、compute start/end、stall、copy bytes、path。t_need 必须由真实依赖时间线递推，包含此前等待，不能机械相加独立事件得出总时间。
+
+`max(load_next, repair_current)+nonoverlap` 仅是被 anchor 验证的简化模型。后续层还包含 attention/MLP、mandatory suffix、launch/setup、竞争；不能把 pure repair 当作全部 prefill。
+
+PDF 的512-token/15%修复6–9 ms、CPU等效几个百分点等数值不作为 Profile 输入。Mistral GQA 的完整 BF16 KV 几何确为每 token 128 KiB，512 tokens 约64 MiB；但实际准备可能只加载 boundary 之后的层，延迟必须实测。CPU、SSD staged、page-cache warm、真实冷读取分别报告。
+
+### 5.4 成本表与负载支持
+
+MeasurementKey 用执行形状与负载类别，PlannerSnapshot 验证当前请求/Source/generation。缺测量返回 UNSUPPORTED，不填0、不用J替代时间、不借高比例噪声单点外推低比例。
+
+先保持 exact 单元；需要支持动态 mask 时，单独验证以 token counts/layout/boundary/active rows 为轴的 shape 类别与 joint anchors，再开放查询。样本最大值只称 empirical upper observation，不称风险已认证的 UCB。
+
+后续并发测量采用 factorized cells + 少量 joint anchors；可含 active requests、copy-in-flight、staging backlog、bytes-in-flight、allocator reservations。GPU utilization 只能辅助，不能单独决定可用修复预算。当前未测并发类别不允许沿用单请求 Profile 声称支持。
+
+## 6. 分层存储与两个独立决策
+
+### 6.1 当前请求：选谁来服务
+
+不固定采用 GPU>CPU>SSD 的硬排名。路径由质量资格与 joint cost 决定：GPU 副本未必质量合格；SSD 也可能在长请求中有足够 overlap。
+
+foreground 完整 KV 传输只允许 frozen winner；它失败后不换 Source。已有 GPU-resident 非胜者无需删除，但不能为比较主动传完整 KV。
+
+### 6.2 未来请求：是否晋升 SSD Variant
+
+当前请求使用 CPU Source A，比较发现 SSD Source B 的状态更适合，可以产生 `PromotionCandidate(B)`；它不改变已冻结的 A。
+
+但单次更低J不能证明B长期更有价值。晋升依据至少包括同content的近期使用机会、质量代理优势、预期warm访问收益、CPU空间、迁移/降级成本和冷却时间。首先作为可检验的缓存策略，不宣称长期最优。
+
+首次实现采用**请求完成后的静止维护窗口**，与当前单请求 store 一致。真正异步重叠 worker 要等生命周期/带宽竞争实现并验证后再启用，不能在当前要求 quiescent 的 store 上直接开线程。
+
+必须明确区分字节账本：
+
+```text
+foreground_nonwinner_full_kv_transfer_bytes = 0
+background_promotion_full_kv_bytes >= 0
+background_nonwinner_gpu_prefetch_bytes = 0
+```
+
+这修正了旧的全局 `nonwinner transfer=0` 口径：后台非胜者 SSD→CPU 是显式授权的存储维护，不是前台偷取 KV。它要有独立 quota、operation ID、租约、generation、完成校验和后续受益归因，且计入 trace 总成本。
+
+已有已准入 execution/copy reservation 优先。后台无资源就延后；不阻塞本请求来完成“后台”任务。对于全部候选均在 SSD 的情况，正式 reuse 通过 FinalCommit 才复用，否则 dense，可另行登记晋升候选。
+
+### 6.3 Exclusive backing + LRU 继续保留
+
+- CPU满：最久未实际请求使用且未受保护的 backing 降到SSD。
+- SSD满：删除最久未使用且未受保护的 backing；无副本后 tombstone。
+- 迁移先写目标、校验、原子切换，再回收旧副本。允许事务期间双份，不允许丢失唯一健康 backing。
+- promotion/demotion/comparison/snapshot 不更新 `last_request_use_epoch`；请求选择/绑定/实际使用沿用现有合同。
+- probation有界grace、lease/copy/execution保护优先于LRU；VERIFIED不获得永久特权。
+- 新晋升对象不得靠修改last-use变成“最近使用”；防反复晋升使用单独cooldown/维护预算，不改LRU事实。
+
+### 6.4 Warm floor 是软目标
+
+每content可有0/1/2/4的warm target，热度和对象大小决定是否值得分配；全局字节预算可迫使目标降为0。不是每content固定4份CPU KV，也不是给warm set不可淘汰特权。
+
+首版保留普通LRU作为默认与对照，先评估warm target策略是否降低端到端总成本；不要同时改Source替换、物化、晋升三个策略后无法归因。
+
+### 6.5 SelectionState 与完整 KV backing 解耦
+
+新结构：
+
+```text
+SourceVariant
+├─ canonical full KV Artifact：CPU或SSD backing
+└─ exact BF16 pre-RoPE K SelectionStates：独立有预算的CPU backing
+   └─ 有界GPU comparison workspace
+```
+
+Mistral 512tokens 单checkpoint K约1MiB，d1/d2×16Sources约32MiB；legacy五checkpoint×16约80MiB。相比完整16份KV小，但不可以忽略，更不能免费常驻整个语料池。
+
+先为可比较的admitted候选保留CPU状态预算；不足则降低驻留集合/明确state unavailable，不能读取完整KV替代。不要把tensor塞进廉价metadata字段，也不默认所有状态永久驻GPU。压缩/anchor签名暂不做主线，要单独资格验证后才考虑。
+
+## 7. 可实现的接口和总流程
+
+建议复用现有类而非再建一套推理框架，增量增加：
+
+```text
+SourceComparisonObservation:
+  source_id, completed_depth, state_digest, metric, rho_trim, score,
+  comparison_scope, comparison_timing
+
+SourceAccessPreview:
+  source_id, artifact_id, replica_generation, reference_repair_policy,
+  cost_status, estimated_request_cost, measurement_digest, snapshot
+
+WinnerResidualCurve:
+  winner_id, metric, observation_depth, ranking_digest,
+  ratio_points, repair_counts, tail_means, quality_support_digest
+
+RepairPlan:
+  winner_id, boundary, initial_ratio, layer_support_digests,
+  quality_evidence, cost_query, execution_objective, snapshot
+
+PromotionCandidate:
+  source_id, observed_request_id, target_tier, expected_future_benefit_basis,
+  estimated_bytes, generation, quota, cooldown, reason
+```
+
+伪代码：
+
+```text
+native_prefix_and_inventory(request)
+sources = lookup_previously_published_exact_variants()
+compared = compare_cpu_selection_states_with_budget(sources)
+qualified = reference_policy_proxy_filter(compared)
+preview = supported_reference_access_plans(qualified)
+winner = choose_by_current_checkpoint_policy(preview)
+
+if no legal winner:
+    dense_and_optional_budgeted_exact_materialization()
+else:
+    atomic_freeze_and_logical_lease(winner)
+    resource_admit_and_prepare_only_winner()
+    current_winner_metric = full_repair_check_before_selective_layer()
+    curve = sort_once_and_compute_ratio_tails(current_winner_metric)
+    plans = quality_and_cost_supported_plans(curve)
+    plan = choose_efficiency_or_quality_budget_objective(plans)
+    if plan missing or fresh_final_commit(plan) fails:
+        dense_without_reselecting_source()
+    else:
+        continue_existing_decoder_state(plan)  # no early-layer replay
+    finalize_request_and_release_or_quarantine_resources()
+
+record_request_quality_timing_and_coverage()
+publish_only_budgeted_exact_dense_materialization_after_lookup()
+enqueue_promotion_candidates_without_changing_foreground_decision()
+run_budgeted_quiescent_maintenance_between_requests()
+```
+
+任何case的独立dense reference/oracle/canonical capture不隐藏在TTFT外后宣称免费：分别报告服务TTFT、总GPU工作与trace端到端总耗时。
+
+## 8. 先验证什么：单 Segment 证据优先
+
+### 8.1 最优先不是并发，而是 Source 价值矩阵
+
+相同请求、相同exact C、不同真实历史上下文创建的最多16个canonical Sources；不人为加噪声KV制造差异。
+
+对每个Source独立测固定repair网格，包含新5–30%候选与r=1；有需要保留50/75%离线诊断点。与exact dense比较生成答案、F1、teacher-forced分布和耗时。
+
+首先保持所有Source相同residency、backend、boundary和repair规则，回答：
+
+1. Source不同，真实QA和所需repair是否显著不同？
+2. deep/full-candidate oracle比Latest/Random/CFO有多少可实现上限？
+3. 早层Residual-K能否捕获这部分上限？
+4. 节省的repair/回退成本能否覆盖真实selection开销？
+
+各Source使用同一repair metric/比例，但根据其自身漂移产生mask，不能把Oracle Source的mask强行给所有Source。验证两个后端数值等价时才要求同Source、同mask。
+
+固定ratio并不保证答案质量单调；r_min_oracle是离线网格中的最小合格点，属于hindsight，不是在线oracle-free结果。
+
+### 8.2 严格匹配的对照
+
+主比较：
+
+```text
+matched native Prefix + dense remainder
+same repair backend + Latest Source
+same repair backend + seeded Random Source
+same repair backend + CFO Source choice
+same repair backend + ProbeKV Source choice
+quality-qualified Source/ratio Oracle (offline upper bound)
+```
+
+另外保留uncached dense参考。若目标C已完全为Prefix命中，则ProbeKV应跳过而不是声称再次加速它。Prefix长度/命中blocks在配对中一致。
+
+`same backend+CFO selector` 不等于完整Cache-Craft系统，`matched patched loop` 不等于unmodified CacheBlend；图表必须准确命名。后续论文若做系统级SOTA对比，要分别完成官方实现适配与公平配置审计。
+
+### 8.3 数据、统计和停止规则
+
+- 只使用冻结development partitions；fit/validation按content group和文档来源隔离。相同C的变体和重复请求不能分到独立认证的两边。
+- 最终validation只验证，失败不回头调同一份数据。
+- 延续质量比较建议：整体平均F1下降不超过0.01、各数据集不超过0.02；case coverage/oracle使用预注册的case阈值。这是相对dense的质量合同，不等于dense答案是ground truth。
+- r=1要求greedy token exact、至少32 teacher位置relative-L2<=1e-4、digest/mask/生命周期正确；QA失败与运行正确性失败分开。
+- 用独立请求/content-group为重采样单位报告配对区间；重复timing、多个ratio和16个Source不是独立样本。
+- 90个独立单位0失败的单侧95%Clopper–Pearson上界约3.27%，不能声称1%认证；后续统计认证另立合同。
+- 不预设“必须2x成功”，也不因为Source差异不明显而筛掉失败case。
+
+若oracle相对简单Source策略都没有稳定质量/成本优势，暂停更复杂的warm/promotion/concurrency机制，先重新审视多Variant收益假设。若oracle有优势而selector无收益，优先修选择；若selection有效但端到端不快，优先修overhead/I/O。不要把三种失败混为“kernel不够快”。
+
+## 9. Coverage、存储和并发的后续验证
+
+### 9.1 Coverage(K)是主增长指标
+
+K={1,2,4,8,16}分别从相同初始条件、相同全局字节预算因果重放，禁止用最终K16池回看过去。
+
+分别报告 compatible-proxy、selected、committed、QA-qualified且actual saving>0的Coverage；分母与Prefix-only/ineligible类别固定。报告总请求结果，不能仅对已成功commit请求求平均速度。
+
+\[
+\Delta Coverage(K_a\rightarrow K_b)=Coverage(K_b)-Coverage(K_a).
+\]
+
+真实受限LRU系统的曲线不保证单调；出现负边际收益必须保留，不通过平滑成饱和曲线掩盖。近饱和K是存储建议，不改变上限16。
+
+### 9.2 存储价值单独测
+
+分开比较GPU驻留、pinned CPU、SSD staged冷/暖页缓存。随机或轮换Source-tier映射，避免“最好Source恰好全在CPU”的混淆。
+
+依次对比普通LRU、LRU+独立SelectionState、再加有界promotion/warm目标；记录未来request收益、维护bytes、staging时间、HBM/CPU占用、重复迁移、写放大和trace总时长。
+
+CPU/SSD独占backing不代表OS page cache没有临时副本；冷热实验需记录实际IO与可控性，不能凭Python snapshot相同声称冷缓存相同。
+
+### 9.3 并发最后开展
+
+单Segment单请求闭环后，依次验证多Segment的union masks，再验证多个活跃请求。已commit路径不回滚，尚未决定的Segment按dense fallback纳入joint timeline。
+
+多Segment统一ratio计划若不能同时满足各Segment质量floor和已有support上限，就不能静默降低某个Segment的质量要求；在commit前部分dense或采用原有受验证策略。A/C与legacy不因“很早开始复用”被删除，只有证据支持的简化dispatch才启用。
+
+并发测试再加入排队、selection workspace、H2D、SSD staging、CPU pool、promotion竞争；分别报告SLO、TTFT、吞吐和公平性，不用高负载降低未经认证的repair比例。
+
+## 10. 确认后的修改顺序与模块
+
+### P0：统一合同和离线诊断接口，不切生产默认
+
+- 更新独立policy版本/manifest，定义新ratio grid、proxy术语与两种目标，保留旧schema/Profile只读含义。
+- 扩展 `v8_schema10_native_oracle.py`：多ratio、真实QA、teacher trace、matched backend、scope隔离。
+- 完善数据group隔离、不可变task清单和原始证据校验。
+- 新增 `SourceComparisonObservation`、`WinnerResidualCurve` 的边界测试。
+
+### P1：将已优化后端接到live Source选择
+
+- 修改 `cacheblend_continuation.py`、`v8_schema10_online_backend.py` 及native context适配：真实comparison→freeze→continuation，确保层只执行一次。
+- 修改 `v8_schema10_selector.py`：隔离旧band policy与新qualified-cost policy，逐候选UNSUPPORTED处理；保留早停与legacy。
+- 必须计入selection、projection、handoff、lease和FinalCommit，不能继续fixed-winner代替在线选择。
+- 先resident零Prefix，随后native Prefix组合和CPU streaming分别过正确性门。
+
+### P2：胜者repair曲线和最终准入
+
+- 扩展 `v8_schema10_slack_repair.py`：真实quality-support验证、有限网格、效率/质量模式，不再接受只有任意digest的生产资格。
+- 扩展 `v8_schema10_cost_provider.py`：mask改变重新查询，shape类别先验证再开放；actual/predicted/proxy分字段。
+- 复用现有winner-specific repair和uniform/gradual模块；先fixed support，后no-reentry gradual。
+
+### P3：独立SelectionState和受控存储维护
+
+- 修改 `v8_schema10_storage.py` / pool：独立state预算与backing、请求间promotion queue、事务迁移、quiescent清理。
+- 不改变exact canonical、LRU、grace、lease优先级；首次不做真正异步store mutation。
+- 维护计费独立且可归因，失败不影响当前已完成请求的数值结果。
+
+### P4：经单请求证据通过后再扩展
+
+- 多Segment joint masks、并发reservation与load-aware cost cells。
+- 真正异步promotion、stress/robustness与Qwen独立复验。
+- 不为赶实验日期自动冻结未测Profile，不把缺表全部dense说成复用已通过。
+
+### 无卡必测
+
+1. rho_trim与repair positions类型隔离；一次排序得到的尾和/ceil/tie结果正确。
+2. K/V metric不同不能复用阈值；N=1、NaN、空尾、r=1端点分流。
+3. 未测ratio不可执行；更多ratio不默认quality合格。
+4. 一个SSD候选缺成本，不连带否决已有合法CPU候选。
+5. 新Source-cost目标与旧band策略结果可独立重放；freeze后失败不换Source。
+6. early layers不重放；stale handoff、lease、snapshot失败不可commit。
+7. 15% support缩小后不可重升30%；FinalCommit发生在selective前。
+8. 总预算保留sunk；overlap不重复计费；错误dense分母不能通过。
+9. SSD fullKV与CPU SelectionState可独立放置，字节预算真实。
+10. background promotion不改Source、不刷新LRU、不传GPU非胜者；失败保留原backing。
+11. Coverage无未来可见性、QA与timing完整、negative gain不被丢弃。
+12. 旧配置/Profile/结果兼容；新模式不能借用旧资格。
+
+运行compileall、全量unittest、合同validator、相关新旧配置和diff检查。所有本地测试只验证状态与接口，不认证GPU或QA。用户确认前不实施本节代码修改。
+
+## 11. 有卡实验的阶段门与最终维护框架
+
+本轮不租/连GPU。有卡前重新确认实例、价格、预算和任务清单；不沿用过期硬件/费用记录。
+
+顺序：
+
+1. Mistral同后端单Segmentcorrectness与真实Source矩阵，确认Source价值上限。
+2. live selection接入continuation，对比Latest/Random/CFO/ProbeKV；同residency先排除I/O混淆。
+3. winner repair网格与质量验证、实际效率/质量两模式、matched Prefix组合。
+4. CPU逐层overlap，再SSD冷/暖及存储维护；先无promotion再有promotion。
+5. Qwen独立tokenizer/Source/Profile重复关键结论。
+6. 单Segment通过后多Segment，再并发。每步新失败保留证据，用新SHA与输出目录复验。
+
+长期H1–H5不再反复换主问题：
+
+| 阶段 | 固定科学问题 |
+|---|---|
+| H1 | 为什么需要多个历史Variant：Source-quality/repair差异、Coverage(K)、增长成本 |
+| H2 | 无训练current-state selector能否以可接受开销接近质量合格Oracle |
+| H3 | winner-specific repair、有限ratio选择与load/compute overlap能否改善质量—延迟曲线 |
+| H4 | CPU/SSD、LRU、promotion及并发资源是否维持净收益和可控成本 |
+| H5 | 全部冻结后的locked端到端验证，包括fallback、构建和维护成本 |
+
+论文主结论至少同时需要：真实Source价值、可实现selector捕获价值、匹配质量下端到端净收益；只证明某个Source的J更小、某个copy被隐藏、或某个case速度更快均不足。
+
+本轮结束状态：
+
+```text
+unified_plan_status = no_gpu_candidates_implemented_pending_real_evidence
+runtime_code_modified_this_turn = true
+gpu_started_this_turn = false
+formal_profile_bundle_frozen = false
+gpu_runtime_qualified = false
+h1_h2_execution_allowed = false
+paper_evidence = false
+locked_test_accessed = false
+```
+
+## 12. 外部论文核查及采用边界
+
+已解析4项相关工作，均找到原始发布页面；这是来源/论点核查，不是复现它们的性能。学术检索连接不可用、OpenAlex备用请求SSL失败后，使用官方arXiv/USENIX页面核对，不依据聊天中的二手数字冻结系统参数。
+
+- [CacheBlend](https://arxiv.org/abs/2405.16444)：报告其测试条件下通过选择性重算与KV retrieval流水降低TTFT。可借鉴后端机制，不能把其倍数作为ProbeKV必须达到的跨配置目标，也不能推出任何15%修复都与dense相同质量。
+- [ProphetKV](https://arxiv.org/abs/2602.02579)：提出query-irrelevant token挤占修复预算的问题。支持加入后置query敏感性测试；不据此在本阶段复制新的query-aware修复算法。
+- [CacheSlide，USENIX FAST 2026](https://www.usenix.org/conference/fast26/presentation/liu-yang)：面向agent的相对位置复用并包含learned correction。与本方案的historical Source选择不是同一问题，不以其倍数推算本项目收益。
+- [DAF](https://arxiv.org/abs/2607.21599)：页面注明EuroSys 2026 poster track；作为质量/后端设计的相关工作线索，不称为已经独立验证的完整系统基准结论。
+
+建议今后维护这一份框架的版本与证据附录，而不是每次讨论都新增一组未经验证的在线机制。
+
+## 13. 用户七项补充的收敛与无卡实施记录（2026-09-10）
+
+本节更新前文细节，作为下一轮开发的直接依据；旧生产dispatch和已归档实验仍按原合同解释。
+
+### 13.1 Source先使用固定参考比例，不根据胜者事后改分数
+
+用户正确指出：J本来就是某个trim ratio下的Rremain，不能先含糊地说“选最好Source”，然后才定义如何评价Source。
+
+明确顺序：
+
+```text
+先固定 rho_ref（本轮默认0.15）
+→ 每个Source计算J_s(rho_ref)
+→ 按已有质量代理/成本规则选Source
+→ freeze
+→ 胜者使用实际repair metric确定执行计划
+```
+
+只保留两个首轮参考候选：0.05与0.15。0.05是“更少trim、更重视大漂移”的对照，不因为它是最小执行比例就天然最好。0.15是与既有基线衔接的默认，不是数学最优常数。
+
+排序可能交叉。例如20个token的Source A有2个极大漂移、其余接近0；Source B各token都有中等漂移。trim5%和trim15%可以得出相反Source排序，因此必须用同请求QA/repair成本判断哪种排序更有用，不能仅比较两种不同trim下J的绝对数值。
+
+Profile选择时每个模型确定一个参考rho，跨数据集固定；阈值与rho、completed depth、metric、长度支持范围绑定。不能依据本请求最后用了哪个repair ratio，再回头改Source评分。更不能从“运行中最常见ratio”自动在线更新rho，让实验策略随时间漂移。
+
+无卡新增 `residual_tail_curve`：一次排序和一次尾和扫描输出5–30%的score曲线，既可复用15%主分数，也可用于离线5%对照；不返回可直接进入runtime的repair mask。
+
+### 13.2 语义切分采用确定性预处理，不做按当前耗时切换
+
+新候选规则：
+
+- 基准T={512,1024,2048}，窗口W={50,100}，单位均为模型token。
+- 在[T-W,T+W]找段落末；不存在再找句末；不存在再找逗号/分号等分句末。
+- 同类边界优先接近目标，soft block alignment只作更低优先级的选择依据。
+- tokenizer使用整篇文本的offset mapping，不能用字符数代替token数，也不能逐prefix反复decode/tokenize。
+- 语义模式要求文本重新编码得到的IDs与原manifest严格相同；不一致则拒绝，不能偷偷换token身份。
+- 切分结果、规则版本、tokenizer、document revision和offset摘要进入manifest；重复请求直接使用同一规范边界。
+
+有限窗口内可能根本没有标点，逗号本身也不等于整句结束。因此“固定长度上限+永不切长句+固定token回退”不能同时保证。本版选择有界长度并显式记录`forced_token_cut`，不声称绝对语义完整。若后续选择严格整句方案，超长Segment必须使用独立长度支持或dense路径，不能悄悄外推Profile。
+
+TTFT优先的实现方式是**提前切好并缓存**，而不是每次先试语义切分、发现慢了再重切固定块。如果要比较固定切分，它使用独立`fixed_tokens_v1` provenance，并在数据准备/运行配置冻结时选定。昂贵的语义处理不进入普通请求关键路径。
+
+首先只改retrieved document之后的reuse segmentation，保持检索文档和顺序不变；若以后连retrieval embedding的知识单位也一起改，须单独实验，不能把检索改善算成Source选择改善。
+
+这里没有大模型训练。512/1024/2048可作为runtime测量anchors，但**不够认证浮动长度的QA和成本**。必须加入真实非整档长度、不同边界类别的held-out cases；未被支持的长度/shape继续UNSUPPORTED，不虚构插值。
+
+实现已接入原有离线入口 `canonicalize_v8_profile_cases.py` 的显式`--chunker-policy`选项，默认仍为legacy。输出新增逐case切分audit；未改线上canonical边界。
+
+### 13.3 d1保留50%、d2精筛：候选优化，不是默认保证
+
+固定解释：d1=完成第1个Transformer block后观察第2层K；不是只有embedding信息的d0。
+
+```text
+d1比较当前可比较cohort
+→ 若原策略已合法早停则不必继续
+→ 否则按相同rho_ref保留低漂移的50%
+→ 至少保留2个（真正唯一候选例外）
+→ 截止位置并列或numeric slack内候选全部保留
+→ d2仅比较保留cohort
+→ 质量、成本、freeze规则照常执行
+```
+
+50%只表示名义筛选比例。d1全部接近时应全保留，不能任意删除8个。初始16个Source时，16+8对比16+16是总比较数量约减少25%，并不是整个selection/TTFT减少50%；真实时间还受transfer/microbatch和d1开销影响。
+
+两阶段筛选不冻结Source、不加载完整KV。绑定request/segment、Source inventory和rho；请求、pool inventory或rho变化使计划失效。d2不能用另一批未声明候选冒充保留集合。
+
+被d1淘汰的Source可能是d2真正winner，因此先shadow：额外计算完整d2 cohort用于审计，不参与线上选择、不回写winner。统计winner retention、absolute regret、matched-quality cost regret与总selection时间。若误淘汰损失大，保留全候选或退回legacy，不预设50%必须晋升。
+
+原始correctness_eligible_k永远不因pruning变小。16→8后即使8个全失败，也不能声称完整池无兼容Source；只能依既有规则dense/有限exploration。CFO截断与d1截断分别记录。
+
+`plan_depth2_shortlist`、绑定校验与`audit_depth2_pruning`已实现并有CPU测试；**尚未启用到生产live dispatcher**。新task spec明确`live_dispatch_integration_complete=false`。
+
+### 13.4 CacheBlend对齐：不是从V-only改成K-only
+
+论文核查结果：1篇原始论文已确认；“15%普遍最优”这一解读不成立；固定实现metric已用本地patch核查。
+
+[CacheBlend v3 §5.1](https://arxiv.org/html/2405.16444v3#S5.SS1)将15%描述为其实验中质量下降很小的经验最低参考，同时讨论根据加载条件提高比例。这不是所有模型、数据或Source上15%最优的证明。
+
+项目固定 `patches/cacheblend/0002-probekv-segment-repair-mask.patch` 的原实现上下文和本地固定xformers路径均使用：
+
+\[
+e_j^V=\sum_h\sum_k(V_{j,h,k}^{current}-V_{j,h,k}^{source})^2.
+\]
+
+因此当前匹配后端的V-only不是偏离CacheBlend；不能凭“论文说KV deviation”就直接改成K-only。
+
+真正需要隔离的是：`winner_repair_drifts`以及部分历史aux measurement使用**归一化V差异**，这与固定patch的**未归一化V平方差**排名并不总相同。输入dtype的减法、平方、reduction行为也属于版本合同，不能忽略BF16/FP32差异。
+
+新增 `cacheblend_pinned_value_scores` 精确镜像固定算子并测试其与normalized V的排名反例。新实验spec使用`value_squared_l2_pinned_dtype`；旧normalized metric保持原名和历史含义。未修改历史补丁，不将本地算子测试称为CUDA后端资格。GPU阶段要求同Source、同V输入、同绝对mask的matched算子/执行检查。
+
+### 13.5 两种模式以效率优先为主
+
+新development spec显式设置`default_execution_objective=efficiency_first`。
+
+现有slack proposal新增两目标参数：效率模式最小化有支持的完整预测成本，完全相同成本时选更高ratio；质量模式最大化gamma预算内的合格ratio。历史shadow API默认保留原质量模式以免重释旧调用，新入口必须显式传效率模式。
+
+两者仍仅为proposal，不因一个quality digest就获得生产资格；FinalCommit、真实质量支持与新鲜snapshot不能省略。新增网格须显式传入，旧Profile不自动获得5%、25%的支持。
+
+### 13.6 本次已完成与未完成
+
+已完成：
+
+- Source参考比例的一次排序曲线、5%/15%排序反例测试。
+- 两层50%候选计划、并列保护、min-K、stale binding、full-d2 shadow误淘汰审计。
+- token-offset语义切分、句号/缩写/小数/中文标点处理、固定回退审计、旧manifest入口接入。
+- pinned V算子对齐辅助函数、与normalized V排名差异测试。
+- 两目标slack proposal、显式新ratio grid、成本缺失和无资格声明保护。
+- 分解式候选spec生成器：4个reference/cascade组合，9个chunker组合；不做它们与所有Source/ratio/长度的完整笛卡尔积。
+
+首轮无卡验收：当前全量测试为817项，1项历史可选依赖跳过；compileall、合同validator、22套本地配置和diff检查通过。生成 `artifacts/source-policy-development-20260910/candidate-spec.json`，其GPU授权保持false，模型/质量/成本Profile保持null。无GPU运行。后续观测重放入口的验证见13.8。
+
+尚未完成，不得声称已上线：
+
+- live continuation与两阶段cohort状态、独立GPU capture的完整接线。
+- 新质量threshold与Source Oracle的真实测量。
+- 非整档长度实际kernel/cost验证。
+- Prefix+新路径、CPU streaming、SSD/promotion与并发资格。
+- 旧`_compare`中候选成本缺失处理仍需在新cohort接口中按候选分离；必须同时保留真实compared计数，不能简单删掉行伪造scope。
+
+下一步仍无卡：将13.8的观测接口接到独立native diagnostic入口，完成原生请求、SelectionState和资源生命周期接线测试，再冻结代码、patch、tokenizer和development任务清单，通知用户进入单Segment GPU实验。不会因本地候选测试通过就立即要求租卡或宣布GPU-ready。
+
+### 13.7 GPU实验顺序更新
+
+1. 同后端、单Segment、固定15%真实Source矩阵与QA，先证明选择价值。
+2. 对同一cohort的d1/d2观测离线比较rho=5/15和d2保留100%/50%；shadow成本与生产成本分账。
+3. 固定选定的reference/cascade候选后，winner repair网格与效率/质量模式；不在验证数据上反复改reference。
+4. 固定块与语义块比较，保持retrieval不变；包括真实浮动长度、forced-cut比例、预处理开销和Source命中稳定性。
+5. Prefix组合与CPU逐层overlap；随后Qwen独立复验。
+6. 单Segment结论成立后再多Segment、SSD维护和并发。
+
+无效或负结果保留；根据实验晋升策略，而不是因为方案已写入文档就强制启用。未确认有效前保留fixed15、全候选d1/d2和legacy回退路径。
+
+### 13.8 完整d1/d2观测与离线四策略重放（无卡续轮）
+
+新增 `source_policy_replay.py` 和 `replay_source_policy_observations.py`，实现以下闭环：
+
+```text
+独立comparison K tensors
+→ observe_depth_k：BF16输入、FP32归一化K drift、逐token原始值
+→ build_observation：绑定request/segment/model/tokenizer/code/patch/config/partition
+→ 完整d1及同cohort d2文件 + 文件SHA
+→ 离线重放：rho={5%,15%} × d2 keep={100%,50%}
+→ 排名、原始scope、winner retention、absolute residual regret
+```
+
+观测文件绑定绝对位置、K geometry、每层current K digest、各Source Selection K digest及完整correctness-eligible ID清单。深度固定为completed d1/d2，分别观察第2/3层K。只有d2覆盖整个原d1 cohort时才能计算剪枝审计；不能只给幸存候选的数据。
+
+这里的“完整cohort”不等于“完整存储池”。若CFO先将16个缩为4个，观测的两层都必须覆盖这4个，但原始eligible仍为16，报告不能声称完整池无兼容Source。
+
+安全与解释约束：
+
+- d1剪枝不等于Source freeze；离线输出的`ranked_source_id`只是排名候选，未通过真实质量/成本准入。
+- 真正唯一候选与预算仅够比较一个严格分开。后者`ranked_source_id=null`、margin为null，记录`INSUFFICIENT_RANKING_COVERAGE`。
+- d1并列保护可能保留全部16个；第16个在d2变成最优但被剪掉时，审计必须报告失败，不补回它来伪造线上成功。
+- 所有`qa_passed`、`matched_quality_ttft_ms`及剪枝执行耗时在本入口保持null。完整cohort shadow的运行时间不能当作半候选路径实测时间，更不能按候选数线性折算。
+- 当前shadow固定为dense轨迹。它不能代表前面Segment已复用后的policy-conditioned状态；多Segment须另行采集。
+- 小型Selection K的诊断hash/host extraction必须计入诊断工作，不能接到正式在线TTFT路径再隐藏开销。本接口不读取完整Artifact、不申请winner transfer、不改变Source池或lease。
+- 输入文件须提供实际SHA；内部observation digest、depth/geometry/cohort/provenance再次校验。重复JSON key、坏摘要、缺层、缺Source、非有限值均拒绝。输出存在时拒绝覆盖。
+- `native_hook_diagnostic`只是来源标签，不是CUDA正确性证明；即使带该标签，GPU qualification、生产准入和paper evidence仍为false。
+
+入口用法（已存在的真实/CPU测试观测文件，不生成伪实测）：
+
+```text
+python scripts/replay_source_policy_observations.py
+  --input <完整观测文件>
+  --input-sha256 <该文件真实SHA256>
+  --output <新的输出文件>
+```
+
+新增测试覆盖第16个Source成为winner、d1平局、剪枝损失、两类K=1、partial scope、输入篡改、off-by-one、geometry、非有限值、CLI保留旧输出，以及native capture计划和V-only指标。全量测试817项：816通过、1项历史可选依赖跳过；compileall、合同validator、22套本地配置和diff检查通过。
+
+### 13.9 本地 CUDA 原语验证边界
+
+新增 `scripts/run_local_cuda_primitives.py`，仅用于验证 Residual-K 批量/分批比较、固定 V-only 控制、pinned CPU→GPU 分层传输和 qualification digest 生命周期。该脚本不加载论文模型、不产生 QA 结果、不访问 locked test，输出中的 `gpu_runtime_qualified`、`paper_evidence` 始终为 false。当前系统 Python 的 Torch 2.4.1 不支持本机 RTX 5070 Ti 的 sm_120；隔离 CUDA 12.8 wheel 下载未形成可安装包，因此本地 CUDA 执行保持 pending，不能替代 A800 哨兵。
+
+**仍未接通的部分**：原生模型hook到该观测bundle的独立端到端采集入口、实际GPU资源预算/释放检查、新四策略的live dispatch，以及真实QA/时间关联。当前交付是可测试的数据观测接口和可执行离线重放器，不是已经完成GPU采集器。既有生产默认、旧Profile、fixed15与legacy均未切换；本轮未连接服务器或启动GPU。

@@ -12,6 +12,7 @@ class SemanticBoundary(str, Enum):
     PARAGRAPH = "paragraph"
     SENTENCE = "sentence"
     STRUCTURAL = "structural"
+    CLAUSE = "clause"
     TOKEN = "token"
 
 
@@ -98,6 +99,7 @@ def _candidate_score(
         SemanticBoundary.PARAGRAPH: 4.0,
         SemanticBoundary.STRUCTURAL: 3.5,
         SemanticBoundary.SENTENCE: 3.0,
+        SemanticBoundary.CLAUSE: 1.0,
         SemanticBoundary.TOKEN: 0.0,
     }[kind]
     length_penalty = abs(length - config.target_tokens) / config.target_tokens

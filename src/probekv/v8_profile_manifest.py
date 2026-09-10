@@ -6,6 +6,7 @@ from typing import Callable, Sequence, Tuple
 
 from .canonical_segment import canonicalize_token_ids
 from .manifest import ManifestCase, token_content_hash, validate_manifest
+from .semantic_segment import SemanticWindowConfig, segment_document_tokens
 
 
 def canonicalize_v8_profile_cases(
@@ -14,6 +15,9 @@ def canonicalize_v8_profile_cases(
     tokenizer_signature: str,
     document_revision: str,
     decode: Callable[[Sequence[int]], str],
+    chunker_config: SemanticWindowConfig = None,
+    encode_with_offsets: Callable = None,
+    segmentation_audits: list = None,
 ) -> Tuple[ManifestCase, ...]:
     """Upgrade an already model-tokenized development manifest to v8 Segments.
 
@@ -29,11 +33,24 @@ def canonicalize_v8_profile_cases(
         if case.split not in {"calibration", "development"}:
             raise ValueError("v8 profile canonicalization cannot access pilot/test rows")
         parent_tokens = tuple(int(value) for value in case.segment_token_ids)
-        for segment in canonicalize_token_ids(
-            parent_tokens,
-            tokenizer_signature=tokenizer_signature,
-            document_revision=document_revision,
-        ):
+        if chunker_config is None:
+            segments = canonicalize_token_ids(parent_tokens,
+                tokenizer_signature=tokenizer_signature, document_revision=document_revision)
+        else:
+            offsets = None
+            if chunker_config.policy == "paragraph_sentence_clause_v2":
+                if encode_with_offsets is None:
+                    raise ValueError("semantic canonicalization requires exact tokenizer offsets")
+                encoded = encode_with_offsets(case.segment_text)
+                if tuple(encoded["input_ids"]) != parent_tokens:
+                    raise ValueError("semantic text/token identity mismatch; no retokenization allowed")
+                offsets = encoded.get("offset_mapping")
+            segments, audit = segment_document_tokens(parent_tokens,
+                text=case.segment_text, offsets=offsets, tokenizer_signature=tokenizer_signature,
+                document_revision=document_revision, config=chunker_config)
+            if segmentation_audits is not None:
+                segmentation_audits.append({"case_id": case.case_id, **audit})
+        for segment in segments:
             provenance = hashlib.sha256(
                 (
                     "%s|%s|%s|%d|%d|%d"

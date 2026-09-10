@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from .v8_contracts import CandidateCounts, ResidualCandidate
 from .v8_schema8_planner import Gate1LocalPlan
 from .v8_schema10_selector import Schema10CheckpointSelector
+from .v8_schema10_contracts import CostUnsupportedSourceObservation
 
 
 def digest_json(value: Any) -> str:
@@ -150,6 +151,10 @@ class ProductionSelectionSession:
                  "candidates": [asdict(x) for x in candidates],
                  "gate1_plans": {k: asdict(v) for k, v in gate1_plan_by_source.items()},
                  "decision": asdict(decision), "selection_budget_policy": self.ledger.policy.mode}
+        if self.selector.source_cost_selection_policy != "legacy_residual_band":
+            event["source_cost_selection_policy"] = self.selector.source_cost_selection_policy
+        if self.selector.depth2_keep_fraction is not None:
+            event["depth2_keep_fraction"] = self.selector.depth2_keep_fraction
         event["event_id"] = digest_json(event)
         self.events.append(event)
         if decision.state != "continue_probe":
@@ -169,6 +174,10 @@ def replay_selection_events(session: ProductionSelectionSession,
             raise ValueError("replay request identity mismatch")
         if event.get("selection_budget_policy") != session.ledger.policy.mode:
             raise ValueError("replay selection cost policy differs")
+        if event.get("source_cost_selection_policy", "legacy_residual_band") != session.selector.source_cost_selection_policy:
+            raise ValueError("replay Source cost policy differs")
+        if event.get("depth2_keep_fraction") != session.selector.depth2_keep_fraction:
+            raise ValueError("replay cascade policy differs")
         unsigned = {k: v for k, v in event.items() if k != "event_id"}
         if event.get("event_id") != digest_json(unsigned):
             raise ValueError("selection event digest mismatch")
@@ -180,7 +189,8 @@ def replay_selection_events(session: ProductionSelectionSession,
         result = session.step(
             event["segment_id"], completed_depth=int(event["completed_depth"]),
             counts=CandidateCounts(**event["counts"]),
-            candidates=tuple(ResidualCandidate(**row) for row in event["candidates"]),
+            candidates=tuple((CostUnsupportedSourceObservation(**row) if "cost_unsupported_reason" in row
+                              else ResidualCandidate(**row)) for row in event["candidates"]),
             gate1_plan_by_source=plans,
         )
         if digest_json(asdict(result)) != digest_json(event["decision"]):

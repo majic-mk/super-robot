@@ -72,6 +72,28 @@ class SlackRepairTests(unittest.TestCase):
         self.assertEqual(larger["predicted_request_total_ms"], 93.)
         self.assertFalse(larger["within_gamma_budget"])
 
+    def test_efficiency_objective_does_not_spend_all_latency_slack(self):
+        result = self.propose(execution_objective="efficiency_first")
+        self.assertEqual(result["selected_ratio"], .15)
+        self.assertEqual(result["execution_objective"], "efficiency_first")
+        self.assertFalse(result["production_admission_allowed"])
+
+    def test_efficiency_exact_cost_tie_prefers_more_supported_repair(self):
+        result = self.propose(self.estimator({.15: 60., .2: 60., .3: 61.}),
+                              execution_objective="efficiency_first")
+        self.assertEqual(result["selected_ratio"], .2)
+
+    def test_new_grid_explicit_not_silently_reinterpreted(self):
+        with self.assertRaises(ValueError):
+            self.propose(base_ratio=.05, quality_supported_ratios=(.05, .15))
+        result = self.propose(self.estimator({.05: 40., .15: 60.}), base_ratio=.05,
+            quality_supported_ratios=(.05, .15), ratio_grid=(.05, .1, .15, .2, .25, .3),
+            execution_objective="efficiency_first")
+        self.assertEqual(result["selected_ratio"], .05)
+        self.assertFalse(result["production_admission_allowed"])
+        with self.assertRaises(ValueError):
+            self.propose(execution_objective="fastest_regardless_of_quality")
+
     def test_never_authorizes_commit_or_quality_certification(self):
         result = self.propose()
         self.assertFalse(result["production_admission_allowed"])

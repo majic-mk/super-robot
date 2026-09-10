@@ -50,6 +50,8 @@ class Schema10CheckpointSelector:
         residual_band_relative_tolerance: float,
         residual_band_numeric_slack: float = 1e-6,
         checkpoint_depths: Tuple[int, ...] = (1, 2),
+        source_cost_selection_policy: str = "legacy_residual_band",
+        depth2_keep_fraction: Optional[float] = None,
     ) -> None:
         if not 0 <= stable_margin <= strong_margin <= 1:
             raise ValueError("invalid schema10 early-exit margins")
@@ -63,6 +65,9 @@ class Schema10CheckpointSelector:
         self.stable_margin = stable_margin
         self.residual_band_relative_tolerance = residual_band_relative_tolerance
         self.residual_band_numeric_slack = residual_band_numeric_slack
+        if source_cost_selection_policy not in {"legacy_residual_band", "absolute_qualified_future_cost"}:
+            raise ValueError("unknown Source cost selection policy")
+        self.source_cost_selection_policy = source_cost_selection_policy
         if not checkpoint_depths or tuple(sorted(set(checkpoint_depths))) != checkpoint_depths:
             raise ValueError("selector checkpoints must be ordered and unique")
         if checkpoint_depths[0] < 1:
@@ -70,6 +75,12 @@ class Schema10CheckpointSelector:
         for depth in checkpoint_depths:
             variant_profile.threshold_for_depth(depth)
         self.checkpoint_depths = checkpoint_depths
+        if depth2_keep_fraction is not None and (
+                depth2_keep_fraction not in (.5, 1.) or isinstance(depth2_keep_fraction, bool)
+                or checkpoint_depths != (1, 2)
+                or variant_profile.source_residual_trim_ratio not in (.05, .15)):
+            raise ValueError("cascade candidate requires d1/d2 and fixed 5/15 reference")
+        self.depth2_keep_fraction = depth2_keep_fraction
 
     @staticmethod
     def _scope_complete(counts: CandidateCounts) -> bool:
@@ -101,6 +112,11 @@ class Schema10CheckpointSelector:
             raise ValueError("duplicate Source in current-state comparison")
         if any(not math.isfinite(row.residual_score) for row in ordered):
             raise ValueError("non-finite residual cannot select a Source")
+        for row in ordered:
+            if row.predicted_future_upper_ms is not None and (
+                    isinstance(row.predicted_future_upper_ms, bool)
+                    or not math.isfinite(row.predicted_future_upper_ms) or row.predicted_future_upper_ms < 0):
+                raise ValueError("invalid Source future cost")
         for source_id, plan in gate1_plan_by_source.items():
             if plan.source_variant_id != source_id or plan.selection_completed_depth != completed_depth:
                 raise ValueError("Gate1 plan Source/depth does not match this decision")
@@ -188,8 +204,17 @@ class Schema10CheckpointSelector:
             if not (single or strong or stable):
                 return result("continue_probe", "d1_not_decisive")
             plan = gate1_plan_by_source.get(best.source_variant_id)
-            if plan is None:
+            if plan is None or best.predicted_future_upper_ms is None:
                 return result("continue_probe", "d1_gate1_evidence_missing")
+            if self.source_cost_selection_policy == "absolute_qualified_future_cost":
+                priced = [row for row in compatible if row.predicted_future_upper_ms is not None
+                          and row.source_variant_id in gate1_plan_by_source
+                          and (gate1_plan_by_source[row.source_variant_id].passed
+                               or self.preparation_profile.gate1_mode is Gate1Mode.FUSED_ADVISORY)]
+                winner = min(priced, key=lambda row: (row.predicted_future_upper_ms, row.residual_score,
+                                                     row.source_variant_id)) if priced else None
+                if winner is None or winner.source_variant_id != best.source_variant_id:
+                    return result("continue_probe", "early_residual_and_cost_winners_disagree")
             if (
                 not plan.passed
                 and self.preparation_profile.gate1_mode is Gate1Mode.EXPLICIT_BARRIER
@@ -208,11 +233,12 @@ class Schema10CheckpointSelector:
             * compatible_best.residual_score
             + self.residual_band_numeric_slack
         )
-        band = tuple(row for row in compatible if row.residual_score <= limit)
+        band = (compatible if self.source_cost_selection_policy == "absolute_qualified_future_cost"
+                else tuple(row for row in compatible if row.residual_score <= limit))
         eligible = []
         for row in band:
             plan = gate1_plan_by_source.get(row.source_variant_id)
-            if plan is None:
+            if plan is None or row.predicted_future_upper_ms is None:
                 continue
             if plan.passed or self.preparation_profile.gate1_mode is Gate1Mode.FUSED_ADVISORY:
                 eligible.append(row)
@@ -221,14 +247,16 @@ class Schema10CheckpointSelector:
         chosen = min(
             eligible,
             key=lambda row: (
-                gate1_plan_by_source[row.source_variant_id].predicted_reuse_marginal_lower_ms,
+                (row.predicted_future_upper_ms if self.source_cost_selection_policy == "absolute_qualified_future_cost"
+                 else gate1_plan_by_source[row.source_variant_id].predicted_reuse_marginal_lower_ms),
                 row.residual_score,
                 row.source_variant_id,
             ),
         )
         return result(
             "decision_ready",
-            "d2_absolute_compatible_band_min_cost",
+            ("absolute_qualified_min_future_cost" if self.source_cost_selection_policy == "absolute_qualified_future_cost"
+             else "d2_absolute_compatible_band_min_cost"),
             chosen=chosen,
             plan=gate1_plan_by_source[chosen.source_variant_id],
             considered=band,

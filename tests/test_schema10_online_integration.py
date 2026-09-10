@@ -228,7 +228,11 @@ class OnlineIntegration(unittest.TestCase):
         with patch.object(self.costs, "gate1", return_value=None):
             row = self.execute(2)
         self.assertEqual(row["final_commit_not_applicable_reason"], "selection_cost_unsupported")
-        self.assertFalse(row["coverage_event"]["residual_compatibility_observed"])
+        # Missing time support cannot erase an actually performed K comparison.
+        self.assertTrue(row["coverage_event"]["residual_compatibility_observed"])
+        self.assertTrue(row["candidate_cost_failures"])
+        self.assertEqual(row["selection_events"][-1]["counts"]["compared_k"], 1)
+        self.assertIsNone(row["selection_events"][-1]["candidates"][0]["predicted_future_upper_ms"])
         self.assertFalse(row["committed_source_variant_ids"])
 
     def test_missing_dense_cost_does_not_create_fake_comparison(self):

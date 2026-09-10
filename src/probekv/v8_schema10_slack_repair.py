@@ -40,6 +40,8 @@ def propose_single_segment_slack_repair(
     quality_evidence_sha256,
     dense_reference,
     actual_sunk_ms,
+    execution_objective="quality_within_budget",
+    ratio_grid=SCHEMA10_REPAIR_RATIO_GRID,
 ):
     """Return an audited proposal, never a production admission decision.
 
@@ -54,6 +56,14 @@ def propose_single_segment_slack_repair(
     ``current_snapshot`` must read the current state, including after queries.
     """
     started = time.perf_counter_ns()
+    # Preserve the historical shadow API default; new development manifests
+    # explicitly select efficiency_first. Neither mode authorizes production.
+    if execution_objective not in {"efficiency_first", "quality_within_budget"}:
+        raise ValueError("unknown repair execution objective")
+    ratio_grid = tuple(ratio_grid)
+    if (not ratio_grid or tuple(sorted(set(ratio_grid))) != ratio_grid
+            or any(isinstance(r, bool) or not math.isfinite(r) or not 0 < r <= 1 for r in ratio_grid)):
+        raise ValueError("explicit repair grid must be finite, ordered and unique")
     snapshot.assert_current(current_snapshot())
     if not isinstance(estimator, ProfiledJointTimelineEstimator):
         raise TypeError("slack proposals require the measured joint cost provider")
@@ -94,8 +104,8 @@ def propose_single_segment_slack_repair(
         raise ValueError("winner ranking must cover only the full non-prefix Segment")
     supported = tuple(quality_supported_ratios)
     if (not supported or len(set(supported)) != len(supported)
-            or isinstance(base_ratio, bool) or base_ratio not in SCHEMA10_REPAIR_RATIO_GRID
-            or any(isinstance(r, bool) or r not in SCHEMA10_REPAIR_RATIO_GRID for r in supported)
+            or isinstance(base_ratio, bool) or base_ratio not in ratio_grid
+            or any(isinstance(r, bool) or r not in ratio_grid for r in supported)
             or base_ratio not in supported):
         raise ValueError("base and quality support must explicitly use the measured ratio grid")
     dense_ms = validate_dense_reference(dense_reference, expected_identity=shape.dense_reference_identity)
@@ -150,14 +160,21 @@ def propose_single_segment_slack_repair(
     elif not base["within_gamma_budget"]:
         reason = "base_exceeds_gamma_budget"
     else:
-        selected = max((row for row in rows if row["within_gamma_budget"]), key=lambda row: row["ratio"])
-        reason = "max_supported_ratio_within_gamma_budget"
+        feasible = [row for row in rows if row["within_gamma_budget"]]
+        if execution_objective == "efficiency_first":
+            selected = min(feasible, key=lambda row: (row["predicted_request_total_ms"], -row["ratio"]))
+            reason = "min_supported_cost_higher_ratio_on_exact_tie"
+        else:
+            selected = max(feasible, key=lambda row: row["ratio"])
+            reason = "max_supported_ratio_within_gamma_budget"
     report = {
         "proposal_kind": "single_segment_slack_repair_shadow",
         "selected_source_variant_id": frozen_source_variant_id,
         "segment_id": sid,
         "first_selective_reuse_layer": boundary,
         "base_ratio": base_ratio,
+        "execution_objective": execution_objective,
+        "declared_ratio_grid": list(ratio_grid),
         "quality_supported_ratios": sorted(supported),
         "quality_evidence_sha256": quality_evidence_sha256,
         "quality_support_status": "caller_supplied_development_not_certification",

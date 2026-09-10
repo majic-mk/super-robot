@@ -9,6 +9,23 @@ from .v8_schema9_contracts import DenseKVProvenance
 
 
 @dataclass(frozen=True)
+class CostUnsupportedSourceObservation:
+    """Real comparison with unknown cost; not zero or a correctness failure."""
+    source_variant_id: str
+    residual_score: float
+    predicted_future_upper_ms: Optional[float]
+    metadata_rank: int
+    cost_unsupported_reason: str
+
+    def __post_init__(self):
+        if (not self.source_variant_id or not self.cost_unsupported_reason
+                or self.predicted_future_upper_ms is not None
+                or not math.isfinite(self.residual_score) or self.residual_score < 0
+                or type(self.metadata_rank) is not int or self.metadata_rank < 0):
+            raise ValueError("invalid unpriced Source observation")
+
+
+@dataclass(frozen=True)
 class AbsoluteResidualThreshold:
     """Schema10 supports legacy completed depths as well as FAST d1/d2.
 

@@ -414,13 +414,17 @@ class NativeRequestContext:
         obj = self.adapter.store_provider().objects[source_id]
         a = self.adapter.inner.layers[0].self_attn
         n = len(self.segments[sid]["positions"])
-        return {"prompt_tokens": len(self.request["token_ids"]), "prefix_tokens": self.cached_prefix_tokens,
+        shape = {"prompt_tokens": len(self.request["token_ids"]), "prefix_tokens": self.cached_prefix_tokens,
             "positions": list(self.segments[sid]["positions"]), "completed_depth": depth,
             "first_reuse_layer": depth + 1, "num_layers": self.adapter.spec.num_layers,
             "dtype": "bfloat16", "kv_heads": a.num_kv_heads, "head_dim": a.head_dim,
             "tier": obj.tier.value, "bytes": n * a.num_kv_heads * a.head_dim * self.adapter.spec.num_layers * 4,
             "layout": "pre_rope_k_raw_v", "repair_ratio": self.repair_ratio,
             "timing_scope": "source_local_boundary_future"}
+        metric = getattr(self.adapter, "native_repair_metric", "normalized_v_legacy")
+        if metric != "normalized_v_legacy":
+            shape["repair_metric"] = metric
+        return shape
 
     def prepare_winner(self, sid, source_id, layers, reservation):
         self.frozen[sid] = source_id
@@ -463,12 +467,12 @@ class NativeRequestContext:
             ticket.layer_events[depth + 1].synchronize()
             positions = tuple(self.segments[sid]["positions"])
             # Winner V-only metric is independent of Source-score trim indices.
-            v = current_v[[local[p] for p in positions]].float()
-            old = ticket.layer_tensors[depth + 1][1].float()
-            drift = (v - old).square().sum((1, 2)).sqrt() / v.square().sum((1, 2)).sqrt().clamp_min(1e-12)
-            order = drift.argsort(descending=True, stable=True).cpu().tolist()
+            from .source_policy_development import rank_winner_v_positions
+            order = rank_winner_v_positions(current_v[[local[p] for p in positions]],
+                ticket.layer_tensors[depth + 1][1], positions,
+                metric=getattr(self.adapter, "native_repair_metric", "normalized_v_legacy"))
             count = min(len(positions), math.ceil(len(positions) * self.repair_ratio))
-            support = tuple(sorted(positions[i] for i in order[:count]))
+            support = tuple(sorted(order[:count]))
             self.supports[sid] = {l: support for l in range(depth + 1, self.adapter.spec.num_layers + 1)}
             ready[sid] = depth + 1
         self.actual_repair_check_sunk_ms += (time.perf_counter_ns() - start) / 1e6
@@ -507,6 +511,8 @@ class NativeRequestContext:
             shape = self.source_measurement_shape(sid, source_id, self.current_completed_depth)
             ticket = self.prepared.get(sid)
             physical[sid] = {k: shape[k] for k in ("tier", "bytes", "layout")}
+            if "repair_metric" in shape:
+                physical[sid]["repair_metric"] = shape["repair_metric"]
             physical[sid]["ready_layers"] = [l for l in ticket.layer_events if ticket.layer_ready(l)] if ticket else []
             physical[sid]["copy_in_flight"] = bool(ticket and not ticket.fully_ready())
         return RequestExecutionShape(len(self.request["token_ids"]), self.cached_prefix_tokens,

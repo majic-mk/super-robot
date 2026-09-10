@@ -19,7 +19,7 @@ from .v8_schema10_source_metadata import read_cfo_metadata
 from .v8_contracts import CandidateCounts, ResidualCandidate
 from .v8_schema6_hbm import HBMReservationKind
 from .v8_schema7_planner import FinalCommitPlanner
-from .v8_schema10_contracts import DenseKVProvenance, VariantMaterializationStateV10
+from .v8_schema10_contracts import DenseKVProvenance, VariantMaterializationStateV10, CostUnsupportedSourceObservation
 from .v8_schema10_cost_provider import UnsupportedTimelineCost
 from .v8_schema10_inventory import native_segment_inventory
 from .v8_schema10_execution import ProductionSelectionSession, SelectionCostLedger, SelectionCostPolicy, digest_json
@@ -140,13 +140,15 @@ class Schema10OnlineExperimentBackend:
                 continue
             if tensor.shape != current.shape:
                 continue
+            if tensor.dtype != torch.bfloat16 or not bool(torch.isfinite(tensor).all().item()):
+                raise ValueError("invalid BF16 Source SelectionState")
             states.append((row, tensor))
         ledger.observe_shared_interval(f"{request_id}:{sid}:{depth}:state-read", state_read_start, time.perf_counter_ns())
         if hasattr(context, "selection_backing_tier") and states:
             context.selection_backing_tier = "pinned_cpu" if all(t.is_pinned() for _, t in states) else "pageable_cpu"
         per_source = current.numel() * 32 + current.shape[0] * 32
         batch_k = min(len(states), max(0, (self.hbm.selector_lease_bytes - per_source) // per_source))
-        values, plans = [], {}
+        values, plans, cost_failures = [], {}, {}
         offset = 0
         while batch_k and offset < len(states):
             count = min(batch_k, len(states) - offset)
@@ -182,12 +184,19 @@ class Schema10OnlineExperimentBackend:
                     source_id = row.source_variant_id
                     self.store.pool.record_observation(self.provenance["model_signature"],
                         context.segments[sid]["content_key"], source_id, lookup_hit=True, compared=True)
-                    plan = self.costs.gate1(context, sid, source_id, depth)
-                    if plan is None:
-                        raise UnsupportedTimelineCost("source_local_measurement_missing")
-                    future = self.costs.candidate_future_ms(context, sid, source_id, depth)
-                    if future is None or not math.isfinite(future) or future < 0:
-                        raise UnsupportedTimelineCost("source_future_measurement_missing")
+                    try:
+                        plan = self.costs.gate1(context, sid, source_id, depth)
+                        if plan is None:
+                            raise UnsupportedTimelineCost("source_local_measurement_missing")
+                        future = self.costs.candidate_future_ms(context, sid, source_id, depth)
+                        if future is None:
+                            raise UnsupportedTimelineCost("source_future_measurement_missing")
+                        if isinstance(future, bool) or not math.isfinite(future) or future < 0:
+                            raise ValueError("invalid measured Source future cost")
+                    except UnsupportedTimelineCost as exc:
+                        cost_failures[source_id] = str(exc)
+                        values.append(CostUnsupportedSourceObservation(source_id, score, None, rank, str(exc)))
+                        continue
                     plans[source_id] = plan
                     # Do not label Gate1's marginal LOWER bound as a future UPPER cost.
                     values.append(ResidualCandidate(source_id, score, future, rank))
@@ -199,7 +208,7 @@ class Schema10OnlineExperimentBackend:
                     ledger.cancel(event_id)
                 self.hbm.release(reservation.reservation_id)
             offset += count
-        return values, plans, len(states)
+        return values, plans, len(states), cost_failures
 
     def execute(self, request, dispatch, *, arrival_ns):
         if not 0 <= arrival_ns <= time.perf_counter_ns():
@@ -262,7 +271,8 @@ class Schema10OnlineExperimentBackend:
         ledger = SelectionCostLedger(dense, SelectionCostPolicy(mode=dispatch.get("selection_budget_policy", "end_to_end_aware")))
         selection = ProductionSelectionSession(rid, tuple(segments), selector, ledger)
         visible, eligible, compatible, frozen, prepared = {}, {}, set(), {}, {}
-        selection_failures, runtime_events = {}, []
+        shortlists = {}
+        selection_failures, runtime_events, candidate_cost_failures = {}, [], {}
         for sid, segment in segments.items():
             v, e = self._lookup(segment, epoch)
             visible[sid], eligible[sid] = v, e
@@ -287,21 +297,52 @@ class Schema10OnlineExperimentBackend:
                     except (ValueError, KeyError, TypeError):
                         pass
                 ordered = [row for _, _, row in sorted(ranked)]
+                if depth == 2 and sid in shortlists:
+                    shortlist = shortlists[sid]
+                    inventory_digest = self.store.pool.content_generation(self.provenance["model_signature"], segment["content_key"])
+                    if (shortlist.source_inventory_digest != inventory_digest
+                            or shortlist.request_binding != digest_json({"request": request, "segment_id": sid})
+                            or shortlist.reference_trim_ratio != selector.variant_profile.source_residual_trim_ratio):
+                        selection_failures[sid] = "stale_cascade_inventory_or_request"
+                        continue
+                    ordered = [row for row in ordered if row.source_variant_id in shortlist.retained_source_ids]
                 current = context.observe_current_k(sid, depth)
                 context.synchronize()
                 ledger.observe_shared_interval(f"{rid}:{sid}:{depth}:metadata-current-k", metadata_begin, time.perf_counter_ns())
                 try:
-                    values, plans, available = self._compare(context, sid, depth, ordered,
+                    values, plans, available, cost_failures = self._compare(context, sid, depth, ordered,
                         current, ledger, rid)
                 except UnsupportedTimelineCost as exc:
                     selection_failures[sid] = str(exc)
                     runtime_events.append({"kind": "dense_fallback", "segment_id": sid, "reason": str(exc)})
+                    continue
+                if cost_failures:
+                    candidate_cost_failures.setdefault(sid, {})[str(depth)] = cost_failures
+                    runtime_events.append({"kind": "candidate_cost_unsupported", "segment_id": sid,
+                        "completed_depth": depth, "source_reasons": cost_failures,
+                        "actually_compared_k": len(values), "cost_supported_k": len(plans)})
+                if depth == 2 and sid in shortlists and {v.source_variant_id for v in values} != set(shortlists[sid].retained_source_ids):
+                    selection_failures[sid] = "incomplete_retained_depth2_cohort"
+                    runtime_events.append({"kind":"cascade_incomplete_comparison", "segment_id":sid,
+                        "actually_compared_source_ids":[v.source_variant_id for v in values],
+                        "expected_source_ids":list(shortlists[sid].retained_source_ids)})
                     continue
                 states_available = sum(depth in self.store.objects[r.source_variant_id].metadata[
                     "selection_completed_depths"] for r in rows)
                 counts = CandidateCounts(len(visible[sid]), len(rows), states_available, available, len(values))
                 decision = selection.step(sid, completed_depth=depth, counts=counts,
                     candidates=values, gate1_plan_by_source=plans)
+                if depth == 1 and decision.state == "continue_probe" and selector.depth2_keep_fraction is not None:
+                    from .source_policy_development import plan_depth2_shortlist
+                    shortlist = plan_depth2_shortlist({row.source_variant_id: row.residual_score for row in values},
+                        request_binding=digest_json({"request": request, "segment_id": sid}),
+                        source_inventory_digest=self.store.pool.content_generation(self.provenance["model_signature"], segment["content_key"]),
+                        reference_trim_ratio=selector.variant_profile.source_residual_trim_ratio,
+                        correctness_eligible_k=len(rows), keep_fraction=selector.depth2_keep_fraction)
+                    shortlists[sid] = shortlist
+                    runtime_events.append({"kind":"depth2_shortlist", "segment_id":sid,
+                        "shortlist":asdict(shortlist), "shortlist_sha256":shortlist.digest,
+                        "full_depth2_oracle_observed":False, "source_freeze_performed":False})
                 compatible.update(v.source_variant_id for v in values if v.residual_score <= decision.absolute_threshold)
                 if decision.selected_source_variant_id:
                     source_id = decision.selected_source_variant_id
@@ -414,7 +455,7 @@ class Schema10OnlineExperimentBackend:
         not_applicable = None
         if not frozen:
             not_applicable = ("all_source_freezes_failed" if selected else
-                              "selection_cost_unsupported" if selection_failures else "no_frozen_sources")
+                              "selection_cost_unsupported" if selection_failures or candidate_cost_failures else "no_frozen_sources")
             runtime_events.append({"kind": "dense_fallback", "reason": not_applicable})
         coverage = {"request_id": rid, "request_epoch": epoch, "execution_kind": "online",
             "capacity": self.store.pool.max_variants_per_content,
@@ -431,6 +472,7 @@ class Schema10OnlineExperimentBackend:
             "queue_ms": (started - arrival_ns) / 1e6, "first_token_ns": first[0], "completion_ns": completion,
             "request_ttft_ms": ttft, "execution_kind": "online_policy", "forced_source": False,
             "selection_events": selection.events, "selection_failures": selection_failures,
+            "candidate_cost_failures": candidate_cost_failures,
             "runtime_events": runtime_events, "coverage_event": coverage,
             "segment_ownership": {sid: asdict(owner) for sid, owner in inventory.items()},
             "selected_source_variant_ids": selected, "committed_source_variant_ids": committed,
@@ -438,6 +480,7 @@ class Schema10OnlineExperimentBackend:
             "final_predicted_request_total_ms": final_total,
             "realized_overrun_ms": max(0, ttft - .8 * dense) if committed else None,
             "initial_pool_snapshot_sha256": digest_json(initial), "dispatch_config": dict(dispatch),
+            "winner_repair_metric": getattr(getattr(context, "adapter", None), "native_repair_metric", "normalized_v_legacy"),
             "code_commit": self.provenance["code_commit"], "model_signature": self.provenance["model_signature"],
             "execution_disposition": "reuse" if committed else "dense",
             "evidence_origin": context.evidence_origin, "timing_scope": "arrival_to_first_token",

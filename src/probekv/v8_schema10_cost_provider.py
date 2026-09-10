@@ -180,7 +180,7 @@ class ProfiledJointTimelineEstimator:
                 source = self.shape.source_state_by_segment.get(sid, {})
                 physical = {key: source[key] for key in (
                     "tier", "bytes", "ready_layers", "copy_in_flight", "layout",
-                    "copy_stream_load", "scheduler_blocking_state") if key in source}
+                    "copy_stream_load", "scheduler_blocking_state", "repair_metric") if key in source}
                 if sid in context.reuse_segment_ids or sid in context.committed_segment_ids:
                     if not {"tier", "bytes", "ready_layers", "layout"} <= physical.keys():
                         raise UnsupportedTimelineCost("missing source execution-shape fields")

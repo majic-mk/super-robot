@@ -47,6 +47,8 @@ def validate_native_attachment(manifest, *, allow_unmeasured=False):
         raise ValueError("native model is outside the frozen Mistral/Qwen adapters")
     if runtime.get("repair_policy", "fixed_15") != "fixed_15":
         raise ValueError("this native integration dispatch is fixed15; no silent gradual fallback")
+    if runtime.get("repair_metric", "normalized_v_legacy") not in {"normalized_v_legacy", "value_squared_l2_pinned_dtype"}:
+        raise ValueError("unknown explicit native winner repair metric")
     audit_path = Path(runtime["model_audit_path"])
     if file_digest(audit_path) != runtime["model_audit_sha256"]:
         raise ValueError("native model audit SHA mismatch")
@@ -254,16 +256,20 @@ def create_native_backend(manifest, *, _measurement_only=False):
         cost_provider=cost, shared_runtime_state=shared) for path in ("d1_only", "d1_d2_rescue", "legacy_multicheckpoint")}
     for adapter in adapters.values():
         adapter.expected_numerical_execution_policy = numerical_policy
+        adapter.native_repair_metric = runtime.get("repair_metric", "normalized_v_legacy")
     def selector_factory(dispatch, capacity):
         return Schema10CheckpointSelector(variant_profile=replace(template, max_variants_per_content=capacity),
             preparation_profile=PreparationPolicyProfile(code_commit=source["code_commit"], model_id=source["model_id"],
                 runtime_policy="dense_selection_barrier", gate1_mode=dispatch["gate1_mode"]),
             strong_margin=cfg["strong_margin"], stable_margin=cfg["stable_margin"],
             residual_band_relative_tolerance=cfg["residual_band_relative_tolerance"],
-            checkpoint_depths=dispatch_depths(dispatch["selection_path"], spec))
+            checkpoint_depths=dispatch_depths(dispatch["selection_path"], spec),
+            source_cost_selection_policy=cfg.get("source_cost_selection_policy", "legacy_residual_band"),
+            depth2_keep_fraction=cfg.get("depth2_keep_fraction"))
     backend = NativeExperimentBackend(store_factory=store_factory, adapters=adapters, selector_factory=selector_factory,
         cost_provider=cost, hbm_manager=hbm, provenance=source)
     owner["backend"] = backend
+    backend.native_manifest_binding = dict(manifest["binding"])
     backend.capabilities = {**backend.capabilities, "real_cuda_native_online_backend": True}
     return backend
 
