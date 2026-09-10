@@ -16,6 +16,13 @@ from probekv.v8_schema10_storage import file_digest
 
 REPO = Path(__file__).resolve().parents[1]
 
+def _under(path, root):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
 
 def git(*args):
     return subprocess.check_output(["git", *args], cwd=REPO, text=True).strip()
@@ -27,7 +34,7 @@ def main():
     parser.add_argument("--native-source-tree", help="optional separately replayed local CacheBlend source tree; never an SSH target")
     args = parser.parse_args()
     output = Path(args.output).resolve()
-    if not output.is_relative_to((REPO / "artifacts").resolve()) or output.exists():
+    if not _under(output, (REPO / "artifacts").resolve()) or output.exists():
         raise ValueError("use a new output directory inside artifacts; never overwrite evidence")
     if git("status", "--porcelain", "--untracked-files=no"):
         raise RuntimeError("commit tracked changes before preparing an exact-SHA handoff")
