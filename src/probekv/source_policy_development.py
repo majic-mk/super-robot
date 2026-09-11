@@ -12,9 +12,13 @@ from typing import Mapping, Tuple
 from .v8_schema10_execution import digest_json
 
 
-REPAIR_RATIO_CANDIDATES = (.05, .10, .15, .20, .25, .30)
+# Candidate Source×repair grid for the next development protocol.  The
+# schema-10 profile grid remains a historical compatibility contract; this
+# finer grid is opt-in until real QA/cost support is frozen.
+REPAIR_RATIO_CANDIDATES = (.05, .075, .10, .125, .15, .175, .20, .25, .30)
 REFERENCE_TRIM_CANDIDATES = (.05, .15)
 CACHEBLEND_PINNED_REPAIR_METRIC = "value_squared_l2_pinned_dtype"
+CACHEBLEND_KV_DEVIATION_METRIC = "normalized_kv_deviation"
 
 
 def _finite_nonnegative(value):
@@ -80,6 +84,40 @@ def cacheblend_pinned_value_scores(current_v, source_v):
     return scores
 
 
+def cacheblend_kv_deviation_scores(current_k, source_k, current_v, source_v,
+                                   *, epsilon=1e-12):
+    """Return winner-only normalized K/V deviation scores per token.
+
+    This is a development candidate for CacheBlend-aligned KV deviation.  It
+    deliberately accepts only matched token-major tensors and never creates a
+    repair mask.  Source selection still uses the lightweight pre-RoPE K state;
+    this function is called only after one Source has been frozen.
+    """
+    import torch
+    tensors = (current_k, source_k, current_v, source_v)
+    if any(not isinstance(t, torch.Tensor) for t in tensors):
+        raise TypeError("KV deviation requires torch tensors")
+    if (current_k.shape != source_k.shape or current_v.shape != source_v.shape
+            or current_k.ndim != 3 or current_v.ndim != 3
+            or current_k.shape[0] != current_v.shape[0]
+            or current_k.dtype != source_k.dtype or current_v.dtype != source_v.dtype
+            or current_k.device != source_k.device or current_v.device != source_v.device
+            or not current_k.is_floating_point() or not current_v.is_floating_point()):
+        raise ValueError("matched token-major floating-point K/V geometry required")
+    if (isinstance(epsilon, bool) or not math.isfinite(epsilon) or epsilon <= 0):
+        raise ValueError("epsilon must be finite and positive")
+    k_cur, k_src = current_k.float(), source_k.float()
+    v_cur, v_src = current_v.float(), source_v.float()
+    k_den = (k_cur.square().sum(dim=(1, 2)).sqrt()).clamp_min(epsilon)
+    v_den = (v_cur.square().sum(dim=(1, 2)).sqrt()).clamp_min(epsilon)
+    k_delta = (k_cur - k_src).square().sum(dim=(1, 2)).sqrt() / k_den
+    v_delta = (v_cur - v_src).square().sum(dim=(1, 2)).sqrt() / v_den
+    scores = torch.sqrt(k_delta.square() + v_delta.square())
+    if not bool(torch.isfinite(scores).all().item()):
+        raise ValueError("non-finite KV deviation score")
+    return scores
+
+
 def rank_winner_v_positions(current_v, source_v, absolute_positions, *, metric):
     """Winner-only V ranking; never consumes Source-score trimming indices."""
     import torch
@@ -100,6 +138,24 @@ def rank_winner_v_positions(current_v, source_v, absolute_positions, *, metric):
     if not bool(torch.isfinite(scores).all().item()):
         raise ValueError("nonfinite winner V scores")
     order = scores.argsort(descending=True,stable=True).cpu().tolist()
+    return tuple(positions[i] for i in order)
+
+
+def rank_winner_kv_positions(current_k, source_k, current_v, source_v,
+                             absolute_positions, *, metric=CACHEBLEND_KV_DEVIATION_METRIC):
+    """Rank repair positions using the frozen winner-only K/V metric."""
+    import torch
+    if metric != CACHEBLEND_KV_DEVIATION_METRIC:
+        raise ValueError("unregistered winner K/V repair metric")
+    if any(not isinstance(t, torch.Tensor) for t in (current_k, source_k, current_v, source_v)):
+        raise TypeError("KV deviation requires torch tensors")
+    positions = tuple(absolute_positions)
+    if (not positions or any(type(p) is not int or p < 0 for p in positions)
+            or positions != tuple(sorted(set(positions)))
+            or len(positions) != current_k.shape[0]):
+        raise ValueError("ordered absolute winner Segment rows required")
+    scores = cacheblend_kv_deviation_scores(current_k, source_k, current_v, source_v)
+    order = scores.argsort(descending=True, stable=True).cpu().tolist()
     return tuple(positions[i] for i in order)
 
 
@@ -215,7 +271,23 @@ def development_experiment_spec():
         "default_execution_objective": "efficiency_first",
         "objectives": ["efficiency_first", "quality_within_budget"],
         "repair_metric_contract": CACHEBLEND_PINNED_REPAIR_METRIC,
+        "repair_metric_candidates": [CACHEBLEND_PINNED_REPAIR_METRIC,
+                                      CACHEBLEND_KV_DEVIATION_METRIC],
+        "repair_metric_primary_status": "kv_deviation_candidate_pending_a800",
         "selection_cells": selection, "chunking_cells": chunking,
+        "candidate_comparison_policies": [
+            {"name": "full_compare", "cfo_enabled": False, "anchor_enabled": False,
+             "d1_pruning": False, "default_for_max_k": 16},
+            {"name": "d1_half", "cfo_enabled": False, "anchor_enabled": False,
+             "d1_pruning": True, "retention_fraction": .5},
+            {"name": "cfo_half_d1_half", "cfo_enabled": True, "anchor_enabled": False,
+             "d1_pruning": True, "retention_fraction": .5},
+            {"name": "qcfuse_anchor_d1_d2", "cfo_enabled": False, "anchor_enabled": True,
+             "d1_pruning": True, "retention_fraction": .5},
+        ],
+        "candidate_comparison_policy_default": "full_compare",
+        "cfo_and_anchor_are_mutually_exclusive": True,
+        "cfo_enablement_requires_end_to_end_net_gain": True,
         "execution_order": ["single_segment_same_backend_source_oracle", "reference_and_cascade_shadow",
                             "winner_ratio_quality_cost", "semantic_chunking_heldout_lengths",
                             "native_prefix_cpu_streaming", "multisegment_then_concurrency"],

@@ -6,6 +6,7 @@ import torch
 from probekv.source_policy_development import (
     residual_tail_curve, plan_depth2_shortlist, audit_depth2_pruning,
     cacheblend_pinned_value_scores,
+    cacheblend_kv_deviation_scores, rank_winner_kv_positions,
     development_experiment_spec,
 )
 from probekv.semantic_segment import (
@@ -60,6 +61,20 @@ class ResidualCurveTests(unittest.TestCase):
         self.assertEqual(rank_winner_v_positions(current,current,(128,129),metric="value_squared_l2_pinned_dtype"),(128,129))
         with self.assertRaises(ValueError):
             rank_winner_v_positions(current,source,(128,128),metric="value_squared_l2_pinned_dtype")
+
+    def test_kv_deviation_is_winner_only_and_has_distinct_ranking(self):
+        current_k = torch.tensor([1., 2.], dtype=torch.float32).reshape(2, 1, 1)
+        source_k = torch.tensor([1., 1.], dtype=torch.float32).reshape(2, 1, 1)
+        current_v = torch.tensor([10., 1.], dtype=torch.float32).reshape(2, 1, 1)
+        source_v = torch.tensor([9., 0.5], dtype=torch.float32).reshape(2, 1, 1)
+        scores = cacheblend_kv_deviation_scores(current_k, source_k, current_v, source_v)
+        self.assertEqual(scores.shape, (2,))
+        self.assertTrue(torch.isfinite(scores).all())
+        self.assertEqual(rank_winner_kv_positions(
+            current_k, source_k, current_v, source_v, (128, 129)), (129, 128))
+        with self.assertRaises(ValueError):
+            rank_winner_kv_positions(
+                current_k, source_k, current_v, source_v, (128, 129), metric="normalized_v_legacy")
 
 
 class CascadeTests(unittest.TestCase):
@@ -123,6 +138,10 @@ class CascadeTests(unittest.TestCase):
         self.assertEqual(value['default_execution_objective'], 'efficiency_first')
         self.assertIsNone(value['quality_profile'])
         self.assertFalse(value['gpu_execution_allowed'])
+        self.assertEqual(value['candidate_comparison_policy_default'], 'full_compare')
+        self.assertTrue(value['cfo_and_anchor_are_mutually_exclusive'])
+        self.assertEqual(tuple(value['repair_ratio_candidates']),
+                         (.05, .075, .10, .125, .15, .175, .20, .25, .30))
 
 
 class SemanticWindowTests(unittest.TestCase):
