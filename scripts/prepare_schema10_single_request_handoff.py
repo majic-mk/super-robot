@@ -28,6 +28,14 @@ def git(*args):
     return subprocess.check_output(["git", *args], cwd=REPO, text=True).strip()
 
 
+def checkout_changes():
+    """Untracked code invalidates SHA handoff; unrelated bundles do not."""
+    tracked = git("status", "--porcelain", "--untracked-files=no")
+    untracked_code = git("ls-files", "--others", "--exclude-standard", "--",
+                         "src", "scripts", "tests", "configs", "patches", "docs")
+    return tracked or untracked_code
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
@@ -36,7 +44,7 @@ def main():
     output = Path(args.output).resolve()
     if not _under(output, (REPO / "artifacts").resolve()) or output.exists():
         raise ValueError("use a new output directory inside artifacts; never overwrite evidence")
-    if git("status", "--porcelain", "--untracked-files=no"):
+    if checkout_changes():
         raise RuntimeError("commit tracked changes before preparing an exact-SHA handoff")
     commit = git("rev-parse", "HEAD")
     output.mkdir(parents=True)
@@ -64,7 +72,7 @@ def main():
             skipped = int(skip[1]) if skip else 0
         print(json.dumps({"validation": index, "exit_code": run.returncode}), flush=True)
     failures = [r["command"] for r in results if r["exit_code"]]
-    if git("rev-parse", "HEAD") != commit or git("status", "--porcelain", "--untracked-files=no"):
+    if git("rev-parse", "HEAD") != commit or checkout_changes():
         failures.append(["checkout_changed_during_validation"])
     lock_path = REPO / "configs/a800_server_lock_v8_schema10.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -86,10 +94,11 @@ def main():
             "installed_runtime_source_files_sha256": hashes, "syntax_passed": True,
             "gpu_behavior_verified": False, "server_environment_verified": False}
         atomic_json(output / "native_source_audit.json", native_audit)
-    source_files = sorted((REPO / "src/probekv").glob("v8_schema10_*.py"))
+    source_files = sorted((REPO / "src/probekv").rglob("*.py"))
     report = {"stage": "single_request_local_backend_checkpoint", "protocol_version": 8, "schema_version": 10,
         "code_commit": commit, "branch": git("branch", "--show-current"),
         "tracked_checkout_clean": not git("status", "--porcelain", "--untracked-files=no"),
+        "source_checkout_clean": not checkout_changes(),
         "tests_run": test_count, "tests_skipped": skipped, "validations": results,
         "single_request_backend_local_tests_passed": not failures and test_count is not None,
         "config_sha256": {str(p.relative_to(REPO)): file_digest(p) for p in configs},

@@ -5,6 +5,7 @@ This is deliberately separate from online source selection/QA/performance.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import time
@@ -44,6 +45,7 @@ def validate_plan(plan, partition):
     if not isinstance(sources,list) or not 1 <= len(sources) <= 16:
         raise ValueError("1..16 preregistered historical requests required")
     if (partition.get("kind") != "source_policy_capture_partition_v1"
+            or not re.fullmatch(r"[0-9a-f]{64}", str(partition.get("parent_development_partition_sha256", "")))
             or partition.get("locked_test_accessed") is not False):
         raise ValueError("development partition required")
     entries = partition.get("entries", [])
@@ -69,17 +71,32 @@ def validate_plan(plan, partition):
                 or len(q.get("segments", [])) != 1
                 or type(q.get("request_epoch")) is not int):
             raise ValueError("request is not an exact member of its frozen development partition")
+        forbidden = {"correctness_repair_ratio", "teacher_token_ids", "capture_logits",
+                     "capture_original_full_prefill", "force_nonpaper_measurement_admission"}
+        if forbidden & q.keys():
+            raise ValueError("capture plan cannot inject execution/diagnostic overrides")
         mandatory_suffix_positions(q)
         segment = q["segments"][0]
         native_segment_inventory({segment["segment_id"]: segment}, prompt_tokens=len(q["token_ids"]), cached_prefix_tokens=0)
         if [q["token_ids"][p] for p in segment["positions"]] != segment["token_ids"]:
             raise ValueError("Segment tokens differ from actual request span")
     target_segment = target["segments"][0]
+    if len({by_id[q["request_id"]]["content_group"] for q in requests}) != 1:
+        raise ValueError("exact-content cohort must share one partition content group")
+    if any(a["request_epoch"] >= b["request_epoch"] for a,b in zip(requests, requests[1:])):
+        raise ValueError("source requests must be in strictly increasing causal order")
     for q in sources:
         s = q["segments"][0]
         if (q["request_epoch"] >= target["request_epoch"] or s["token_ids"] != target_segment["token_ids"]
                 or s["content_key"] != target_segment["content_key"]):
             raise ValueError("Source must be earlier exact-content history")
+
+
+def validate_inputs(plan, partition, runtime):
+    """Validate executable assets before CUDA/model loading, including dry runs."""
+    from probekv.v8_schema10_native_factory import validate_native_attachment
+    validate_plan(plan, partition)
+    return validate_native_attachment(runtime, allow_unmeasured=True)
 
 
 def main():
@@ -92,7 +109,7 @@ def main():
     plan = read_verified(args.plan, args.plan_sha256)
     partition = read_verified(plan["partition_path"],plan["partition_file_sha256"])
     runtime = read_verified(plan["runtime_manifest_path"],plan["runtime_manifest_file_sha256"])
-    validate_plan(plan,partition)
+    validate_inputs(plan,partition,runtime)
     if not args.execute:
         print(json.dumps({"plan_valid":True,"model_loaded":False,"execution_requested":False,
                           "gpu_runtime_qualified":False}))

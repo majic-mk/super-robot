@@ -657,13 +657,13 @@ e_j^V=\sum_h\sum_k(V_{j,h,k}^{current}-V_{j,h,k}^{source})^2.
 
 尚未完成，不得声称已上线：
 
-- live continuation与两阶段cohort状态、独立GPU capture的完整接线。
+- 新候选的真实模型/GPU continuation实测（两阶段cohort和独立native capture入口已完成CPU接口测试）。
 - 新质量threshold与Source Oracle的真实测量。
 - 非整档长度实际kernel/cost验证。
 - Prefix+新路径、CPU streaming、SSD/promotion与并发资格。
-- 旧`_compare`中候选成本缺失处理仍需在新cohort接口中按候选分离；必须同时保留真实compared计数，不能简单删掉行伪造scope。
+- 候选级缺成本处理已实现并测试；GPU阶段仍需验证实测成本表命中与UNSUPPORTED分支。
 
-下一步仍无卡：将13.8的观测接口接到独立native diagnostic入口，完成原生请求、SelectionState和资源生命周期接线测试，再冻结代码、patch、tokenizer和development任务清单，通知用户进入单Segment GPU实验。不会因本地候选测试通过就立即要求租卡或宣布GPU-ready。
+下一步仍无卡：核验真实模型上下文的失败清理覆盖，补齐tokenizer资产与既有development partition的本地审计，冻结代码、patch和任务清单。独立native diagnostic入口已存在，但CPU接口测试不等于真实CUDA行为已验证。
 
 ### 13.7 GPU实验顺序更新
 
@@ -719,4 +719,13 @@ python scripts/replay_source_policy_observations.py
 
 新增 `scripts/run_local_cuda_primitives.py`，仅用于验证 Residual-K 批量/分批比较、固定 V-only 控制、pinned CPU→GPU 分层传输和 qualification digest 生命周期。该脚本不加载论文模型、不产生 QA 结果、不访问 locked test，输出中的 `gpu_runtime_qualified`、`paper_evidence` 始终为 false。当前系统 Python 的 Torch 2.4.1 不支持本机 RTX 5070 Ti 的 sm_120；隔离 CUDA 12.8 wheel 下载未形成可安装包，因此本地 CUDA 执行保持 pending，不能替代 A800 哨兵。
 
-**仍未接通的部分**：原生模型hook到该观测bundle的独立端到端采集入口、实际GPU资源预算/释放检查、新四策略的live dispatch，以及真实QA/时间关联。当前交付是可测试的数据观测接口和可执行离线重放器，不是已经完成GPU采集器。既有生产默认、旧Profile、fixed15与legacy均未切换；本轮未连接服务器或启动GPU。
+**代码与实测分开记录**：`run_source_policy_capture.py`已接通canonical构建、实际池发布、原生request接口、d1/d2观测和重放；尚缺本版本真实GPU资源释放、QA及时间关联证据。rho=15%的live cascade和原始V指标为显式opt-in；rho=5%仍要求新的Profile合同。既有生产默认、旧Profile、fixed15与legacy均未切换；本轮未连接服务器或启动GPU。
+
+### 13.10 租卡前输入与代码身份加固（2026-09-11）
+
+- Capture dry-run调用生产native attachment校验，模型资产/配置错误必须在加载模型前拒绝，而不是仅校验JSON摘要。
+- 单Segment历史请求严格按epoch递增，同exact-content cohort必须归属同一content group；禁止注入teacher、强制repair或诊断绕过字段。
+- Handoff将未跟踪的源码、配置、测试、补丁和文档计入dirty检查；历史Git bundle不计入。源文件摘要覆盖整个`src/probekv`，不只覆盖`v8_schema10_*.py`。
+- 本轮825项测试：824通过、1项可选依赖跳过。无真实CUDA运行。
+- 本地搜索未找到可直接使用的tokenizer文件或冻结development partition原始文件；历史model audit不等于这些资产本身。此项仍须解决，不能生成占位hash。
+- 本机Torch wheel续传确认尚缺约558 MiB，下载45秒后超时并保留成功字节；本地CUDA原语仍pending，不把下载失败作为系统GPU正确性失败。

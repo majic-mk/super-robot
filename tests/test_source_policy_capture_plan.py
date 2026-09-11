@@ -2,6 +2,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from probekv.v8_schema10_execution import digest_json
 
@@ -53,8 +54,38 @@ class CapturePlanTests(unittest.TestCase):
         plan["source_requests"][0]["request_epoch"] = 4
         part["entries"][0]["request_sha256"] = digest_json(plan["source_requests"][0])
         plan["plan_sha256"] = digest_json({k:v for k,v in plan.items() if k!="plan_sha256"})
-        with self.assertRaisesRegex(ValueError,"earlier exact"):
+        with self.assertRaisesRegex(ValueError,"causal order"):
             capture_cli.validate_plan(plan,part)
+
+    def test_same_exact_content_cannot_hide_in_different_groups(self):
+        plan,part = inputs()
+        part["entries"][0]["content_group"] = "other-group"
+        with self.assertRaisesRegex(ValueError, "share one"):
+            capture_cli.validate_plan(plan,part)
+
+    def test_execution_overrides_rejected_even_when_rehashed(self):
+        for key in ("correctness_repair_ratio", "teacher_token_ids", "capture_logits",
+                    "capture_original_full_prefill", "force_nonpaper_measurement_admission"):
+            plan,part = inputs()
+            plan["target_request"][key] = False
+            part["entries"][-1]["request_sha256"] = digest_json(plan["target_request"])
+            plan["plan_sha256"] = digest_json({k:v for k,v in plan.items() if k!="plan_sha256"})
+            with self.assertRaisesRegex(ValueError,"overrides"):
+                capture_cli.validate_plan(plan,part)
+
+    def test_invalid_parent_partition_digest_rejected(self):
+        plan,part = inputs()
+        part["parent_development_partition_sha256"] = "pending"
+        with self.assertRaisesRegex(ValueError,"partition"):
+            capture_cli.validate_plan(plan,part)
+
+    def test_preflight_validates_runtime_without_loading_model(self):
+        plan,part = inputs()
+        with patch("probekv.v8_schema10_native_factory.validate_native_attachment",
+                   side_effect=ValueError("bad model audit")) as validate:
+            with self.assertRaisesRegex(ValueError,"bad model audit"):
+                capture_cli.validate_inputs(plan,part,{"manifest": "bad"})
+        validate.assert_called_once_with({"manifest": "bad"}, allow_unmeasured=True)
 
     def test_mandatory_suffix_cannot_be_repair_segment(self):
         plan,part = inputs()
