@@ -71,12 +71,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-root", required=True)
     parser.add_argument("--partition")
+    parser.add_argument("--expected-model-id")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     output = Path(args.output).resolve()
     if output.exists():
         raise FileExistsError("fresh audit output required")
-    report = audit_asset_root(args.model_root, partition=args.partition)
+    report = audit_asset_root(args.model_root, partition=args.partition, expected_model_id=args.expected_model_id)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(output), "ready": report["ready"],
