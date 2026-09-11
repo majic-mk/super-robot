@@ -30,8 +30,10 @@ class ResidualCurveTests(unittest.TestCase):
     def test_five_and_fifteen_can_reverse_source_order(self):
         a, b = [100., 100.] + [0.] * 18, [1.] * 20
         ca, cb = residual_tail_curve(a, range(20)), residual_tail_curve(b, range(20))
-        self.assertGreater(ca[0].residual_mean, cb[0].residual_mean)
-        self.assertLess(ca[2].residual_mean, cb[2].residual_mean)
+        by_ratio_a = {point.nominal_ratio: point for point in ca}
+        by_ratio_b = {point.nominal_ratio: point for point in cb}
+        self.assertGreater(by_ratio_a[0.05].residual_mean, by_ratio_b[0.05].residual_mean)
+        self.assertLess(by_ratio_a[0.15].residual_mean, by_ratio_b[0.15].residual_mean)
 
     def test_empty_tail_and_invalid_inputs_rejected(self):
         for values, positions, ratios in (([1.], [0], (.15,)),
@@ -75,6 +77,14 @@ class ResidualCurveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rank_winner_kv_positions(
                 current_k, source_k, current_v, source_v, (128, 129), metric="normalized_v_legacy")
+
+    def test_kv_deviation_rejects_empty_or_mixed_kv_geometry(self):
+        empty = torch.empty((0, 1, 1), dtype=torch.float32)
+        one = torch.ones((1, 1, 1), dtype=torch.float32)
+        with self.assertRaises(ValueError):
+            cacheblend_kv_deviation_scores(empty, empty, empty, empty)
+        with self.assertRaises(ValueError):
+            cacheblend_kv_deviation_scores(one, one, one.to(torch.bfloat16), one.to(torch.bfloat16))
 
 
 class CascadeTests(unittest.TestCase):

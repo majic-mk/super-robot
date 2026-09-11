@@ -99,13 +99,19 @@ def cacheblend_kv_deviation_scores(current_k, source_k, current_v, source_v,
         raise TypeError("KV deviation requires torch tensors")
     if (current_k.shape != source_k.shape or current_v.shape != source_v.shape
             or current_k.ndim != 3 or current_v.ndim != 3
+            or current_k.numel() == 0 or current_v.numel() == 0
             or current_k.shape[0] != current_v.shape[0]
             or current_k.dtype != source_k.dtype or current_v.dtype != source_v.dtype
             or current_k.device != source_k.device or current_v.device != source_v.device
+            or current_k.device != current_v.device
+            or current_k.dtype != current_v.dtype
             or not current_k.is_floating_point() or not current_v.is_floating_point()):
         raise ValueError("matched token-major floating-point K/V geometry required")
     if (isinstance(epsilon, bool) or not math.isfinite(epsilon) or epsilon <= 0):
         raise ValueError("epsilon must be finite and positive")
+    # Accumulate in fp32, but reject mixed K/V geometry before any transfer.
+    # This prevents a malformed artifact from being treated as a valid repair
+    # candidate merely because broadcasting happened to succeed.
     k_cur, k_src = current_k.float(), source_k.float()
     v_cur, v_src = current_v.float(), source_v.float()
     k_den = (k_cur.square().sum(dim=(1, 2)).sqrt()).clamp_min(epsilon)
