@@ -47,7 +47,9 @@ def validate_native_attachment(manifest, *, allow_unmeasured=False):
         raise ValueError("native model is outside the frozen Mistral/Qwen adapters")
     if runtime.get("repair_policy", "fixed_15") != "fixed_15":
         raise ValueError("this native integration dispatch is fixed15; no silent gradual fallback")
-    if runtime.get("repair_metric", "normalized_v_legacy") not in {"normalized_v_legacy", "value_squared_l2_pinned_dtype"}:
+    if runtime.get("repair_metric", "normalized_v_legacy") not in {
+            "normalized_v_legacy", "value_squared_l2_pinned_dtype",
+            "normalized_kv_deviation"}:
         raise ValueError("unknown explicit native winner repair metric")
     audit_path = Path(runtime["model_audit_path"])
     if file_digest(audit_path) != runtime["model_audit_sha256"]:

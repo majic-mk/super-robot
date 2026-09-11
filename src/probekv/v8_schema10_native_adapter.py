@@ -466,11 +466,21 @@ class NativeRequestContext:
                 self.engine.source_loader.prefetch_pending(ticket, depth + 1)
             ticket.layer_events[depth + 1].synchronize()
             positions = tuple(self.segments[sid]["positions"])
-            # Winner V-only metric is independent of Source-score trim indices.
-            from .source_policy_development import rank_winner_v_positions
-            order = rank_winner_v_positions(current_v[[local[p] for p in positions]],
-                ticket.layer_tensors[depth + 1][1], positions,
-                metric=getattr(self.adapter, "native_repair_metric", "normalized_v_legacy"))
+            # Winner repair metric is independent of Source-score trimming.
+            # The normalized K/V candidate is opt-in; the historical V-only
+            # path remains the default until real QA evidence selects it.
+            metric = getattr(self.adapter, "native_repair_metric", "normalized_v_legacy")
+            if metric == "normalized_kv_deviation":
+                from .source_policy_development import rank_winner_kv_positions
+                source_k, source_v = ticket.layer_tensors[depth + 1]
+                order = rank_winner_kv_positions(
+                    current_k[[local[p] for p in positions]], source_k,
+                    current_v[[local[p] for p in positions]], source_v,
+                    positions)
+            else:
+                from .source_policy_development import rank_winner_v_positions
+                order = rank_winner_v_positions(current_v[[local[p] for p in positions]],
+                    ticket.layer_tensors[depth + 1][1], positions, metric=metric)
             count = min(len(positions), math.ceil(len(positions) * self.repair_ratio))
             support = tuple(sorted(order[:count]))
             self.supports[sid] = {l: support for l in range(depth + 1, self.adapter.spec.num_layers + 1)}
