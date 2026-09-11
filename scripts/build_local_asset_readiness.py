@@ -12,7 +12,8 @@ except ImportError:  # direct script execution
 def build_readiness(models, partition):
     rows = []
     for name, root in models.items():
-        rows.append({"model": name, **audit_asset_root(root, partition=partition)})
+        expected = {"mistral": "Mistral-7B-Instruct-v0.3", "qwen": "Qwen2.5-7B-Instruct"}.get(name)
+        rows.append({"model": name, **audit_asset_root(root, partition=partition, expected_model_id=expected)})
     return {"kind": "probekv_local_asset_readiness_v1", "models": rows,
             "all_models_ready": bool(rows) and all(row["ready"] for row in rows),
             "paper_evidence": False, "locked_test_accessed": False}

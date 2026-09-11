@@ -20,7 +20,7 @@ def _sha(path):
     return digest.hexdigest()
 
 
-def audit_asset_root(root, *, partition=None):
+def audit_asset_root(root, *, partition=None, expected_model_id=None):
     root = Path(root).resolve()
     result = {"root": str(root), "exists": root.is_dir(), "tokenizer": {},
               "model_config": None, "development_partition": None,
@@ -34,6 +34,16 @@ def audit_asset_root(root, *, partition=None):
     config = root / "config.json"
     result["model_config"] = {"exists": config.is_file(),
                                "sha256": _sha(config) if config.is_file() else None}
+    if config.is_file() and expected_model_id:
+        try:
+            config_value = json.loads(config.read_text(encoding="utf-8"))
+            result["model_config"]["model_type"] = config_value.get("model_type")
+            result["model_config"]["_name_or_path"] = config_value.get("_name_or_path")
+            result["model_config"]["identity_checked"] = (
+                expected_model_id.lower() in str(config_value.get("_name_or_path", "")).lower()
+                or expected_model_id.lower().split("/")[-1] in str(config_value.get("_name_or_path", "")).lower())
+        except (ValueError, OSError):
+            result["model_config"]["identity_checked"] = False
     if partition is not None:
         path = Path(partition).resolve()
         entry = {"path": str(path), "exists": path.is_file(),
@@ -52,6 +62,7 @@ def audit_asset_root(root, *, partition=None):
         result["development_partition"] = entry
     result["ready"] = (all(v["exists"] for v in result["tokenizer"].values())
                        and result["model_config"]["exists"]
+                       and (not expected_model_id or result["model_config"].get("identity_checked", False))
                        and (partition is None or result["development_partition"].get("valid_shape", False)))
     return result
 
