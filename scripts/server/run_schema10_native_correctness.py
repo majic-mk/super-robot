@@ -391,7 +391,10 @@ def main():
             "staging_slots": len(loader.pool.slots), "active_hbm_reserved_bytes": backend.hbm.active_reserved_bytes,
             "paper_evidence": False})
         atomic_json(root / "result.json", {"native_prefix_k_hook_r1_passed": True,
-            "native_cfo_eager_streaming_passed": not args.skip_eager_cfo,
+            # CFO is a legacy/optional diagnostic only; direct residual-K
+            # comparison is the schema10 production selector.
+            "native_cfo_eager_streaming_passed": None,
+            "cfo_required_for_runtime": False,
             "matched_prefix_cost_probe_passed": bool(args.cost_probe),
             "native_transfer_path": expected_path,
             "r1_observation_sha256": r1["raw_observation_sha256"], "gpu_runtime_qualified": False,
