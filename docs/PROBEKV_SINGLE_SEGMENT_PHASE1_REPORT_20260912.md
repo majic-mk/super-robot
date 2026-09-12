@@ -64,6 +64,22 @@ resident and layers 2--32 are the marked pending-copy set. The trace is
 complete and provides current-SHA, correlated CUPTI evidence of real
 load/compute overlap.
 
+A fresh 512-token rerun using the same current SHA and audited 0013 tree is
+stored under `native-1bba8ed-deferred-window1-current`. It independently
+reports:
+
+```text
+hardware_copy_kernel_overlap_observed = true
+copy_kernel_overlap_union_ms = 2.591
+h2d_union_ms = 2.855
+kernel_union_ms = 26.853
+layer_attribution_complete = true
+expected_h2d_activity_count = 62
+```
+
+This 512-token run is the primary overlap evidence for the checkpoint; the
+128-token run above is retained as a shorter-shape cross-check.
+
 The earlier `6499c82` window-4 trace reported:
 
 ```text
