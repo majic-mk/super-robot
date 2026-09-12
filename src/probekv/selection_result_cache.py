@@ -23,6 +23,20 @@ class SelectionCacheEntry:
     completed_depth: int
     residual_score: Optional[float]
     evidence_digest: str
+    candidate_set_digest: str = ""
+    gate1_evidence_digest: str = ""
+    repair_support_digest: str = ""
+    planner_snapshot_digest: str = ""
+
+    def admissible_for(self, *, candidate_set_digest: str,
+                       gate1_evidence_digest: str,
+                       repair_support_digest: str,
+                       planner_snapshot_digest: str) -> bool:
+        """Check all non-cost evidence before using a cached winner."""
+        return (self.candidate_set_digest == candidate_set_digest and
+                self.gate1_evidence_digest == gate1_evidence_digest and
+                self.repair_support_digest == repair_support_digest and
+                self.planner_snapshot_digest == planner_snapshot_digest)
 
 class SelectionResultCache:
     """Small in-memory cache; callers may persist entries by digest later."""

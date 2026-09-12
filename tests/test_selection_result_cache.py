@@ -22,4 +22,9 @@ class SelectionResultCacheTest(unittest.TestCase):
         self.assertIsNone(c.get(changed))
         self.assertIsNone(c.get(self.key(2)))
 
+    def test_entry_requires_complete_evidence_match(self):
+        e = SelectionCacheEntry(self.key(), 'A', 1, .1, 'e', 'c', 'g', 'r', 'p')
+        self.assertTrue(e.admissible_for(candidate_set_digest='c', gate1_evidence_digest='g', repair_support_digest='r', planner_snapshot_digest='p'))
+        self.assertFalse(e.admissible_for(candidate_set_digest='changed', gate1_evidence_digest='g', repair_support_digest='r', planner_snapshot_digest='p'))
+
 if __name__ == '__main__': unittest.main()
