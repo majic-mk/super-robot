@@ -18,7 +18,7 @@ from probekv.v8_schema10_event_log import atomic_json
 from probekv.v8_schema10_storage import file_digest
 from probekv.v8_schema10_native_factory import create_native_measurement_backend
 from probekv.v8_schema10_native_preflight import run_native_prefix_sentinel, run_native_k_hook_sentinel
-from probekv.v8_schema10_native_correctness import execute_fixed_source_arm, run_combined_native_r1
+from probekv.v8_schema10_native_correctness import execute_fixed_source_arm, run_combined_native_r1, release_diagnostic_hot_caches
 
 
 RUNTIME_FILES = ("model_executor/models/llama.py", "model_executor/models/qwen2.py",
@@ -375,34 +375,18 @@ def main():
                 output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary,
                 matched_mask=args.matched_repair_backends,
                 continuation=args.repair_backend_continuation)
-        for hot in tuple(adapter.hot_reservations.values()):
-            if not hot.released:
-                backend.hbm.release(hot.reservation_id)
-        adapter.hot_reservations.clear()
-        adapter.hot_layer_cache.clear()
-        # Hot-cache diagnostics intentionally retain a temporary execution
-        # context across arms.  Close it before the terminal resource audit;
-        # otherwise the audit reports a false leak even though CUDA memory is
-        # reclaimable.  This does not change the measured arms.
-        if adapter.active is not None:
-            adapter.close()
-        # Terminal teardown owns any fenced diagnostic workspace left by a
-        # retained hot-cache arm; release it before the leak audit.
-        for reservation_id, reservation in tuple(backend.hbm.reservations.items()):
-            if not reservation.released:
-                backend.hbm.release(reservation_id)
-        # Completed CUDA events may remain attached to reusable staging slots;
-        # they are bookkeeping, not live resources.  The authoritative leak
-        # checks are reservations, active request state, and unreleased leases.
+        release_diagnostic_hot_caches(backend)
         active_hbm = backend.hbm.active_reserved_bytes
         active_request = adapter.active is not None
         leased_slots = sum(1 for slot in loader.pool.slots if slot.leased)
+        incomplete_slots = sum(1 for slot in loader.pool.slots
+            if slot.completion is not None and not slot.completion.query())
         pending_backend = bool(getattr(backend, "pending", False))
-        if active_hbm or active_request or leased_slots or pending_backend:
+        if active_hbm or active_request or leased_slots or incomplete_slots or pending_backend:
             raise RuntimeError(
                 "completed native sentinel retained active execution resources: "
                 f"hbm={active_hbm}, active={active_request}, pending={pending_backend}, "
-                f"leased_slots={leased_slots}")
+                f"leased_slots={leased_slots}, incomplete_slots={incomplete_slots}")
         expected_path = "CPU_PINNED_TO_GPU" if args.backing_tier == "cpu" else "SSD_STAGED_TO_GPU"
         allowed_paths = {expected_path, "GPU_RESIDENT"} if args.gpu_hot_cache else {expected_path}
         if not loader.events or any(e["path"] not in allowed_paths or e["source_id"] != source.source_variant_id

@@ -16,6 +16,28 @@ from .v8_schema10_native_validation import validate_correctness_observation
 from .v8_schema6_hbm import HBMReservationKind
 
 
+def release_diagnostic_hot_caches(backend):
+    """Fence and release only hot reservations owned by diagnostic adapters.
+
+    FAST and legacy share an HBM manager, not their hot-cache dictionaries.
+    Unknown reservations remain visible to the terminal leak audit.
+    """
+    adapters = tuple({id(a): a for a in backend.adapters.values()}.values())
+    if backend.pending or any(a.active is not None for a in adapters):
+        raise RuntimeError("hot-cache teardown requires quiescent backend")
+    for adapter in adapters:
+        adapter.torch.cuda.synchronize()
+    released = []
+    for adapter in adapters:
+        adapter.hot_layer_cache.clear()
+        for reservation in adapter.hot_reservations.values():
+            if not reservation.released:
+                backend.hbm.release(reservation.reservation_id)
+                released.append(reservation.reservation_id)
+        adapter.hot_reservations.clear()
+    return released
+
+
 def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=None,
                              boundary=2, teacher_token_ids=None, warm_request=None,
                              diagnostic_completed_depth=0, repair_ratio=1.0,
