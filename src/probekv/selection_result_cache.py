@@ -46,3 +46,13 @@ class SelectionResultCache:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    @staticmethod
+    def key_from_request(*, token_digest: str, model_signature: str,
+                         tokenizer_hash: str, prefix_digest: str,
+                         dispatch: str, pool_generation: int,
+                         source_state_digest: str) -> SelectionCacheKey:
+        """Canonical key constructor used by online adapters."""
+        return SelectionCacheKey(token_digest, model_signature, tokenizer_hash,
+                                 prefix_digest, dispatch, int(pool_generation),
+                                 source_state_digest)

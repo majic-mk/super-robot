@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 from .v8_contracts import CandidateCounts, ResidualCandidate
 from .v8_schema6_hbm import HBMReservationKind
 from .v8_schema10_execution import ProductionSelectionSession, digest_json
+from .selection_result_cache import SelectionResultCache, SelectionCacheKey
 
 
 class LiveSelectionBridge:
@@ -22,17 +23,29 @@ class LiveSelectionBridge:
                  snapshot_provider: Callable[[], Any], hbm_manager: Any,
                  metadata_order_by_segment: Mapping[str, tuple[int, ...]],
                  batch_time_predictor: Callable[[int, int, int], float],
+                 selection_cache: SelectionResultCache | None = None,
                  arrival_ns: int | None = None) -> None:
         self.session, self.gate1_provider = session, gate1_provider
         self.final_planner, self.snapshot_provider = final_planner, snapshot_provider
         self.hbm_manager, self.metadata_order = hbm_manager, metadata_order_by_segment
         self.batch_time_predictor = batch_time_predictor
+        self.selection_cache = selection_cache
+        self.selection_cache_hits = 0
         self.arrival_ns = time.perf_counter_ns() if arrival_ns is None else arrival_ns
         if self.arrival_ns < 0 or self.arrival_ns > time.perf_counter_ns():
             raise ValueError("invalid request arrival")
         self.final_events: list[dict[str, Any]] = []
         self.comparison_timings: list[dict[str, Any]] = []
         self.first_token_ns: int | None = None
+
+    def lookup_cached_selection(self, key: SelectionCacheKey):
+        """Return evidence only; caller must still run Gate1/FinalCommit."""
+        if self.selection_cache is None:
+            return None
+        entry = self.selection_cache.get(key)
+        if entry is not None:
+            self.selection_cache_hits += 1
+        return entry
 
     @staticmethod
     def source_id(fixture: Any, index: int, variant: int) -> str:
@@ -197,6 +210,7 @@ class LiveSelectionBridge:
                                     if self.first_token_ns is not None else None),
                 "selection_events": tuple(self.session.events), "runtime_events": tuple(self.final_events),
                 "comparison_timings": tuple(self.comparison_timings),
+                "selection_cache_hits": self.selection_cache_hits,
                 "final_commit_executed": any(x["kind"] == "final_commit" for x in self.final_events),
                 "final_commit_not_applicable_reason": ("no_frozen_sources" if self.final_events
                     and self.final_events[-1]["kind"] == "dense_fallback" else None),
