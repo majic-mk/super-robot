@@ -67,6 +67,18 @@ plan, so the estimator must not extrapolate or fill a zero-cost value. The
 run is retained as evidence that cost-shape support, rather than correctness,
 is the remaining online-closure blocker.
 
+After correcting dense-counterfactual query construction, the 128-token
+closure bound to `bc802de` (`online-bc802de-costshape-closure`) reached two
+SUPPORTED exact joint queries and completed FinalCommit accounting. It
+rejected reuse because the measured request total was 83.239 ms versus a
+30.923 ms dense reference (`refined_marginal_pruned`); this is an economic
+dense fallback, not a correctness failure. A GPU-hot/all-ready variant was
+also exercised under `online-7aa000f-gpuhot-costshape-closure`; its live query
+had `copy_in_flight=true` while the measured hot row had `copy_in_flight=false`,
+so it correctly returned `UNSUPPORTED` rather than treating an all-ready row
+as equivalent. These two runs establish both supported-cost rejection and
+strict fail-closed behavior for an unsupported readiness shape.
+
 After adding an exact partial-ready observation to the cost-table builder, a
 new 128-token revalidation was run under
 `online-5015d3f-costshape-closure`. The query audit contains one supported
