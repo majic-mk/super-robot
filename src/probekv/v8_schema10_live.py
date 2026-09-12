@@ -67,8 +67,10 @@ class LiveSelectionBridge:
                 decision = cached_decisions.get(segment_id)
                 if decision is None:
                     continue
-                self.session.restore_cached_decision(
-                    segment_id, decision, evidence_digest=getattr(decision, "evidence_digest", "cached"))
+                evidence_digest = getattr(decision, "evidence_digest", None)
+                if not evidence_digest:
+                    raise ValueError("cached decision missing evidence digest")
+                self.session.restore_cached_decision(segment_id, decision, evidence_digest=evidence_digest)
                 if decision.selected_source_variant_id:
                     variants = fixture.selection_variants[index]
                     for variant in range(len(variants)):
