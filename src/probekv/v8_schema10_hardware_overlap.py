@@ -60,7 +60,32 @@ def summarize_hardware_overlap(trace):
     # layer association by deterministic transfer order.  This is deliberately
     # conservative: ambiguous counts remain unavailable rather than being
     # guessed.
-    if not copies and kernels:
+    expected_h2d_count = 2 * len({r["layer"] for r in kernels}) if kernels else 0
+    large_h2d = []
+    for event in events:
+        if event.get("cat") != "gpu_memcpy" or "htod" not in event.get("name", "").lower():
+            continue
+        args = event.get("args", {})
+        if args.get("device") is None or args.get("stream") is None:
+            continue
+        if int(args.get("bytes", 0) or 0) < 1_000_000:
+            continue
+        large_h2d.append((event, args))
+    # A partial External-id correlation must never silently shift layer
+    # labels.  If the complete large-transfer set has the expected K/V shape,
+    # rebuild deterministic attribution from that complete set; otherwise
+    # retain the correlated rows but mark attribution incomplete.
+    attribution_complete = expected_h2d_count == len(copies) if expected_h2d_count else bool(copies)
+    if kernels and len(copies) != expected_h2d_count and len(large_h2d) == expected_h2d_count:
+        copies = []
+        compute_layers = sorted({r["layer"] for r in kernels})
+        for index, (event, args) in enumerate(large_h2d):
+            copies.append({"layer": compute_layers[index // 2], "start_us": event["ts"],
+                           "end_us": event["ts"] + event["dur"],
+                           "device": args["device"], "stream": args["stream"],
+                           "name": event.get("name", "")})
+        attribution_complete = True
+    elif not copies and kernels:
         compute_layers = sorted({r["layer"] for r in kernels})
         unowned = []
         for event in events:
@@ -81,6 +106,7 @@ def summarize_hardware_overlap(trace):
                                "end_us": event["ts"] + event["dur"],
                                "device": args["device"], "stream": args["stream"],
                                "name": event.get("name", "")})
+            attribution_complete = True
     intersections, pair_intervals = [], {}
     for copy in copies:
         for kernel in kernels:
@@ -94,6 +120,8 @@ def summarize_hardware_overlap(trace):
     return {"evidence_kind": "correlated_cupti_gpu_activity", "paper_evidence": False,
             "scope": "marked_pending_layer_H2D_vs_marked_prefill_kernels",
             "initial_copy_and_decode_excluded": True,
+            "expected_h2d_activity_count": expected_h2d_count,
+            "layer_attribution_complete": bool(attribution_complete),
             "hardware_activity_available": bool(copies and kernels),
             "hardware_copy_kernel_overlap_observed": bool(intersections),
             "attributed_h2d_activity_count": len(copies), "attributed_kernel_count": len(kernels),
