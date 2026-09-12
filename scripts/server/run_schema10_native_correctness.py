@@ -380,6 +380,12 @@ def main():
                 backend.hbm.release(hot.reservation_id)
         adapter.hot_reservations.clear()
         adapter.hot_layer_cache.clear()
+        # Hot-cache diagnostics intentionally retain a temporary execution
+        # context across arms.  Close it before the terminal resource audit;
+        # otherwise the audit reports a false leak even though CUDA memory is
+        # reclaimable.  This does not change the measured arms.
+        if adapter.active is not None:
+            adapter.close()
         if (backend.hbm.active_reserved_bytes or adapter.active is not None
                 or any(slot.leased or slot.completion is not None and not slot.completion.query()
                        for slot in loader.pool.slots)):
