@@ -429,7 +429,8 @@ class TorchLayerwiseSourceLoader:
             pinning_host_ms=pinning_host_ms,
         )
 
-    def prefetch_pending(self, ticket: LayerwiseLoadTicket, through_layer: int) -> None:
+    def prefetch_pending(self, ticket: LayerwiseLoadTicket, through_layer: int,
+                         after_event: Any = None) -> None:
         """Enqueue pending CPU-backed layers on the copy stream.
 
         This is the diagnostic windowed path: callers submit the next layer
@@ -441,6 +442,12 @@ class TorchLayerwiseSourceLoader:
         if not pending:
             return
         with self.torch.cuda.stream(self.stream):
+            # In the pipelined path the producer stream records the current
+            # layer's launch before we enqueue the next H2D copies.  Waiting
+            # on that event prevents the copy stream from running entirely
+            # ahead of the consumer while still allowing genuine overlap.
+            if after_event is not None:
+                self.stream.wait_event(after_event)
             for layer in pending:
                 key, value = ticket.pending_layers[layer]
                 if key.device.type != "cpu" or value.device.type != "cpu":
@@ -720,12 +727,17 @@ class CacheBlendV6OnlineEngine:
         return ticket
 
     def _install_ready_source_rows(self, layer: int) -> None:
+        current_stream = self.source_loader.torch.cuda.current_stream()
         for segment_id in self.session.commits if self.session else ():
             ticket = self.tickets[segment_id]
+            event = ticket.layer_events.get(int(layer))
+            if event is None:
+                raise RuntimeError("committed Source layer has no ready event")
+            # Do not synchronize the host here.  A not-yet-ready layer is a
+            # normal pipeline condition: make the model stream wait for the
+            # copy-stream event, preserving load/compute overlap.
             if not ticket.layer_ready(layer):
-                raise RuntimeError(
-                    "committed Source layer is not ready; scheduler must wait"
-                )
+                current_stream.wait_event(event)
             key, value = ticket.layer_tensors[layer]
             positions = self._source_row_indices[segment_id]
             self._composite_old_kvs[layer - 1][0][positions] = key
@@ -805,12 +817,6 @@ class CacheBlendV6OnlineEngine:
             compute_start = torch.cuda.Event(enable_timing=True)
             compute_end = torch.cuda.Event(enable_timing=True)
             compute_start.record(torch.cuda.current_stream())
-            # Submit the following layer before launching this layer's
-            # compute. The copy stream can then overlap with the current
-            # Transformer block instead of being awaited after it finishes.
-            for ticket in self.tickets.values():
-                if ticket.pending_layers:
-                    self.source_loader.prefetch_pending(ticket, next_layer + max(1, self.prefetch_window))
             with self._component("source_rows_install"):
                 self._install_ready_source_rows(next_layer)
             with (torch.profiler.record_function(f"probekv.compute_layer.{next_layer}")
@@ -818,6 +824,15 @@ class CacheBlendV6OnlineEngine:
                 self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
             self._compute_events[next_layer] = (compute_start, compute_end)
+            # Launch the next pending H2D only after the current layer has
+            # been submitted.  The copy stream waits for compute_start and
+            # can therefore overlap the current block instead of completing
+            # all future layers before the consumer reaches them.
+            for ticket in self.tickets.values():
+                if ticket.pending_layers:
+                    self.source_loader.prefetch_pending(
+                        ticket, next_layer + max(1, self.prefetch_window),
+                        after_event=compute_start)
 
     def overlap_trace(self) -> list[dict]:
         rows = []
