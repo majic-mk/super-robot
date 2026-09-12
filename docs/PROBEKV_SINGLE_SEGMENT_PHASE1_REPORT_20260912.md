@@ -67,6 +67,14 @@ plan, so the estimator must not extrapolate or fill a zero-cost value. The
 run is retained as evidence that cost-shape support, rather than correctness,
 is the remaining online-closure blocker.
 
+After adding an exact partial-ready observation to the cost-table builder, a
+new 128-token revalidation was run under
+`online-5015d3f-costshape-closure`. The query audit contains one supported
+primitive/joint shape and one `UNSUPPORTED` live joint shape; FinalCommit again
+failed closed with `no_exact_joint_measurement` and executed dense. This
+confirms that the added row is consumed only when its complete mask and
+ready-layer geometry match; it does not authorize unsafe shape reuse.
+
 ## Overlap evidence
 
 The current-SHA deferred window-1 trace is stored under
