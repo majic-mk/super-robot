@@ -76,10 +76,14 @@ class PrefixShadowStore:
                 or native_request.closed or not native_request.allocated):
             raise RuntimeError("stale native block lease for Prefix shadow")
         for key, row in tuple(self.entries.items()):
-            if row["tokens"][:len(tokens)] == tokens:
+            # A longer native computed prefix may contain a shorter logical
+            # shadow.  Return the longest complete-block covered prefix; the
+            # caller will execute the uncovered suffix densely.
+            covered = min(len(tokens), len(row["tokens"]))
+            if row["tokens"][:covered] == tokens[:covered] and covered >= 1:
                 self.entries.move_to_end(key)
                 # Context takes its own GPU working copy under HBM reservation.
-                return tuple(tuple(t[:len(tokens)] for t in pair) for pair in row["layers"])
+                return tuple(tuple(t[:covered] for t in pair) for pair in row["layers"])
         return None
 
     def clear(self):

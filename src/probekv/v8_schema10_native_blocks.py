@@ -50,6 +50,13 @@ class NativeBlockRequest:
                 self.prefix_shadow = self.shadow_provider(self.sequence.get_prompt_token_ids()[:self.cached_prefix_tokens],
                                                           self.cached_block_ids)
                 self.shadow_missing = self.prefix_shadow is None
+                if self.prefix_shadow is not None:
+                    covered_tokens = len(self.prefix_shadow[0][0])
+                    # Keep only blocks backed by the logical shadow; any
+                    # additional native computed blocks remain a dense suffix.
+                    covered_blocks = covered_tokens // self.manager.block_size
+                    if covered_blocks < len(self.cached_block_ids):
+                        self.cached_block_ids = self.cached_block_ids[:covered_blocks]
                 self.shadow_lookup_audit = {
                     "cached_prefix_tokens": self.cached_prefix_tokens,
                     "computed_block_ids": list(self.cached_block_ids),
