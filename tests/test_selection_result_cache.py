@@ -15,4 +15,11 @@ class SelectionResultCacheTest(unittest.TestCase):
         self.assertIsNone(c.get(SelectionCacheKey('t','m','tok','other','d',1,'s')))
         self.assertIsNone(c.get(SelectionCacheKey('t','m','tok','p','other',1,'s')))
 
+    def test_source_digest_and_generation_are_part_of_identity(self):
+        c = SelectionResultCache(); k = self.key()
+        c.put(SelectionCacheEntry(k, 'A', 1, .1, 'e'))
+        changed = SelectionCacheKey('t','m','tok','p','d',1,'changed')
+        self.assertIsNone(c.get(changed))
+        self.assertIsNone(c.get(self.key(2)))
+
 if __name__ == '__main__': unittest.main()
