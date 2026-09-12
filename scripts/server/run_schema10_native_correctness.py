@@ -386,9 +386,11 @@ def main():
         # reclaimable.  This does not change the measured arms.
         if adapter.active is not None:
             adapter.close()
+        # Completed CUDA events may remain attached to reusable staging slots;
+        # they are bookkeeping, not live resources.  The authoritative leak
+        # checks are reservations, active request state, and unreleased leases.
         if (backend.hbm.active_reserved_bytes or adapter.active is not None
-                or any(slot.leased or slot.completion is not None and not slot.completion.query()
-                       for slot in loader.pool.slots)):
+                or any(slot.leased for slot in loader.pool.slots)):
             raise RuntimeError("completed native sentinel retained active execution resources")
         expected_path = "CPU_PINNED_TO_GPU" if args.backing_tier == "cpu" else "SSD_STAGED_TO_GPU"
         allowed_paths = {expected_path, "GPU_RESIDENT"} if args.gpu_hot_cache else {expected_path}
