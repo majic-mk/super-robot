@@ -278,7 +278,14 @@ class TensorFileSourceStore:
             states = self._read(self.objects[source_id], selection=True)
             if completed_depth not in states:
                 raise KeyError("SelectionState unavailable; full-KV fallback is prohibited")
-            return states[completed_depth].clone()
+            # SelectionState is an immutable, read-only backing object.  Do
+            # not clone it on every request: cloning a pinned CPU tensor
+            # produces pageable memory and turns the subsequent non-blocking
+            # H2D into a synchronising copy (the dominant selection prefix
+            # overhead).  Callers only consume the tensor for comparison;
+            # publication/migration creates its own defensive copies.
+            tensor = states[completed_depth]
+            return tensor.detach()
 
     def promote_request_use(self, source_id, *, record_request_use=True):
         with self.pool.mutation_lock:
