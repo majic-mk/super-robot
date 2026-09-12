@@ -178,10 +178,18 @@ class ProfiledJointTimelineEstimator:
             for sid in sorted(self.shape.positions_by_segment,
                               key=lambda s: (self.shape.positions_by_segment[s], s)):
                 source = self.shape.source_state_by_segment.get(sid, {})
-                physical = {key: source[key] for key in (
+                is_reuse = sid in context.reuse_segment_ids or sid in context.committed_segment_ids
+                # Physical source state is part of the execution shape only
+                # when this Segment actually executes reuse.  A dense
+                # counterfactual has no source replica and must match the
+                # measured dense row with an empty physical object; carrying
+                # stale ready/copy fields here made FinalCommit's dense
+                # marginal query spuriously UNSUPPORTED.
+                physical = ({key: source[key] for key in (
                     "tier", "bytes", "ready_layers", "copy_in_flight", "layout",
                     "copy_stream_load", "scheduler_blocking_state", "repair_metric") if key in source}
-                if sid in context.reuse_segment_ids or sid in context.committed_segment_ids:
+                    if is_reuse else {})
+                if is_reuse:
                     if not {"tier", "bytes", "ready_layers", "layout"} <= physical.keys():
                         raise UnsupportedTimelineCost("missing source execution-shape fields")
                 segments.append({"positions": self.shape.positions_by_segment[sid],
