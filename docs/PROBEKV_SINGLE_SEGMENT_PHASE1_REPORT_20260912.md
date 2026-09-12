@@ -203,3 +203,15 @@ remain **unproven**. Before any multi-Segment or Profile work, the next
 experiment must collect a real cost-probe row for the live selected
 completed-depth, repair-mask, ready-layer shape (or deliberately keep the
 unsupported dense fallback as the documented boundary).
+
+## Repeated live-pool replay diagnostic (2026-09-12)
+
+Using commit `d502f567f084a30476c75ce293fa2ce284d9880f`, a 640-token Mistral
+request was replayed with `--no-restore` so the same live Source Pool/runtime
+was retained. The recorded replay remained `dense`: actual TTFT was 121.605 ms
+versus a matched dense reference of 57.996 ms; predicted total was 118.864 ms
+and no Source Variant was committed. This is valid real-CUDA evidence, not a
+runtime failure. It shows that keeping the pool resident alone does not
+amortize the current per-request selection/planning path; an exact, snapshot-
+validated selection-result cache (with FinalCommit still evaluated per request)
+is the next safe optimization candidate.
