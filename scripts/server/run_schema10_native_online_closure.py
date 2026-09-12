@@ -231,6 +231,8 @@ def main():
     parser.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
                         default="legacy_multicheckpoint",
                         help="Source-selection dispatch; legacy is the default")
+    parser.add_argument("--no-restore", action="store_true",
+                        help="keep one live Pool/runtime across replays for amortization diagnostics")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -281,7 +283,7 @@ def main():
     backend.event_log = OnlineEventLog(output / "events.jsonl", binding=event_binding)
     replay_summaries = []
     for replay in range(args.replays):
-        if replay:
+        if replay and not args.no_restore:
             backend.restore(initial)
         request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay)}
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
