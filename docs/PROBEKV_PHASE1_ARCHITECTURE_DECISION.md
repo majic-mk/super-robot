@@ -23,6 +23,14 @@ multi-Segment result, or paper performance evidence.
    returns `UNSUPPORTED` and the request executes dense. No unsupported cell is
    interpolated or assigned a zero cost.
 
+At the 640-token diagnostic, the fixed-winner post-boundary saving was
+approximately `70.634 - 45.669 = 24.965 ms`. The online policy exceeded the
+matched dense reference by approximately `54.15 ms`, giving a simple
+break-even estimate of `ceil(54.15 / 24.965) = 3` successful same-shape hits,
+before cache-maintenance costs. This is a planning estimate, not a performance
+claim; the repeated-request experiment must measure it with real wall-clock
+traces.
+
 ## Frozen architecture decisions
 
 The following components remain part of ProbeKV:
