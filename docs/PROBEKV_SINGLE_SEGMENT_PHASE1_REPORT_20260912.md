@@ -47,6 +47,16 @@ and prepared a Source, but correctly rejected final reuse because the refined
 request cost was about 90.94 ms versus a matched dense reference of about
 30.95 ms. This is an economic dense fallback, not a correctness failure.
 
+The later current-SHA closure also exercised the strict execution-shape
+lookup. Its provisional table contained a single measured boundary/readiness
+shape, while the live legacy dispatch reached a different completed depth and
+copy-readiness vector. The estimator therefore returned
+`no_exact_joint_measurement` and the request stayed dense. This is intentional:
+the cost provider does not interpolate across depth, repair masks, or
+ready-layer state, and it never substitutes a residual score or zero for an
+unsupported cell. A reuse claim requires a new real-CUDA cost probe with the
+same dispatch and execution shape.
+
 A fresh current-SHA 512-token online closure replay was run under
 `online-1bba8ed-deferred-closure-repeat-20260912-164515`. Prefix/K-hook/r=1
 prerequisites passed and the winner was prepared, but FinalCommit returned
