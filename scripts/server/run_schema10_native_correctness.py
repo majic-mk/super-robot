@@ -389,9 +389,15 @@ def main():
         # Completed CUDA events may remain attached to reusable staging slots;
         # they are bookkeeping, not live resources.  The authoritative leak
         # checks are reservations, active request state, and unreleased leases.
-        if (backend.hbm.active_reserved_bytes or adapter.active is not None
-                or any(slot.leased for slot in loader.pool.slots)):
-            raise RuntimeError("completed native sentinel retained active execution resources")
+        active_hbm = backend.hbm.active_reserved_bytes
+        active_request = adapter.active is not None
+        leased_slots = sum(1 for slot in loader.pool.slots if slot.leased)
+        pending_backend = bool(getattr(backend, "pending", False))
+        if active_hbm or active_request or leased_slots or pending_backend:
+            raise RuntimeError(
+                "completed native sentinel retained active execution resources: "
+                f"hbm={active_hbm}, active={active_request}, pending={pending_backend}, "
+                f"leased_slots={leased_slots}")
         expected_path = "CPU_PINNED_TO_GPU" if args.backing_tier == "cpu" else "SSD_STAGED_TO_GPU"
         allowed_paths = {expected_path, "GPU_RESIDENT"} if args.gpu_hot_cache else {expected_path}
         if not loader.events or any(e["path"] not in allowed_paths or e["source_id"] != source.source_variant_id
