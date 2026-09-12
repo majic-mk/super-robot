@@ -51,7 +51,7 @@ class LiveSelectionBridge:
     def source_id(fixture: Any, index: int, variant: int) -> str:
         return "s%d-v%d-%s" % (index, variant, fixture.canonical_variant_digests[index][variant][:16])
 
-    def select(self, executor: Any, engine: Any, fixture: Any) -> dict[int, int]:
+    def select(self, executor: Any, engine: Any, fixture: Any, *, cached_decisions: Mapping[str, Any] | None = None) -> dict[int, int]:
         torch = executor.torch
         inventory = tuple("c%d" % i for i in range(len(fixture.segment_positions)))
         if inventory != self.session.segment_ids:
@@ -59,6 +59,24 @@ class LiveSelectionBridge:
         if self.session.selector.checkpoint_depths not in {(1,), (1, 2)}:
             raise RuntimeError("dense-barrier adapter requires FAST dispatch; use the preserved legacy adapter for deep runtime")
         winners = {}
+        # Cached decisions are supplied only after the caller has validated
+        # SelectionCacheKey and all evidence digests.  They still enter the
+        # immutable session history; FinalCommit remains mandatory.
+        if cached_decisions:
+            for index, segment_id in enumerate(inventory):
+                decision = cached_decisions.get(segment_id)
+                if decision is None:
+                    continue
+                self.session.restore_cached_decision(
+                    segment_id, decision, evidence_digest=getattr(decision, "evidence_digest", "cached"))
+                if decision.selected_source_variant_id:
+                    variants = fixture.selection_variants[index]
+                    for variant in range(len(variants)):
+                        if self.source_id(fixture, index, variant) == decision.selected_source_variant_id:
+                            winners[index] = variant
+                            break
+            if self.session.closed:
+                return winners
         selection_started = time.perf_counter_ns()
         for depth in self.session.selector.checkpoint_depths:
             probe_start = time.perf_counter_ns()
