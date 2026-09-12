@@ -94,6 +94,9 @@ def main():
                    help="fixed-winner zero-Prefix common-mask backend equivalence; not live selector")
     p.add_argument("--repair-backend-continuation", action="store_true",
                    help="diagnose one-shot dense hidden/residual handoff; not production selector")
+    p.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
+                   default="legacy_multicheckpoint",
+                   help="Source-selection dispatch used for the diagnostic; legacy is the default")
     args = p.parse_args()
     if args.repair_backend_continuation and not args.matched_repair_backends:
         p.error("--repair-backend-continuation requires --matched-repair-backends")
@@ -202,7 +205,7 @@ def main():
     try:
         backend = create_native_measurement_backend(manifest)
         backend.reset(capacity=16, global_byte_budget=binding["global_byte_budget"])
-        adapter = backend.adapters["legacy_multicheckpoint"]
+        adapter = backend.adapters[args.selection_path]
         with adapter.open_request(requests["target"], arrival_ns=time.perf_counter_ns()) as context:
             first = []
             output = context.finish(lambda: first.append(time.perf_counter_ns()))

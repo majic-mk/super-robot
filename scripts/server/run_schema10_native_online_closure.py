@@ -228,6 +228,9 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--replays", type=int, default=1,
                         help="independent identical-state replays; preserve cold and warm results")
+    parser.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
+                        default="legacy_multicheckpoint",
+                        help="Source-selection dispatch; legacy is the default")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -256,7 +259,7 @@ def main():
     backend = create_native_backend(manifest)
     backend.reset(capacity=16, global_byte_budget=manifest["binding"]["global_byte_budget"])
     requests = manifest["diagnostic_requests"]
-    adapter = backend.adapters["legacy_multicheckpoint"]
+    adapter = backend.adapters[args.selection_path]
     capture = capture_exact_dense_source(adapter, requests["source"], "C", eager_reference=False)
     descriptor = requests["source"]["segments"][0]
     identity = SourceVariantIdentity(descriptor["content_key"],
@@ -271,7 +274,7 @@ def main():
                               arrival_ns=time.perf_counter_ns()) as context:
         context.finish(lambda: None)
     initial = backend.snapshot(retain_backing=True)
-    dispatch = {"selection_path": "legacy_multicheckpoint", "gate1_mode": "explicit_barrier",
+    dispatch = {"selection_path": args.selection_path, "gate1_mode": "explicit_barrier",
                 "selection_budget_policy": "end_to_end_aware"}
     event_binding = {**manifest["binding"], "dispatch": digest_json(dispatch),
                      "initial_state_sha256": digest_json(initial), "job_id": "mistral-online-closure"}
