@@ -60,7 +60,15 @@ def summarize_hardware_overlap(trace):
     # layer association by deterministic transfer order.  This is deliberately
     # conservative: ambiguous counts remain unavailable rather than being
     # guessed.
-    expected_h2d_count = 2 * len({r["layer"] for r in kernels}) if kernels else 0
+    # Only layers explicitly marked as pending-copy are expected in this
+    # diagnostic.  With a windowed loader the first layer(s) can already be
+    # resident and therefore intentionally produce no H2D activity; deriving
+    # the count from every compute layer would falsely mark such traces as
+    # incomplete (e.g. window=1 has 31 pending layers, not 32).
+    marked_copy_layers = {int(r["name"].rsplit(".", 1)[1]) for r in ranges
+                          if ".copy_layer." in r.get("name", "")}
+    expected_h2d_count = (2 * len(marked_copy_layers) if marked_copy_layers
+                          else (2 * len({r["layer"] for r in kernels}) if kernels else 0))
     large_h2d = []
     for event in events:
         if event.get("cat") != "gpu_memcpy" or "htod" not in event.get("name", "").lower():
@@ -78,7 +86,7 @@ def summarize_hardware_overlap(trace):
     attribution_complete = expected_h2d_count == len(copies) if expected_h2d_count else bool(copies)
     if kernels and len(copies) != expected_h2d_count and len(large_h2d) == expected_h2d_count:
         copies = []
-        compute_layers = sorted({r["layer"] for r in kernels})
+        compute_layers = sorted(marked_copy_layers or {r["layer"] for r in kernels})
         for index, (event, args) in enumerate(large_h2d):
             copies.append({"layer": compute_layers[index // 2], "start_us": event["ts"],
                            "end_us": event["ts"] + event["dur"],
@@ -86,7 +94,7 @@ def summarize_hardware_overlap(trace):
                            "name": event.get("name", "")})
         attribution_complete = True
     elif not copies and kernels:
-        compute_layers = sorted({r["layer"] for r in kernels})
+        compute_layers = sorted(marked_copy_layers or {r["layer"] for r in kernels})
         unowned = []
         for event in events:
             if event.get("cat") != "gpu_memcpy" or "htod" not in event.get("name", "").lower():

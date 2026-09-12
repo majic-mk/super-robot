@@ -55,9 +55,9 @@ class HardwareOverlapTests(unittest.TestCase):
             summarize_hardware_overlap(t)
 
     def test_partial_copy_attribution_is_explicit(self):
-        # Two compute layers imply four BF16 K/V transfers.  Supplying only
-        # one correlated transfer must not make the parser silently relabel
-        # it as another layer.
+        # Only the explicitly marked pending-copy layer contributes an
+        # expectation.  Supplying one of its two K/V transfers must still be
+        # reported as incomplete, without silently relabelling another layer.
         events = [
             event("user_annotation", "probekv.compute_layer.1", 0, 10),
             event("cpu_op", "compute", 0, 1, 11),
@@ -71,4 +71,4 @@ class HardwareOverlapTests(unittest.TestCase):
         ]
         result = summarize_hardware_overlap({"traceEvents": events})
         self.assertFalse(result["layer_attribution_complete"])
-        self.assertEqual(result["expected_h2d_activity_count"], 4)
+        self.assertEqual(result["expected_h2d_activity_count"], 2)
