@@ -249,6 +249,16 @@ def main():
     base, costs = build_cost_table(args.correctness_root, cost_path)
     if base["binding"]["code_commit"] != code:
         raise ValueError("cost probe belongs to another code revision")
+    from probekv.cacheblend_patch import validate_native_patch_audit
+    native_evidence = base["native_runtime"]
+    patch_path = Path(native_evidence["patch_audit_path"])
+    if file_digest(patch_path) != native_evidence["patch_audit_sha256"]:
+        raise ValueError("cost probe patch audit digest differs")
+    patch = json.loads(patch_path.read_text())
+    validate_native_patch_audit(patch, repo / "patches/cacheblend/manifest.json",
+                                deferred_timing=base.get("defer_layer_timing", False))
+    if patch["cacheblend_patch_sha256"] != base["binding"]["patch_sha256"]:
+        raise ValueError("cost probe patch provenance differs")
     cost_sha = file_digest(cost_path)
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,

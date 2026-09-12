@@ -388,15 +388,19 @@ class Schema10OnlineExperimentBackend:
             if len(selection.decisions) + len(set(selection_failures) - set(selection.decisions)) == len(segments):
                 break
         context.finish_selection(frozen, prepared)
+        selection_closed_ns = time.perf_counter_ns()
         # Adapter provides actual winner repair supports/ready boundaries, not selector trim rows.
         ready_started_ns = time.perf_counter_ns()
         ready_boundaries, union_digest = context.ready_for_final_commit(prepared)
         ready_finished_ns = time.perf_counter_ns()
         runtime_events.append({"kind": "online_timing_landmarks", "arrival_ns": arrival_ns,
             "context_opened_ns": getattr(context, "online_context_opened_ns", None),
-            "selection_closed_ns": time.perf_counter_ns(),
+            "selection_closed_ns": selection_closed_ns,
             "selection_intervals": list(ledger.intervals) if hasattr(ledger, "intervals") else None,
             "preparation_intervals": preparation_intervals,
+            "ready_for_final_commit_start_ns": ready_started_ns,
+            "ready_for_final_commit_end_ns": ready_finished_ns,
+            "timing_semantics": "host_wall_intervals_not_additive_cuda_service_times",
             "ready_for_final_commit_ms": (ready_finished_ns - ready_started_ns) / 1e6})
         accepted = ()
         final_total = None

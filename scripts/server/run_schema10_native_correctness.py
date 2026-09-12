@@ -118,6 +118,9 @@ def main():
         raise RuntimeError("correctness needs a clean tracked checkout")
     audit_path, patch_path = Path(args.model_audit).resolve(), Path(args.patch_audit).resolve()
     audit, patch = json.loads(audit_path.read_text()), json.loads(patch_path.read_text())
+    from probekv.cacheblend_patch import validate_native_patch_audit
+    validate_native_patch_audit(patch, repo / "patches/cacheblend/manifest.json",
+                                deferred_timing=args.defer_layer_timing)
     if not audit.get("complete") or not audit.get("files") or not audit.get("tokenizer_assets_sha256"):
         raise ValueError("complete current model asset audit required")
     spec = SCHEMA6_MODEL_SPECS[audit["model_id"]]
@@ -170,6 +173,7 @@ def main():
         "runtime_compatibility": digest_json([patch_sha, spec.adapter_name, "bf16-pre-rope-v1", numerical_policy])}
     runtime = {"model_path": audit["snapshot_path"], "model_key": audit["model_id"],
         "model_audit_path": str(audit_path), "model_audit_sha256": file_digest(audit_path),
+        "patch_audit_path": str(patch_path), "patch_audit_sha256": file_digest(patch_path),
         "source_provenance": provenance, "cost_provenance": {"model": model, "code": sha,
             "patch": patch_sha, "gpu": gpu, "config": config_sha, "timing_scope": "diagnostic_prequalification",
             "profile_binding_kind": "preregistered_measurement_plan", "measurement_plan_sha256": plan_sha,

@@ -254,3 +254,46 @@ def combined_patch_sha256(paths: Sequence[Path]) -> str:
     for path in paths:
         digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+DEFERRED_TIMING_PATCH = "0013-probekv-deferred-layer-timing.patch"
+
+
+def native_patch_files(manifest_path: Path, mode: str, extra_patches=()) -> Tuple[Path, ...]:
+    """Resolve an ordered, auditable opt-in patchset without rewriting history."""
+    extras = tuple(extra_patches)
+    if extras not in ((), (DEFERRED_TIMING_PATCH,)):
+        raise ValueError("unsupported or duplicate optional native patches")
+    if extras and mode != "probekv_v8_variant_growth_counterfactual":
+        raise ValueError("deferred timing is only supported by the native schema10 patchset")
+    paths = patch_files_for_mode(manifest_path, mode)
+    for name in extras:
+        path = manifest_path.parent / name
+        validate_unified_diff(path)
+        paths += (path,)
+    return paths
+
+
+def validate_native_patch_audit(audit, manifest_path: Path, *, deferred_timing=False):
+    """Reject hand-edited tree-only attestations and stale combined patch hashes.
+
+    The verifier must separately reconstruct the expected tree from the base.
+    This validator binds the consumer to that complete, explicitly listed chain.
+    It does not itself assert numerical correctness or performance readiness.
+    """
+    mode = "probekv_v8_variant_growth_counterfactual"
+    if audit.get("patch_mode") != mode:
+        raise ValueError("native patch audit mode differs")
+    paths = native_patch_files(manifest_path, mode, audit.get("extra_patches", ()))
+    if audit.get("patches") != [p.name for p in paths]:
+        raise ValueError("native audit does not list the complete ordered patchset")
+    if audit.get("cacheblend_patch_sha256") != combined_patch_sha256(paths):
+        raise ValueError("native audit combined patch digest differs")
+    if audit.get("cacheblend_commit") != load_patch_manifest(manifest_path)["base_commit"]:
+        raise ValueError("native audit base commit differs")
+    if (audit.get("verification_method") != "independent_clean_clone_ordered_patchset"
+            or audit.get("expected_cacheblend_tree") != audit.get("cacheblend_tree")
+            or not re.fullmatch(r"[0-9a-f]{40}", str(audit.get("cacheblend_tree", "")))):
+        raise ValueError("native audit lacks independently rebuilt expected-tree evidence")
+    if deferred_timing and DEFERRED_TIMING_PATCH not in audit["patches"]:
+        raise ValueError("deferred timing requires its independently audited patch")

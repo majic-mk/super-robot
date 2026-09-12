@@ -112,10 +112,15 @@ class PhysicalStorageTests(unittest.TestCase):
         store = PrefixShadowStore(model_signature="m", num_layers=1, kv_heads=1, head_dim=1, capacity_bytes=16)
         kv = ((torch.zeros((4,1,1), dtype=torch.bfloat16), torch.ones((4,1,1), dtype=torch.bfloat16)),)
         self.assertTrue(store.publish([1,2,3,4], kv, origin="exact_dense_full_prefill"))
-        req = NS(cached_block_ids=(99, 100), cached_prefix_tokens=4,
+        req = NS(manager=NS(block_size=2), cached_block_ids=(99, 100), cached_prefix_tokens=4,
                  sequence=NS(get_prompt_token_ids=lambda: [1,2,3,4]), closed=False, allocated=True)
         got = store.lookup([1,2,3,4], (99, 100), native_request=req)
         self.assertEqual(tuple(got[0][0].shape), (4,1,1))
+        with self.assertRaises(RuntimeError):
+            store.lookup([1,2,3,4], (199, 200), native_request=req)
+        del req.manager
+        with self.assertRaisesRegex(RuntimeError, "explicit native block allocator"):
+            store.lookup([1,2,3,4], (99, 100), native_request=req)
 
     def test_retained_prefix_shadows_remain_in_the_same_host_budget(self):
         store = PrefixShadowStore(model_signature="m", num_layers=1, kv_heads=1, head_dim=1, capacity_bytes=16)

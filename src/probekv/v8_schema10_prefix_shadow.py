@@ -66,12 +66,9 @@ class PrefixShadowStore:
     def lookup(self, token_ids, block_ids, *, native_request):
         tokens = tuple(token_ids)
         manager = getattr(native_request, "manager", None)
-        block_size = getattr(manager, "block_size", 16)
-        # Lightweight contract fixtures do not model the native allocator;
-        # they intentionally exercise logical shadow reuse with reallocated
-        # physical ids.  Real requests always carry a manager and therefore
-        # take the strict lease/id validation below.
-        has_native_allocator = manager is not None
+        block_size = getattr(manager, "block_size", None)
+        if not isinstance(block_size, int) or isinstance(block_size, bool) or block_size <= 0:
+            raise RuntimeError("Prefix shadow requires an explicit native block allocator")
         # Block ids are physical references allocated per request and must not
         # be compared with ids from the request that produced this logical
         # shadow.  The native request has already validated its current lease;
@@ -80,8 +77,8 @@ class PrefixShadowStore:
         if (not native_request.cached_block_ids
                 or len(tokens) > native_request.cached_prefix_tokens
                 or len(tokens) == 0
-                or (has_native_allocator and len(tokens) % block_size != 0)
-                or (has_native_allocator and tuple(block_ids) != tuple(native_request.cached_block_ids[:len(tokens) // block_size]))
+                or len(tokens) % block_size != 0
+                or tuple(block_ids) != tuple(native_request.cached_block_ids[:len(tokens) // block_size])
                 or tuple(native_request.sequence.get_prompt_token_ids()[:len(tokens)]) != tokens
                 or native_request.closed or not native_request.allocated):
             raise RuntimeError("stale native block lease for Prefix shadow")

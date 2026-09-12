@@ -13,6 +13,8 @@ from probekv.cacheblend_patch import (
     combined_patch_sha256,
     load_patch_manifest,
     patch_files_for_mode,
+    native_patch_files,
+    DEFERRED_TIMING_PATCH,
 )
 from probekv.io import atomic_write_json
 
@@ -57,6 +59,9 @@ def main() -> int:
         ),
     )
     parser.add_argument("--manifest")
+    parser.add_argument("--extra-patch", action="append", default=[],
+                        choices=(DEFERRED_TIMING_PATCH,),
+                        help="explicit optional patch, independently rebuilt after the base patchset")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -71,7 +76,7 @@ def main() -> int:
     actual_commit = _git(cacheblend, "rev-parse", "HEAD")
     if actual_commit != manifest["base_commit"]:
         raise RuntimeError("CacheBlend base commit mismatch")
-    patch_paths = patch_files_for_mode(manifest_path, args.mode)
+    patch_paths = native_patch_files(manifest_path, args.mode, args.extra_patch)
     subprocess.check_call(["git", "-C", str(cacheblend), "diff", "--check"])
     with tempfile.TemporaryDirectory(prefix="probekv-cacheblend-verify-") as root:
         root_path = Path(root)
@@ -141,6 +146,9 @@ def main() -> int:
         "patches": [path.name for path in patch_paths],
         "cacheblend_patch_sha256": combined_patch_sha256(patch_paths),
         "cacheblend_tree": tree,
+        "expected_cacheblend_tree": expected_tree,
+        "extra_patches": args.extra_patch,
+        "verification_method": "independent_clean_clone_ordered_patchset",
         "innovation_claim": False,
     }
     atomic_write_json(Path(args.output).resolve(), payload)

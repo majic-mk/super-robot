@@ -10,6 +10,26 @@
 
 ## 1. 输入、证据边界与结论
 
+### 2026-09-13 执行状态纠偏（不改变第14.10节实验顺序）
+
+- `native-de71f35-overlap-defer-v23` 中 CUPTI 活动观察到约2.643 ms H2D/kernel overlap，
+  但其 patch audit 被直接替换了tree字段且仍携带旧8-patch摘要；它及派生v24–v29
+  **仅保留诊断线索，不得解锁执行/性能资格**。后续需从base独立重建完整12+0013链，
+  绑定完整patch摘要后使用新目录重测。既有文件不覆盖、不修饰成通过。
+- `native-f09fc54-cost-v28` 的 `defer_layer_timing=false`，不是deferred路径复测；
+  对应v29约40.7 ms是请求到ready检查后的墙钟区间，包含初始化、probe、比较、准备和
+  repair-check，不能全部归因于Source ranking。FinalCommit报告的是**剪枝后的dense路径**
+  费用，也不能称为候选reuse的预测成本。
+- 热请求由106 ms到85 ms的单次变化不能单独证明GPU hot replica命中或摊销；需核验
+  实际resident layers、request-attributed H2D bytes和相同热身状态。
+- 当前单Source正确性fixture会在d=1直接锁定。legacy/d1d2名称不同并不意味着实际
+  执行深度不同，比较前必须检查真实checkpoint audit。此fixture不能验证多Source排序收益。
+- 已知winner控制已经包含在`fixed15_source`成本臂中；`fixed15_all_ready`是等待CPU
+  copy完成，不等同于请求到达前GPU-resident。后者必须单独核验无H2D，不重复实现强制
+  Source生产旁路。所有这些synthetic controls只用于诊断，不代替真实QA与Source价值矩阵。
+- SparseX/QCFuse仍按14.7/14.10的独立候选约束，尚无生产/GPU收益证据。下一里程碑
+  是可信的单Segment端点和Source×ratio/QA矩阵，不无限重复同一个全dense合成请求。
+
 按用户要求先读文本，再读 PDF 全部 32 页，并对公式和关键页面做视觉核对。
 
 | 输入 | SHA256 |
