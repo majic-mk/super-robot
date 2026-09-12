@@ -816,15 +816,6 @@ class CacheBlendV6OnlineEngine:
             torch = self.source_loader.torch
             compute_start = torch.cuda.Event(enable_timing=True)
             compute_end = torch.cuda.Event(enable_timing=True)
-            # Bounded producer/consumer pipeline: submit only future winner
-            # layers before launching this block.  The consumer-side
-            # _install_ready_source_rows() inserts a CUDA event dependency if
-            # the current layer is not ready, while the bounded window keeps
-            # preparation from running arbitrarily ahead.
-            for ticket in self.tickets.values():
-                if ticket.pending_layers:
-                    self.source_loader.prefetch_pending(
-                        ticket, next_layer + max(1, self.prefetch_window))
             with self._component("source_rows_install"):
                 self._install_ready_source_rows(next_layer)
             # Record the launch boundary after current-layer source rows have
@@ -837,6 +828,12 @@ class CacheBlendV6OnlineEngine:
                 self.session.advance_to_layer(next_layer)
             compute_end.record(torch.cuda.current_stream())
             self._compute_events[next_layer] = (compute_start, compute_end)
+            # Enqueue future H2D only after current compute has been queued;
+            # otherwise the copy stream drains eagerly and cannot overlap.
+            for ticket in self.tickets.values():
+                if ticket.pending_layers:
+                    self.source_loader.prefetch_pending(
+                        ticket, next_layer + max(1, self.prefetch_window))
 
     def overlap_trace(self) -> list[dict]:
         rows = []
