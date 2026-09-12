@@ -5,6 +5,8 @@ FinalCommit, replica leasing, or cost support checks.
 """
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+import hashlib
+import json
 
 @dataclass(frozen=True)
 class SelectionCacheKey:
@@ -70,3 +72,8 @@ class SelectionResultCache:
         return SelectionCacheKey(token_digest, model_signature, tokenizer_hash,
                                  prefix_digest, dispatch, int(pool_generation),
                                  source_state_digest)
+
+    @staticmethod
+    def digest_key(key: SelectionCacheKey) -> str:
+        payload = json.dumps(key.__dict__, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()

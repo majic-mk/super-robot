@@ -27,4 +27,7 @@ class SelectionResultCacheTest(unittest.TestCase):
         self.assertTrue(e.admissible_for(candidate_set_digest='c', gate1_evidence_digest='g', repair_support_digest='r', planner_snapshot_digest='p'))
         self.assertFalse(e.admissible_for(candidate_set_digest='changed', gate1_evidence_digest='g', repair_support_digest='r', planner_snapshot_digest='p'))
 
+    def test_key_digest_is_canonical(self):
+        c = SelectionResultCache(); self.assertEqual(c.digest_key(self.key()), c.digest_key(self.key()))
+
 if __name__ == '__main__': unittest.main()
