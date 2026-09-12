@@ -79,6 +79,17 @@ so it correctly returned `UNSUPPORTED` rather than treating an all-ready row
 as equivalent. These two runs establish both supported-cost rejection and
 strict fail-closed behavior for an unsupported readiness shape.
 
+To isolate selection depth, a d1-only single-Segment run was executed under
+`native-78362a-d1-costshape-128` and
+`online-78362a-d1-costshape-closure`. Both exact joint queries were
+SUPPORTED, and Prefix/K-hook/r=1 correctness passed. The final predicted
+request total was 112.947 ms against a matched dense reference of 47.682 ms,
+so FinalCommit rejected reuse (`refined_marginal_pruned`). Reducing the
+selection path from legacy checkpoints to d1 therefore did not produce a
+positive single-request commit in this shape; the dominant issue is the
+request-level selection/preparation overhead relative to a short dense
+remainder, not only the number of checkpoint comparisons.
+
 After adding an exact partial-ready observation to the cost-table builder, a
 new 128-token revalidation was run under
 `online-5015d3f-costshape-closure`. The query audit contains one supported
