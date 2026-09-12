@@ -73,10 +73,14 @@ class LiveSelectionBridge:
                 self.session.restore_cached_decision(segment_id, decision, evidence_digest=evidence_digest)
                 if decision.selected_source_variant_id:
                     variants = fixture.selection_variants[index]
+                    found = False
                     for variant in range(len(variants)):
                         if self.source_id(fixture, index, variant) == decision.selected_source_variant_id:
                             winners[index] = variant
+                            found = True
                             break
+                    if not found:
+                        raise ValueError("cached decision Source is absent from current pool")
             if self.session.closed:
                 return winners
         selection_started = time.perf_counter_ns()

@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Mapping, Sequence
 
 from .v8_contracts import CandidateCounts, ResidualCandidate
@@ -176,9 +176,10 @@ class ProductionSelectionSession:
             raise ValueError("cached decision requires evidence digest")
         self.last_depth[segment_id] = int(decision.completed_depth)
         self.decisions[segment_id] = decision
+        decision_payload = asdict(decision) if is_dataclass(decision) else dict(vars(decision)) if hasattr(decision, "__dict__") else dict(decision)
         event = {"request_id": self.request_id, "segment_id": segment_id,
                  "completed_depth": int(decision.completed_depth),
-                 "decision": asdict(decision), "source": "selection_result_cache",
+                 "decision": decision_payload, "source": "selection_result_cache",
                  "evidence_digest": evidence_digest}
         event["event_id"] = digest_json(event)
         self.events.append(event)
