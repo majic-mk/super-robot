@@ -88,3 +88,27 @@ following is demonstrated with real CUDA timing and matched dense baselines:
 
 All failures, unsupported queries and dense fallbacks remain valid evidence
 and must be preserved.
+
+## Hot-cache ownership correction (2026-09-12)
+
+The 64 MiB terminal reservation failure was an adapter-ownership mismatch:
+`execute_fixed_source_arm` retained the winner in the legacy adapter, while
+the d1-only sentinel cleared the FAST adapter's separate hot-cache dictionary.
+Process-exit GPU memory reclamation did not prove in-process cleanup correct.
+The earlier blanket reservation release and removal of unfinished-event checks
+were not valid fixes and have been removed.
+
+Commit `b6b8d52011dd60cfc5e065159fdb301ad1553126` fences all diagnostic
+adapters, releases only their explicitly owned hot reservations, preserves
+unknown reservations for leak detection, and rejects active/pending requests.
+Local regression: 842 tests run, 841 passed, 1 skipped.
+
+Server 15695 run `/root/autodl-tmp/probekv_stage2/artifacts/native-b6b8d52-hotcache`
+exited 0 with native Prefix/K-hook/r1 and matched cost probe passing.
+`transfer.json` reports zero active HBM reservations; the GPU-hot r1 report
+has 32 logit positions and relative-L2 0.0. These are diagnostic correctness
+results, not production commit or QA/performance qualification.
+The independent online process cannot inherit this process's GPU-resident
+tensors; its use of these cost files alone must not be called a hot-cache hit.
+Formal Profile, GPU qualification, online trace permission and paper evidence
+remain false in this sentinel result.
