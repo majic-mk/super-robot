@@ -161,6 +161,29 @@ class ProductionSelectionSession:
             self.decisions[segment_id] = decision
         return decision
 
+    def restore_cached_decision(self, segment_id: str, decision: Any, *,
+                                evidence_digest: str) -> Any:
+        """Restore a previously audited terminal decision without re-probing.
+
+        Callers must validate the cache key and evidence digests first.  This
+        method records an explicit event and never performs economic admission.
+        """
+        if segment_id not in self.segment_ids or segment_id in self.decisions:
+            raise ValueError("invalid cached decision target")
+        if getattr(decision, "state", None) not in {"decision_ready", "abstained"}:
+            raise ValueError("cached decision must be terminal")
+        if not evidence_digest:
+            raise ValueError("cached decision requires evidence digest")
+        self.last_depth[segment_id] = int(decision.completed_depth)
+        self.decisions[segment_id] = decision
+        event = {"request_id": self.request_id, "segment_id": segment_id,
+                 "completed_depth": int(decision.completed_depth),
+                 "decision": asdict(decision), "source": "selection_result_cache",
+                 "evidence_digest": evidence_digest}
+        event["event_id"] = digest_json(event)
+        self.events.append(event)
+        return decision
+
     @property
     def closed(self) -> bool:
         return len(self.decisions) == len(self.segment_ids)
