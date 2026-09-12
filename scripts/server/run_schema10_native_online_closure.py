@@ -233,6 +233,8 @@ def main():
                         help="Source-selection dispatch; legacy is the default")
     parser.add_argument("--no-restore", action="store_true",
                         help="keep one live Pool/runtime across replays for amortization diagnostics")
+    parser.add_argument("--gpu-hot-cache", action="store_true",
+                        help="retain the winner GPU replica across the online replay (diagnostic only)")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -285,7 +287,9 @@ def main():
     for replay in range(args.replays):
         if replay and not args.no_restore:
             backend.restore(initial)
-        request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay)}
+        request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay),
+                   "use_gpu_hot_cache": bool(args.gpu_hot_cache),
+                   "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
         backend.finalize_request(request, outcome)
         atomic_json(output / ("outcome-%02d.json" % replay), outcome)
