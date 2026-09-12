@@ -59,7 +59,14 @@ class NativeBlockRequest:
                         break
                 self.shadow_missing = self.prefix_shadow is None
                 if self.prefix_shadow is not None:
-                    covered_tokens = len(self.prefix_shadow[0][0])
+                    # Production shadows are a tuple of layer K/V pairs;
+                    # lightweight providers may return a mapping carrying
+                    # the logical token prefix.  Keep the adapter boundary
+                    # tolerant without weakening lease validation.
+                    if isinstance(self.prefix_shadow, dict) and "tokens" in self.prefix_shadow:
+                        covered_tokens = len(self.prefix_shadow["tokens"])
+                    else:
+                        covered_tokens = len(self.prefix_shadow[0][0])
                     # Keep only blocks backed by the logical shadow; any
                     # additional native computed blocks remain a dense suffix.
                     covered_blocks = covered_tokens // self.manager.block_size

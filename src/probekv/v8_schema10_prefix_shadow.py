@@ -71,7 +71,10 @@ class PrefixShadowStore:
         # here we validate only that lease is live and its token boundary and
         # content agree with the shadow lookup.
         if (not native_request.cached_block_ids
-                or len(tokens) != native_request.cached_prefix_tokens
+                or len(tokens) > native_request.cached_prefix_tokens
+                or len(tokens) == 0
+                or len(tokens) % native_request.manager.block_size != 0
+                or tuple(block_ids) != tuple(native_request.cached_block_ids[:len(tokens) // native_request.manager.block_size])
                 or tuple(native_request.sequence.get_prompt_token_ids()[:len(tokens)]) != tokens
                 or native_request.closed or not native_request.allocated):
             raise RuntimeError("stale native block lease for Prefix shadow")
@@ -79,8 +82,8 @@ class PrefixShadowStore:
             # A longer native computed prefix may contain a shorter logical
             # shadow.  Return the longest complete-block covered prefix; the
             # caller will execute the uncovered suffix densely.
-            covered = min(len(tokens), len(row["tokens"]))
-            if row["tokens"][:covered] == tokens[:covered] and covered >= 1:
+            covered = len(tokens)
+            if len(row["tokens"]) >= covered and row["tokens"][:covered] == tokens:
                 self.entries.move_to_end(key)
                 # Context takes its own GPU working copy under HBM reservation.
                 return tuple(tuple(t[:covered] for t in pair) for pair in row["layers"])

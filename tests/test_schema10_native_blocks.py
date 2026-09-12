@@ -71,4 +71,22 @@ class NativeBlocks(unittest.TestCase):
                 pass
         self.assertEqual(manager.block_tables, {})
 
+    def test_shorter_shadow_prefix_is_lease_checked(self):
+        manager, lease, calls = self.lease()
+        seen = []
+        lease.shadow_provider = lambda tokens, blocks: (seen.append((len(tokens), tuple(blocks))) or
+            {"tokens": tokens, "blocks": blocks} if len(tokens) == 16 else None)
+        with lease:
+            self.assertEqual(lease.cached_prefix_tokens, 16)
+        self.assertEqual(seen, [(16, (41,))])
+
+    def test_shadow_provider_rejects_block_ids_not_owned_by_current_request(self):
+        manager, lease, _ = self.lease()
+        lease.shadow_provider = lambda tokens, blocks: (_ for _ in ()).throw(
+            RuntimeError("stale native block lease for Prefix shadow"))
+        with self.assertRaises(RuntimeError):
+            with lease:
+                pass
+        self.assertTrue(manager.freed)
+
 if __name__ == "__main__": unittest.main()
