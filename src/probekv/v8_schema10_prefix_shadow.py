@@ -65,7 +65,12 @@ class PrefixShadowStore:
 
     def lookup(self, token_ids, block_ids, *, native_request):
         tokens = tuple(token_ids)
-        if (tuple(block_ids) != native_request.cached_block_ids
+        # Block ids are physical references allocated per request and must not
+        # be compared with ids from the request that produced this logical
+        # shadow.  The native request has already validated its current lease;
+        # here we validate only that lease is live and its token boundary and
+        # content agree with the shadow lookup.
+        if (not native_request.cached_block_ids
                 or len(tokens) != native_request.cached_prefix_tokens
                 or tuple(native_request.sequence.get_prompt_token_ids()[:len(tokens)]) != tokens
                 or native_request.closed or not native_request.allocated):
