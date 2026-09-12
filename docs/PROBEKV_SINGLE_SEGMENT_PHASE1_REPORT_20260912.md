@@ -9,7 +9,7 @@ qualification run, H1/H2 result, or paper evidence.
 
 ## Code and environment binding
 
-- Local development commit: `6499c82318fe73e202bc482102928d3a5c164c51`.
+- Local development commit used by the latest trace: `1bba8ed5e55fe6e550bee552de8c6c0d1c488d0e`.
 - Server checkout used for the latest run: `/root/autodl-tmp/probekv_stage2/checkout-f15ddf5`.
 - GPU: NVIDIA A800-SXM4-80GB, UUID `GPU-65efeff4-8f05-07b6-ecfa-3a19adf29493`.
 - Model: Mistral audit `model_audit_mistral_f15ddf5.json`.
