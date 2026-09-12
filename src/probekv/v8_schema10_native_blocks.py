@@ -47,8 +47,16 @@ class NativeBlockRequest:
             if table[:len(self.cached_block_ids)] != self.cached_block_ids:
                 raise RuntimeError("computed native blocks are not an exact prefix")
             if self.cached_prefix_tokens:
-                self.prefix_shadow = self.shadow_provider(self.sequence.get_prompt_token_ids()[:self.cached_prefix_tokens],
-                                                          self.cached_block_ids)
+                prompt = self.sequence.get_prompt_token_ids()
+                # Try the full computed prefix first, then progressively
+                # shorter complete-block prefixes.  A logical shadow may be
+                # shorter than native computed blocks; the uncovered suffix
+                # must remain dense rather than invalidating the request.
+                for covered in range(self.cached_prefix_tokens, 0, -self.manager.block_size):
+                    shadow = self.shadow_provider(prompt[:covered], self.cached_block_ids[:covered // self.manager.block_size])
+                    if shadow is not None:
+                        self.prefix_shadow = shadow
+                        break
                 self.shadow_missing = self.prefix_shadow is None
                 if self.prefix_shadow is not None:
                     covered_tokens = len(self.prefix_shadow[0][0])
