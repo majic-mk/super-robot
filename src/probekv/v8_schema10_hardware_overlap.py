@@ -69,7 +69,9 @@ def summarize_hardware_overlap(trace):
             args = event.get("args", {})
             if args.get("device") is None or args.get("stream") is None:
                 continue
-            if int(args.get("bytes", 0) or 0) <= 0:
+            # The layerwise BF16 K/V copies are the large transfers; tiny
+            # allocator/setup H2D events must not participate in attribution.
+            if int(args.get("bytes", 0) or 0) < 1_000_000:
                 continue
             unowned.append((event, args))
         if len(unowned) == 2 * len(compute_layers):
