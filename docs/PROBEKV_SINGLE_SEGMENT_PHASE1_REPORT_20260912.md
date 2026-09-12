@@ -47,7 +47,24 @@ request cost was about 90.94 ms versus a matched dense reference of about
 
 ## Overlap evidence
 
-The current `6499c82` window-4 trace reports:
+The current-SHA deferred window-1 trace is stored under
+`native-1bba8ed-deferred-window1` on the server and reports:
+
+```text
+hardware_copy_kernel_overlap_observed = true
+copy_kernel_overlap_union_ms = 0.768
+h2d_union_ms = 0.853
+kernel_union_ms = 19.691
+layer_attribution_complete = true
+expected_h2d_activity_count = 62
+```
+
+The 62 expected transfers are correct for window=1: layer 1 is initially
+resident and layers 2--32 are the marked pending-copy set. The trace is
+complete and provides current-SHA, correlated CUPTI evidence of real
+load/compute overlap.
+
+The earlier `6499c82` window-4 trace reported:
 
 ```text
 hardware_copy_kernel_overlap_observed = false
@@ -71,17 +88,16 @@ real overlap:
 | `native-mistral-56a100e-deferred-window1-512-attempt2` | 2.558 | 2.769 |
 | `native-mistral-56a100e-deferred-window2-512` | 2.445 | 2.671 |
 
-These historical runs demonstrate that the asynchronous data-plane capability
-exists, but they do not certify the current `6499c82` scheduling path. A future
-overlap rerun must be bound to the current SHA and must satisfy complete layer
-attribution before it can enter a performance result.
+These historical runs are retained as an independent cross-check of the
+asynchronous data plane; the current-SHA window-1 result above is the evidence
+used for this checkpoint. Instrumented traces remain diagnostic and are not
+paper performance evidence.
 
-An attempted current-SHA `--defer-layer-timing` rerun was rejected before model
-execution because the installed CacheBlend tree is not the independently
-audited 0013 patch required by that diagnostic flag. The failure is retained in
-`/tmp/probekv-window1-defer.log` on the server; it is an environment/patch
-compatibility result, not evidence of model or KV incorrectness. The flag must
-not be enabled until the corresponding patch audit is present.
+An earlier attempt with the non-deferred CacheBlend tree was rejected before
+model execution because that tree did not contain the independently audited
+0013 patch; the failure remains in `/tmp/probekv-window1-defer.log`. It was
+superseded by the successful current-SHA run above using the audited deferred
+tree, and is retained only as environment/patch provenance.
 
 ## Local no-regression gate
 
