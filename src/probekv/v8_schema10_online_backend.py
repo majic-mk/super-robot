@@ -271,6 +271,7 @@ class Schema10OnlineExperimentBackend:
         visible, eligible, compatible, frozen, prepared = {}, {}, set(), {}, {}
         shortlists = {}
         selection_failures, runtime_events, candidate_cost_failures = {}, [], {}
+        preparation_intervals = {}
         for sid, segment in segments.items():
             v, e = self._lookup(segment, epoch)
             visible[sid], eligible[sid] = v, e
@@ -373,18 +374,30 @@ class Schema10OnlineExperimentBackend:
                         context.synchronize()
                         self.hbm.release(reservation_id)
                     leases.callback(release_after_fence)
+                    prep_started_ns = time.perf_counter_ns()
                     prepared[sid] = context.prepare_winner(sid, source_id, layers, reservation)
+                    prep_finished_ns = time.perf_counter_ns()
+                    preparation_intervals[sid] = {
+                        "start_ns": prep_started_ns,
+                        "end_ns": prep_finished_ns,
+                        "host_ms": (prep_finished_ns - prep_started_ns) / 1e6,
+                    }
                     runtime_events.append({"kind": "winner_preparation", "segment_id": sid, "source_id": source_id,
-                                           "reservation_id": reservation.reservation_id, "full_kv_bytes": size})
+                                           "reservation_id": reservation.reservation_id, "full_kv_bytes": size,
+                                           "timing": dict(preparation_intervals[sid])})
             if len(selection.decisions) + len(set(selection_failures) - set(selection.decisions)) == len(segments):
                 break
         context.finish_selection(frozen, prepared)
         # Adapter provides actual winner repair supports/ready boundaries, not selector trim rows.
+        ready_started_ns = time.perf_counter_ns()
         ready_boundaries, union_digest = context.ready_for_final_commit(prepared)
+        ready_finished_ns = time.perf_counter_ns()
         runtime_events.append({"kind": "online_timing_landmarks", "arrival_ns": arrival_ns,
             "context_opened_ns": getattr(context, "online_context_opened_ns", None),
             "selection_closed_ns": time.perf_counter_ns(),
-            "selection_intervals": list(ledger.intervals) if hasattr(ledger, "intervals") else None})
+            "selection_intervals": list(ledger.intervals) if hasattr(ledger, "intervals") else None,
+            "preparation_intervals": preparation_intervals,
+            "ready_for_final_commit_ms": (ready_finished_ns - ready_started_ns) / 1e6})
         accepted = ()
         final_total = None
         if frozen:
