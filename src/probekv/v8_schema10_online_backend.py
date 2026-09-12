@@ -199,8 +199,14 @@ class Schema10OnlineExperimentBackend:
                     # Do not label Gate1's marginal LOWER bound as a future UPPER cost.
                     values.append(ResidualCandidate(source_id, score, future, rank))
             finally:
-                if current.device.type == "cuda":
-                    torch.cuda.current_stream(current.device).synchronize()
+                # ``scores.detach().cpu().tolist()`` above already waits for
+                # the comparison stream before the host consumes the scores.
+                # A second unconditional device-wide stream synchronize here
+                # serialized the winner-selection path and made the async H2D
+                # preparation visible before the next layer.  Release only
+                # Python references and the workspace reservation; CUDA's
+                # allocator/event lifetime is carried by the consumed score
+                # tensor and the loader's own completion event.
                 source_tensor = drift = order = None
                 if event_id in ledger.pending:
                     ledger.cancel(event_id)
