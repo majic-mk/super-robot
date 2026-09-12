@@ -288,6 +288,7 @@ def main():
         if replay and not args.no_restore:
             backend.restore(initial)
         request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay),
+                   "request_epoch": int(requests["target"].get("request_epoch", 10)) + replay,
                    "use_gpu_hot_cache": bool(args.gpu_hot_cache),
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
