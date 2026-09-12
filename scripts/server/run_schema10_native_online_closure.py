@@ -277,6 +277,13 @@ def main():
     with adapter.open_request({**requests["warm"], "capture_original_full_prefill": True},
                               arrival_ns=time.perf_counter_ns()) as context:
         context.finish(lambda: None)
+        # The warm request is an exact dense prefill.  Publish its native
+        # Prefix blocks in the real block manager; without this explicit
+        # publication a later request cannot obtain a fresh physical lease
+        # for the same logical prefix (and would incorrectly report a
+        # missing Prefix shadow).
+        if getattr(context, "native", None) is not None:
+            context.native.manager.mark_blocks_as_computed(context.native.group)
     initial = backend.snapshot(retain_backing=True)
     dispatch = {"selection_path": args.selection_path, "gate1_mode": "explicit_barrier",
                 "selection_budget_policy": "end_to_end_aware"}
