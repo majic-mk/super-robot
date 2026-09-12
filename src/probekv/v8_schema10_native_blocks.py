@@ -34,6 +34,7 @@ class NativeBlockRequest:
         self.prefix_shadow = None
         self.allow_missing_shadow = False
         self.shadow_missing = False
+        self.shadow_lookup_audit = None
 
     def __enter__(self):
         if self.manager.can_allocate(self.group) != self.types["AllocStatus"].OK:
@@ -49,6 +50,11 @@ class NativeBlockRequest:
                 self.prefix_shadow = self.shadow_provider(self.sequence.get_prompt_token_ids()[:self.cached_prefix_tokens],
                                                           self.cached_block_ids)
                 self.shadow_missing = self.prefix_shadow is None
+                self.shadow_lookup_audit = {
+                    "cached_prefix_tokens": self.cached_prefix_tokens,
+                    "computed_block_ids": list(self.cached_block_ids),
+                    "shadow_lookup_hit": not self.shadow_missing,
+                }
                 if self.shadow_missing and not self.allow_missing_shadow:
                     raise RuntimeError("native Prefix hit lacks verified pre-RoPE shadow")
             self.sequence.status = self.types["Status"].RUNNING
