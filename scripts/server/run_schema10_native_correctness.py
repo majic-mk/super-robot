@@ -314,7 +314,21 @@ def main():
                 # request tokens and deterministic Prefix rebuild. No model
                 # initialization or full digest belongs to these TTFT samples.
                 from probekv.v8_schema10_storage import tensor_digest
-                hot = adapter.hot_layer_cache[source.source_variant_id]
+                hot = adapter.hot_layer_cache.get(source.source_variant_id)
+                if hot is None:
+                    # A hot-cache control is diagnostic only.  If the source
+                    # arm did not retain this exact immutable source key, do
+                    # not turn the missing control fixture into a runtime
+                    # failure (and never substitute another Source).
+                    atomic_json(root / "layout-ab-summary.json", {
+                        "skipped": True,
+                        "reason": "gpu_hot_source_not_retained",
+                        "source_variant_id": source.source_variant_id,
+                        "paper_evidence": False,
+                    })
+                    hot = None
+                if hot is None:
+                    return
                 before_hot = tensor_digest(t for layer in sorted(hot) for t in hot[layer])
                 ab_root = root / "layout-ab"
                 ab_root.mkdir()
