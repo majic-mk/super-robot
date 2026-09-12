@@ -816,9 +816,13 @@ class CacheBlendV6OnlineEngine:
             torch = self.source_loader.torch
             compute_start = torch.cuda.Event(enable_timing=True)
             compute_end = torch.cuda.Event(enable_timing=True)
-            compute_start.record(torch.cuda.current_stream())
             with self._component("source_rows_install"):
                 self._install_ready_source_rows(next_layer)
+            # Record the launch boundary after current-layer source rows have
+            # been installed (and any dependency wait has been enqueued).
+            # Otherwise a not-yet-ready source layer can make the copy stream
+            # run before the actual compute work, falsely eliminating overlap.
+            compute_start.record(torch.cuda.current_stream())
             with (torch.profiler.record_function(f"probekv.compute_layer.{next_layer}")
                   if getattr(self.source_loader, "capture_hardware_trace", False) else nullcontext()):
                 self.session.advance_to_layer(next_layer)
