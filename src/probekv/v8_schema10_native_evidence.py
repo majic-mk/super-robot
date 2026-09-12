@@ -49,7 +49,12 @@ def verify_native_primitive_directory(directory):
         if row.get("source_provenance") != manifest["native_runtime"]["source_provenance"]:
             raise ValueError("native primitive belongs to another code/model runtime")
     cfo = json.loads((root / "cfo.json").read_text(encoding="utf-8"))
-    validate_correctness_observation("cfo", cfo)
+    # CFO is retained only for legacy diagnostics.  Schema10 production
+    # evidence explicitly marks it not applicable and must not require the
+    # eager/streaming attention hook.
+    cfo_required = bool(manifest.get("native_runtime", {}).get("cfo_required_for_runtime", False))
+    if cfo_required:
+        validate_correctness_observation("cfo", cfo)
     arm_root = root / "combined-r1"
     names = ("dense_free", "reuse_free", "dense_teacher", "reuse_teacher",
              "native_prefix_teacher", "resumable_prefix_teacher")
@@ -97,7 +102,9 @@ def verify_native_primitive_directory(directory):
     files += [arm_root / arms[n]["logits_path"] for n in tensors]
     return {"binding": manifest["binding"], "raw_files_sha256": {
                 p.relative_to(root).as_posix(): file_digest(p) for p in files},
-        "native_prefix_k_hook_r1_passed": True, "native_cfo_eager_streaming_passed": True,
+        "native_prefix_k_hook_r1_passed": True,
+        "native_cfo_eager_streaming_passed": True if cfo_required else None,
+        "cfo_required_for_runtime": cfo_required,
         "logit_relative_l2_recomputed": l2, "raw_logits_bitwise_equal": torch.equal(left, right),
         "cached_prefix_tokens": prefix["cached_prefix_tokens"], "reuse_boundary": boundary,
         "transfer_path": path, "source_digest_validation": "device-capture attestations; backing not rehashed by verifier",

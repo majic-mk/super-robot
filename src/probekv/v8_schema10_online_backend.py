@@ -14,8 +14,6 @@ import math
 from threading import RLock
 import time
 
-from .v8_cfo import CanonicalChunkOccurrence, compute_cachecraft_cfo
-from .v8_schema10_source_metadata import read_cfo_metadata
 from .v8_contracts import CandidateCounts, ResidualCandidate
 from .v8_schema6_hbm import HBMReservationKind
 from .v8_schema7_planner import FinalCommitPlanner
@@ -286,17 +284,11 @@ class Schema10OnlineExperimentBackend:
                     continue
                 rows = eligible[sid]
                 metadata_begin = time.perf_counter_ns()
-                prefix = tuple(CanonicalChunkOccurrence(**v) for v in segment["prefix_occurrences"])
-                # Invalid CFO metadata does not acquire comparison eligibility.
-                ranked = []
-                for row in rows:
-                    try:
-                        metadata = read_cfo_metadata(self.store.objects[row.source_variant_id].metadata["cfo"])
-                        score = compute_cachecraft_cfo(metadata, prefix).cfo_operational
-                        ranked.append((score, row.source_variant_id, row))
-                    except (ValueError, KeyError, TypeError):
-                        pass
-                ordered = [row for _, _, row in sorted(ranked)]
+                # Schema10 deliberately has no online CFO shortlist.  All
+                # correctness-eligible Source variants are compared directly;
+                # ordering is deterministic and may be reduced only by the
+                # explicit Residual-K budget allocator.
+                ordered = sorted(rows, key=lambda row: row.source_variant_id)
                 if depth == 2 and sid in shortlists:
                     shortlist = shortlists[sid]
                     inventory_digest = self.store.pool.content_generation(self.provenance["model_signature"], segment["content_key"])

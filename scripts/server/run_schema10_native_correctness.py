@@ -180,6 +180,7 @@ def main():
             "thresholds": [[d, .25] for d in spec.checkpoints], "strong_margin": .6,
             "stable_margin": .3, "residual_band_relative_tolerance": .05},
         "sentinel_evidence_paths": {}, "repair_policy": "fixed_15", "integrity_mode": "qualification_full",
+        "cfo_required_for_runtime": False,
         "installed_runtime_source_files_sha256": {name: file_digest(package / name) for name in RUNTIME_FILES}}
     manifest = {"protocol_version": 8, "schema_version": 10, "stage": "native_correctness_diagnostic",
         "binding": binding, "native_runtime": runtime, "diagnostic_requests": requests,
