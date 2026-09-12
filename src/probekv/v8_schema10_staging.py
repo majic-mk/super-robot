@@ -205,13 +205,19 @@ class PhysicalLayerwiseSourceLoader:
             self.stream.synchronize()
             raise
 
-    def prefetch_pending(self, ticket, through_layer):
+    def prefetch_pending(self, ticket, through_layer, after_event=None):
         if ticket.transfer_failed:
             raise RuntimeError("failed transfer cannot be resumed")
         pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
         if not pending:
             return
         with self.torch.cuda.stream(self.stream):
+            if after_event is not None:
+                # Pipelined mode: begin the next H2D only after the current
+                # model layer has been submitted on the consumer stream.
+                # This preserves overlap without allowing the copy stream to
+                # run arbitrarily ahead of the consumer.
+                self.stream.wait_event(after_event)
             for layer in pending:
                 key, value = ticket.pending_layers[layer]
                 if key.device.type != "cpu" or value.device.type != "cpu" or not key.is_pinned() or not value.is_pinned():
