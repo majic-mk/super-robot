@@ -232,7 +232,22 @@ class ProfiledJointTimelineEstimator:
             result = CostLookup("SUPPORTED", key, estimate, None, self.measurement_digest)
         self.queries.append(asdict(result))
         if self.query_audit is not None:
-            self.query_audit.append({"query": query, **asdict(result)})
+            # Keep the admission result strict (an absent exact cell remains
+            # UNSUPPORTED), but expose enough information to diagnose why a
+            # live request did not match a provisional table.  In particular,
+            # a table may contain a cell for the same request with a different
+            # completed depth, readiness vector, repair mask, or boundary.
+            # These are distinct execution shapes and must never be treated as
+            # interchangeable or approximated.  The count is audit metadata
+            # only; it does not affect planning.
+            audit_row = {"query": query, **asdict(result)}
+            if result.status == "UNSUPPORTED" and query is not None:
+                audit_row["supported_cell_count"] = len(self.rows)
+                audit_row["strict_shape_match"] = False
+            elif result.status == "SUPPORTED":
+                audit_row["supported_cell_count"] = len(self.rows)
+                audit_row["strict_shape_match"] = True
+            self.query_audit.append(audit_row)
         return result
 
     def estimate(self, context):

@@ -250,6 +250,8 @@ class StableCostTests(unittest.TestCase):
         self.assertEqual(estimator.lookup(unsupported).status, "UNSUPPORTED")
         self.assertEqual(audit[-1]["query"], estimator.query(unsupported))
         self.assertEqual(audit[-1]["reason"], "no_exact_joint_measurement")
+        self.assertFalse(audit[-1]["strict_shape_match"])
+        self.assertEqual(audit[-1]["supported_cell_count"], 1)
         # Copy progress remains a measured dimension: neither faster nor
         # slower readiness is silently treated as the same measured cell.
         for layers in ([1, 2, 3], [2]):
@@ -258,6 +260,7 @@ class StableCostTests(unittest.TestCase):
             self.assertEqual(estimator.lookup(ctx).status, "UNSUPPORTED")
         rebound = estimator.for_shape(shape)
         self.assertEqual(rebound.lookup(ctx).status, "SUPPORTED")
+        self.assertTrue(audit[-1]["strict_shape_match"])
         self.assertIs(rebound.rows, estimator.rows)
         self.assertIsNot(rebound.queries, estimator.queries)
         self.assertNotEqual(estimator.shape, rebound.shape)
