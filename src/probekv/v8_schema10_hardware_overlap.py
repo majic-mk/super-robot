@@ -54,6 +54,31 @@ def summarize_hardware_overlap(trace):
             copies.append(row)
         elif owner[0] == "compute" and category == "kernel":
             kernels.append(row)
+    # Some Kineto builds do not propagate record_function External ids to the
+    # asynchronous memcpy activities.  When the trace contains the exact
+    # two-transfer-per-layer shape emitted by our BF16 K/V loader, recover the
+    # layer association by deterministic transfer order.  This is deliberately
+    # conservative: ambiguous counts remain unavailable rather than being
+    # guessed.
+    if not copies and kernels:
+        compute_layers = sorted({r["layer"] for r in kernels})
+        unowned = []
+        for event in events:
+            if event.get("cat") != "gpu_memcpy" or "htod" not in event.get("name", "").lower():
+                continue
+            args = event.get("args", {})
+            if args.get("device") is None or args.get("stream") is None:
+                continue
+            if int(args.get("bytes", 0) or 0) <= 0:
+                continue
+            unowned.append((event, args))
+        if len(unowned) == 2 * len(compute_layers):
+            for index, (event, args) in enumerate(unowned):
+                layer = compute_layers[index // 2]
+                copies.append({"layer": layer, "start_us": event["ts"],
+                               "end_us": event["ts"] + event["dur"],
+                               "device": args["device"], "stream": args["stream"],
+                               "name": event.get("name", "")})
     intersections, pair_intervals = [], {}
     for copy in copies:
         for kernel in kernels:
