@@ -53,3 +53,22 @@ class HardwareOverlapTests(unittest.TestCase):
         t["traceEvents"][-1]["dur"] = -1
         with self.assertRaises(ValueError):
             summarize_hardware_overlap(t)
+
+    def test_partial_copy_attribution_is_explicit(self):
+        # Two compute layers imply four BF16 K/V transfers.  Supplying only
+        # one correlated transfer must not make the parser silently relabel
+        # it as another layer.
+        events = [
+            event("user_annotation", "probekv.compute_layer.1", 0, 10),
+            event("cpu_op", "compute", 0, 1, 11),
+            event("user_annotation", "probekv.compute_layer.2", 20, 10),
+            event("cpu_op", "compute", 20, 1, 12),
+            event("user_annotation", "probekv.copy_layer.1", 2, 1),
+            event("cpu_op", "copy", 2, 1, 21),
+            event("gpu_memcpy", "Memcpy HtoD", 2, 1, 21, device=0, stream=17, bytes=2_000_000),
+            event("kernel", "compute", 5, 1, 11, device=0, stream=7),
+            event("kernel", "compute", 25, 1, 12, device=0, stream=7),
+        ]
+        result = summarize_hardware_overlap({"traceEvents": events})
+        self.assertFalse(result["layer_attribution_complete"])
+        self.assertEqual(result["expected_h2d_activity_count"], 4)
