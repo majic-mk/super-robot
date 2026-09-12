@@ -164,6 +164,12 @@ def build_cost_table(correctness_root, output_path):
     joints = [
         _row("joint_future", dense_joint, provenance, dense["boundary_to_first_token_ms"], dense_future,
              joint_future_wall_ms_samples=[dense["boundary_to_first_token_ms"]])]
+
+    def append_joint_if_new(row):
+        """Keep exactly one row for each exact execution-shape digest."""
+        digest = digest_json(row["query"])
+        if digest not in {digest_json(existing["query"]) for existing in joints}:
+            joints.append(row)
     # The streaming source arm is a real joint-future observation too.  Keep
     # its exact ready-layer/copy-in-flight state rather than discarding it and
     # leaving only the all-ready arm below.  Online closure commonly reaches
@@ -181,9 +187,7 @@ def build_cost_table(correctness_root, output_path):
                        joint_future_wall_ms_samples=[source["boundary_to_first_token_ms"]])
     # A fully-ready source arm may have the same key as fixed15_all_ready;
     # retain one cell per exact execution shape, never duplicate it.
-    if digest_json(partial_row["query"]) not in {
-            digest_json(row["query"]) for row in joints if row.get("query") is not None}:
-        joints.append(partial_row)
+    append_joint_if_new(partial_row)
     for observation, commit in ((all_ready, True), (prepared_dense, False)):
         if (observation.get("diagnostic_wait_all_source_layers") is not True
                 or observation.get("diagnostic_commit_source") is not commit
@@ -206,8 +210,9 @@ def build_cost_table(correctness_root, output_path):
             raise ValueError("all-ready cost evidence is missing future execution layers")
         interval = _interval(observation["winner_source_ready_ns"], observation["first_token_ns"],
                              observation["ready_to_first_token_cuda_ms"], "ready_to_first_token")
-        joints.append(_row("joint_future", query, provenance, observation["ready_to_first_token_ms"],
-            interval, joint_future_wall_ms_samples=[observation["ready_to_first_token_ms"]]))
+        append_joint_if_new(_row("joint_future", query, provenance,
+            observation["ready_to_first_token_ms"], interval,
+            joint_future_wall_ms_samples=[observation["ready_to_first_token_ms"]]))
     payload = {"key_contract": EXECUTION_SHAPE_KEY, "provenance": provenance,
                "formal_profile_frozen": False, "rows": primitives, "joint_rows": joints,
                "source_correctness_manifest_sha256": manifest["manifest_sha256"],
