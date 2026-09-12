@@ -605,14 +605,14 @@ class NativeRequestContext:
             return {"token_ids": predicted, "answer": None, "quality_passed": None,
                 "qa_evidence": None, "generation_mode": "teacher_forced_logit_diagnostic",
                 "whole_request_origin": origin, "cached_prefix_tokens": self.cached_prefix_tokens,
-                "prefix_shadow_audit": self.native.shadow_lookup_audit,
+                "prefix_shadow_audit": getattr(self.native, "shadow_lookup_audit", {}),
                 "layer_audit": self.engine.session.layer_audit if self.engine else [],
                 "overlap_trace": self.engine.overlap_trace() if self.engine else []}
         from .v8_schema10_qa import answer_evidence
         evidence = answer_evidence(predicted, tokenizer=a.llm.get_tokenizer(), request=self.request)
         return {**evidence, "whole_request_origin": origin,
                 "cached_prefix_tokens": self.cached_prefix_tokens,
-                "prefix_shadow_audit": self.native.shadow_lookup_audit,
+                "prefix_shadow_audit": getattr(self.native, "shadow_lookup_audit", {}),
                 "layer_audit": self.engine.session.layer_audit if self.engine else [],
                 "overlap_trace": self.engine.overlap_trace() if self.engine else []}
 
