@@ -90,6 +90,16 @@ positive single-request commit in this shape; the dominant issue is the
 request-level selection/preparation overhead relative to a short dense
 remainder, not only the number of checkpoint comparisons.
 
+A longer 640-token d1-only run (`native-78362a-d1-costshape-640` /
+`online-78362a-d1-costshape-640-closure`) also passed correctness and exact
+cost support but rejected reuse: predicted total 112.502 ms versus dense
+58.352 ms. The fixed-winner source arm itself was faster after the matched
+boundary (45.669 ms versus 70.634 ms dense remainder), demonstrating that the
+layer-wise reuse kernel can save compute in isolation; the end-to-end policy
+loses that saving to selection, preparation, and request orchestration
+overhead. This separates the remaining architecture problem from KV
+correctness or load/compute overlap.
+
 After adding an exact partial-ready observation to the cost-table builder, a
 new 128-token revalidation was run under
 `online-5015d3f-costshape-closure`. The query audit contains one supported
