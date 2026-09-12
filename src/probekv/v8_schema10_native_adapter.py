@@ -352,25 +352,13 @@ class NativeRequestContext:
         while self.current_completed_depth < depth:
             self.adapter.check_deadline()
             layer = self.current_completed_depth + 1
-            # Native single-concurrency scheduling waits on the actual next
-            # layer event. Waiting is inside request wall-clock accounting.
-            for sid in self.committed:
-                ticket = self.prepared[sid]
-                if layer not in ticket.layer_events:
-                    self.engine.source_loader.prefetch_pending(ticket, layer)
-                # A layer event is often already complete for a GPU-resident
-                # winner.  Calling synchronize() unconditionally still enters
-                # the CUDA runtime once per layer and serializes the host even
-                # when no wait is needed (the profiler showed 102 such calls).
-                # Query first; retain the blocking wait for an in-flight copy.
-                event = self.prepared[sid].layer_events[layer]
-                if not event.query():
-                    # Keep the dependency on the GPU timeline.  A host-side
-                    # synchronize here serializes Python submission with the
-                    # layerwise H2D copy; Event.wait inserts the same ordering
-                    # on the active compute stream while allowing the host to
-                    # continue preparing the layer call.
-                    event.wait(self.adapter.torch.cuda.current_stream())
+            # Layerwise source preparation is owned by the engine pipeline.
+            # It submits the current block first and then schedules the next
+            # H2D on the copy stream.  Do not prefetch or wait here: doing so
+            # serializes the copy before the current compute and destroys the
+            # intended load/compute overlap.  The engine's
+            # _install_ready_source_rows() inserts the non-blocking CUDA event
+            # dependency for the consumer layer.
             self.engine.advance_to_layer(layer)
             self.generation += 1
 
