@@ -251,6 +251,16 @@ class TorchLayerwiseSourceLoader:
                 )
         return digest.hexdigest()
 
+    @contextmanager
+    def _copy_annotation(self, layer: int):
+        """Mark a layer H2D enqueue for profiler correlation only."""
+        record = getattr(getattr(self.torch, "profiler", None), "record_function", None)
+        if record is None:
+            yield
+            return
+        with record(f"probekv.copy_layer.{layer}"):
+            yield
+
     def _sample_digest(
         self,
         layers: Sequence[Tuple[Any, Any]],
@@ -352,8 +362,9 @@ class TorchLayerwiseSourceLoader:
                     if host_value is not value:
                         pinning_copy_bytes += value.numel() * value.element_size()
                     pinning_host_ms += (time.perf_counter() - pin_started) * 1000.0
-                    gpu_key = host_key.to(self.device, non_blocking=True)
-                    gpu_value = host_value.to(self.device, non_blocking=True)
+                    with self._copy_annotation(layer):
+                        gpu_key = host_key.to(self.device, non_blocking=True)
+                        gpu_value = host_value.to(self.device, non_blocking=True)
                 else:
                     raise ValueError("Source Replica must be CPU or CUDA resident")
                 event = self.torch.cuda.Event(enable_timing=True)
@@ -444,16 +455,9 @@ class TorchLayerwiseSourceLoader:
                     # asynchronous H2D enqueue.  The range is diagnostic
                     # metadata only; it does not synchronize or alter the
                     # transfer stream.
-                    record = getattr(self.torch.profiler, "record_function", None)
-                    scope = record(f"probekv.copy_layer.{layer}") if record else None
-                    if scope is not None:
-                        scope.__enter__()
-                    try:
+                    with self._copy_annotation(layer):
                         gpu_key = key.to(self.device, non_blocking=True)
                         gpu_value = value.to(self.device, non_blocking=True)
-                    finally:
-                        if scope is not None:
-                            scope.__exit__(None, None, None)
                     done = self.torch.cuda.Event(enable_timing=True)
                     done.record(self.stream)
                 except Exception:
