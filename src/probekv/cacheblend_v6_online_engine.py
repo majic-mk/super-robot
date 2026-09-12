@@ -440,8 +440,20 @@ class TorchLayerwiseSourceLoader:
                 start.record(self.stream)
                 gpu_key = gpu_value = None
                 try:
-                    gpu_key = key.to(self.device, non_blocking=True)
-                    gpu_value = value.to(self.device, non_blocking=True)
+                    # Keep a profiler-visible per-layer range around the
+                    # asynchronous H2D enqueue.  The range is diagnostic
+                    # metadata only; it does not synchronize or alter the
+                    # transfer stream.
+                    record = getattr(self.torch.profiler, "record_function", None)
+                    scope = record(f"probekv.copy_layer.{layer}") if record else None
+                    if scope is not None:
+                        scope.__enter__()
+                    try:
+                        gpu_key = key.to(self.device, non_blocking=True)
+                        gpu_value = value.to(self.device, non_blocking=True)
+                    finally:
+                        if scope is not None:
+                            scope.__exit__(None, None, None)
                     done = self.torch.cuda.Event(enable_timing=True)
                     done.record(self.stream)
                 except Exception:
