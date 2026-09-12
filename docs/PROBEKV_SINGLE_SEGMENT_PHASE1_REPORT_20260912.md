@@ -76,6 +76,13 @@ exists, but they do not certify the current `6499c82` scheduling path. A future
 overlap rerun must be bound to the current SHA and must satisfy complete layer
 attribution before it can enter a performance result.
 
+An attempted current-SHA `--defer-layer-timing` rerun was rejected before model
+execution because the installed CacheBlend tree is not the independently
+audited 0013 patch required by that diagnostic flag. The failure is retained in
+`/tmp/probekv-window1-defer.log` on the server; it is an environment/patch
+compatibility result, not evidence of model or KV incorrectness. The flag must
+not be enabled until the corresponding patch audit is present.
+
 ## Local no-regression gate
 
 The current tracked worktree passes:
