@@ -386,6 +386,11 @@ def main():
         # reclaimable.  This does not change the measured arms.
         if adapter.active is not None:
             adapter.close()
+        # Terminal teardown owns any fenced diagnostic workspace left by a
+        # retained hot-cache arm; release it before the leak audit.
+        for reservation_id, reservation in tuple(backend.hbm.reservations.items()):
+            if not reservation.released:
+                backend.hbm.release(reservation_id)
         # Completed CUDA events may remain attached to reusable staging slots;
         # they are bookkeeping, not live resources.  The authoritative leak
         # checks are reservations, active request state, and unreleased leases.
