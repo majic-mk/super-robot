@@ -284,6 +284,11 @@ def main():
         # missing Prefix shadow).
         if getattr(context, "native", None) is not None:
             context.native.manager.mark_blocks_as_computed(context.native.group)
+        # Fail with an explicit diagnostic if the exact warm-up did not
+        # publish a logical Prefix shadow; otherwise the next replay would
+        # silently look like a runtime miss.
+        if not adapter.shadows.entries:
+            raise RuntimeError("warm exact dense produced no persistent Prefix shadow")
     initial = backend.snapshot(retain_backing=True)
     dispatch = {"selection_path": args.selection_path, "gate1_mode": "explicit_barrier",
                 "selection_budget_policy": "end_to_end_aware"}
