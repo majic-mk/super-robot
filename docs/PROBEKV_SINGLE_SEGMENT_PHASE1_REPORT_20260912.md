@@ -13,18 +13,20 @@ qualification run, H1/H2 result, or paper evidence.
 - Server checkout used for the latest run: `/root/autodl-tmp/probekv_stage2/checkout-f15ddf5`.
 - GPU: NVIDIA A800-SXM4-80GB, UUID `GPU-65efeff4-8f05-07b6-ecfa-3a19adf29493`.
 - Model: Mistral audit `model_audit_mistral_f15ddf5.json`.
-- CacheBlend patch audit: `patch_audit_1dee25a.json`.
+- CacheBlend patch audit: deferred-56a100e tree, audit
+  `/root/autodl-tmp/probekv_stage2/artifacts/deferred-56a100e-patch_audit.json`.
 
 ## Verified results
 
-The latest fresh run is stored under
+The earlier matched-prefix cost run is stored under
 `native-6499c82-window4-final2` on the server. It reports:
 
 - native Prefix/K-hook/`r=1`: passed;
 - matched cost probe: passed with real CUDA execution;
 - online immutable full-KV digest: not executed on the request path;
 - winner preparation and repair-check timings: present;
-- expected H2D activity count: 64.
+- expected H2D activity count: 64 for this older window-4 run (the current
+  deferred window-1 evidence below uses 62).
 
 Representative cost values from this run (matched Prefix boundary to first
 token) are:
@@ -44,6 +46,16 @@ The exact-cost online closure run (`online-6499c82-cost128-closure`) selected
 and prepared a Source, but correctly rejected final reuse because the refined
 request cost was about 90.94 ms versus a matched dense reference of about
 30.95 ms. This is an economic dense fallback, not a correctness failure.
+
+A fresh current-SHA 512-token online closure replay was run under
+`online-1bba8ed-deferred-closure-repeat-20260912-164515`. Prefix/K-hook/r=1
+prerequisites passed and the winner was prepared, but FinalCommit returned
+`UNSUPPORTED` with reason `no_exact_joint_measurement`; the request therefore
+executed dense. This is the intended fail-closed behavior: the provisional
+table contains a different exact joint mask/ready shape than the live repair
+plan, so the estimator must not extrapolate or fill a zero-cost value. The
+run is retained as evidence that cost-shape support, rather than correctness,
+is the remaining online-closure blocker.
 
 ## Overlap evidence
 
@@ -132,8 +144,11 @@ checkpoint.
 
 ## Phase-1 disposition
 
-`r=1` correctness and matched cost support are ready for the next controlled
-diagnostic. The single-Segment online path is safe (it falls back to dense when
-reuse is not economical), but positive end-to-end gain and current-SHA overlap
-remain **unproven**. The next experiment should therefore target only the
-current-SHA overlap/attribution path before any multi-Segment or Profile work.
+`r=1` correctness, matched cost support, and current-SHA layer-wise overlap
+are ready for the next controlled diagnostic. The single-Segment online path
+is safe (it falls back to dense when reuse is not economical or when an exact
+cost cell is unsupported), but positive end-to-end gain and a reuse commit
+remain **unproven**. Before any multi-Segment or Profile work, the next
+experiment must collect a real cost-probe row for the live selected
+completed-depth, repair-mask, ready-layer shape (or deliberately keep the
+unsupported dense fallback as the documented boundary).
