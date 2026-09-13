@@ -416,6 +416,19 @@ class Schema10OnlineExperimentBackend:
         accepted = ()
         final_total = None
         if frozen:
+            # Joint-future measurements start at the selected boundary.  The
+            # Prefix and already completed Transformer blocks are shared with
+            # the dense reference and must not be charged again as sunk work.
+            # Account only for ProbeKV-specific probe, preparation and ready
+            # bookkeeping intervals here.
+            probe_sunk_ms = sum(
+                max(0.0, (iv[1] - iv[0]) / 1e6)
+                for iv in getattr(ledger, "intervals", ()) if len(iv) >= 2
+            )
+            preparation_sunk_ms = sum(
+                float(v.get("host_ms", 0.0)) for v in preparation_intervals.values()
+            )
+            ready_sunk_ms = (ready_finished_ns - ready_started_ns) / 1e6
             for attempt in range(3):
                 snapshot = context.planner_snapshot(self.hbm.epoch)
                 try:
@@ -423,7 +436,8 @@ class Schema10OnlineExperimentBackend:
                     planner_started_ns = time.perf_counter_ns()
                     result = FinalCommitPlanner(estimator).plan_ready_subset(inventory_segment_ids=tuple(inventory),
                         eligible_ready_segment_ids=tuple(ready_boundaries), committed_segment_ids=(),
-                        actual_boundary_by_segment=ready_boundaries, actual_sunk_ms=(planner_started_ns - arrival_ns) / 1e6,
+                        actual_boundary_by_segment=ready_boundaries,
+                        actual_sunk_ms=probe_sunk_ms + preparation_sunk_ms + ready_sunk_ms,
                         dense_reference_total_ms=dense, snapshot=snapshot,
                         current_snapshot=context.planner_snapshot(self.hbm.epoch), union_mask_digest=union_digest)
                     snapshot.assert_current(context.planner_snapshot(self.hbm.epoch))
