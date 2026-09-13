@@ -460,7 +460,10 @@ class Schema10OnlineExperimentBackend:
                                            "timing": dict(preparation_intervals[sid])})
             if len(selection.decisions) + len(set(selection_failures) - set(selection.decisions)) == len(segments):
                 break
-        if request.get("selection_cache_enabled", False) and selection.closed:
+        # Populate the bounded cache for exact subsequent requests.  Whether
+        # a request is allowed to consume it remains an explicit request
+        # policy; publishing evidence is side-effect free for execution.
+        if selection.closed:
             self._put_cached_selection(selection_cache_key, selection.decisions)
         context.finish_selection(frozen, prepared)
         selection_closed_ns = time.perf_counter_ns()
