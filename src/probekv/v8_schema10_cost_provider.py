@@ -152,7 +152,6 @@ class ProfiledJointTimelineEstimator:
         # that can affect masks or scheduler feasibility.
         self._lookup_cache = {}
 
-    @staticmethod
     def _context_cache_key(self, context):
         # ``shape`` is intentionally immutable by contract; tests and the
         # rebind path may replace it between planner calls. Include its object
