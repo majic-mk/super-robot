@@ -72,3 +72,37 @@ all cold comparison latency, and do not call the full-KV hot-cache diagnostic a
 GPU-resident SelectionState cache. No new SparseX/QCFuse or multi-Segment arm is
 introduced by these fixes. Formal profile, GPU qualification, paper evidence and
 locked-test access remain false.
+
+## Follow-up v40: native continuation candidate rejected
+
+Code `0b247e26a34404e19692caeb706cad4d97fd9d8f` adds an opt-in
+`--native-dense-continuation` diagnostic. It preserves already computed hidden
+states and residuals and executes remaining dense layers using status=0 native
+Prefix attention, guarded against any selective commit or shortened active rows.
+It is NOT the production default. Local regression: 855 run, 854 pass, 1 skip.
+
+The GPU numerical gate failed and stopped before cost/online execution:
+
+- Original r=1 reuse-vs-no-cache-dense aggregate logit relative L2 remained 0.
+- Native continuation-vs-no-cache-dense: aggregate **0.01047809**, maximum
+  per-position **0.04492869**; both exceed 1e-4.
+- Greedy tokens agreed for this synthetic request; that does not override the
+  failed teacher-logit criterion.
+- Existing native Prefix control (both v38 and v40) differs from no-cache dense:
+  aggregate **0.00757023**, maximum per-position **0.02121325**. Earlier logs
+  recorded this as a control rather than a passing equivalence certificate.
+- Original resumable Prefix control in v38 had zero difference. Switching to
+  native attention mid-prefill is therefore not a numerically equivalent
+  optimization under the frozen tolerance, despite identical row ownership.
+
+No threshold was relaxed and no performance result is accepted from v40. Raw
+comparison and arm JSONs are copied to `artifacts/server46068-native-continuation-v40/`;
+the server directory retains teacher tensors and their digests. The candidate
+remains opt-in and failed, not enabled in standard requests.
+
+The previous 128.73 ms remaining-prefill outlier is localized to layer 2's
+68.115 ms event envelope (other layers about 1.9 ms). An event envelope includes
+possible host launch gaps and is not proof of 68 ms kernel work. Further work
+must profile host gaps and remove redundant preparation while preserving the
+original attention numerical path; it must not silently replace that path with
+native Prefix attention on the strength of greedy-token agreement alone.
