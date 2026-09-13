@@ -40,10 +40,46 @@ class Schema10OnlineExperimentBackend:
         self.epoch = -1
         self.generation = 0
         self.poisoned_error = None
+        # Exact-request selector results are an optional latency optimization.
+        # Entries are only usable when the immutable request/dispatch/pool
+        # evidence key matches; they never bypass FinalCommit or leases.
+        self.selection_result_cache = {}
 
     def _emit(self, kind, request_id, payload):
         if self.event_log is not None:
             self.event_log.append(kind, request_id, payload)
+
+    def _selection_cache_key(self, request, dispatch, context, segments):
+        """Build a deterministic key for an exact-request decision cache.
+
+        The cache is deliberately scoped to identical model input and runtime
+        shape. Pool content generations are included so a changed Source pool
+        cannot silently reuse a stale winner. This helper does not itself
+        authorize reuse; callers must still run FinalCommit and lease checks.
+        """
+        model = self.provenance.get("model_signature")
+        generation = tuple(sorted((sid, self.store.pool.content_generation(
+            model, seg["content_key"])) for sid, seg in segments.items()))
+        return digest_json({
+            "model": model,
+            "token_ids": list(request.get("token_ids", ())),
+            "cached_prefix_tokens": int(getattr(context, "cached_prefix_tokens", 0)),
+            "dispatch": dict(dispatch),
+            "selection_path": dispatch.get("selection_path"),
+            "pool_content_generations": generation,
+        })
+
+    def _get_cached_selection(self, key):
+        value = self.selection_result_cache.get(key)
+        return deepcopy(value) if value is not None else None
+
+    def _put_cached_selection(self, key, decisions):
+        # Store only selector evidence/decisions, never tensors, leases or
+        # physical locations. A bounded cache prevents untrusted request input
+        # from becoming an unbounded memory sink.
+        if len(self.selection_result_cache) >= 64 and key not in self.selection_result_cache:
+            self.selection_result_cache.pop(next(iter(self.selection_result_cache)))
+        self.selection_result_cache[key] = deepcopy(decisions)
 
     def reset(self, *, capacity, global_byte_budget):
         with self.lock:
@@ -62,6 +98,7 @@ class Schema10OnlineExperimentBackend:
                 raise ValueError("all K runs must retain the exact same global byte budget")
             self.completed, self.finalized_at_ns, self.epoch = {}, {}, -1
             self.poisoned_error = None
+            self.selection_result_cache = {}
             self.generation += 1
 
     def snapshot(self, *, retain_backing=True):
