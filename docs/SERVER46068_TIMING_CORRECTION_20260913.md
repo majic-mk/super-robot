@@ -204,6 +204,24 @@ therefore present but partial and saturates near window 8; it is not yet
 sufficient for the 46.21 ms final-admission target. The v50/v51 raw directories
 are retained; this is a tuning observation, not a frozen RuntimeCostProfile.
 
+## Packed online-entry validation (v55)
+
+The online closure now explicitly accepts both `kv_layout_mode` and
+`prefetch_window`, avoiding a mismatch between fixed-winner and live settings.
+With `packed_slice` and window 8, the new fixed15 arm measured 35.09 ms
+(ready-to-first-token 32.88 ms), while native Prefix dense was 58.04 ms.
+Correctness/K-hook/r=1 remained passed. This is the first fixed-winner result
+comfortably below the 0.8 target; it is not yet a live policy result.
+
+The corresponding live d1 replay still did not commit: warm replays were
+85.33, 85.45 and 85.57 ms (cold 91.50 ms), against a 58.04 ms matched dense
+reference. The planner rejected the candidate after charging selection and
+request preparation. This is expected under the unchanged end-to-end gamma,
+and demonstrates that fast fixed execution alone does not erase online choice
+overhead. The next experiment must reduce or amortize that overhead (for
+example, repeated requests with a resident winner) before any multi-Segment
+claim is made.
+
 ## Joint-query memoization follow-up
 
 The request-local verified joint query cache was added at `c56aa92` and then
