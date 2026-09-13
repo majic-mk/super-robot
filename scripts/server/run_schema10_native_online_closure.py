@@ -334,6 +334,7 @@ def main():
         request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay),
                    "request_epoch": int(requests["target"].get("request_epoch", 10)) + replay,
                    "reuse_current_kv_observation": not args.disable_current_kv_cache,
+                   "selection_cache_enabled": bool(replay > 0),
                    "use_gpu_hot_cache": bool(args.gpu_hot_cache),
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         if args.kv_layout_mode is not None:

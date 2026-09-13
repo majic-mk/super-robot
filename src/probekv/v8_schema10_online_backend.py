@@ -311,6 +311,9 @@ class Schema10OnlineExperimentBackend:
             return self._unsupported_dense(context, request, dispatch, arrival_ns, started, initial)
         ledger = SelectionCostLedger(dense, SelectionCostPolicy(mode=dispatch.get("selection_budget_policy", "end_to_end_aware")))
         selection = ProductionSelectionSession(rid, tuple(segments), selector, ledger)
+        selection_cache_key = self._selection_cache_key(request, dispatch, context, segments)
+        cached_selection = (self._get_cached_selection(selection_cache_key)
+                            if request.get("selection_cache_enabled", False) else None)
         visible, eligible, compatible, frozen, prepared = {}, {}, set(), {}, {}
         shortlists = {}
         selection_failures, runtime_events, candidate_cost_failures = {}, [], {}
@@ -326,6 +329,23 @@ class Schema10OnlineExperimentBackend:
             for sid, segment in segments.items():
                 if sid in selection.decisions or sid in selection_failures:
                     continue
+                # A cached terminal decision is valid only for an exact input
+                # and unchanged pool generations.  We still advance the
+                # native context to the recorded depth and run all later
+                # preparation/admission checks.
+                cached = cached_selection.get(sid) if cached_selection else None
+                if cached is not None and int(getattr(cached, "completed_depth", -1)) == depth:
+                    decision = selection.restore_cached_decision(
+                        sid, cached, evidence_digest=selection_cache_key)
+                    compatible.update(v.source_variant_id for v in eligible[sid]
+                                      if v.residual_score <= decision.absolute_threshold)
+                    # Continue through the common winner preparation path.
+                    if decision.selected_source_variant_id:
+                        source_id = decision.selected_source_variant_id
+                    else:
+                        continue
+                else:
+                    source_id = None
                 rows = eligible[sid]
                 metadata_begin = time.perf_counter_ns()
                 # Schema10 deliberately has no online CFO shortlist.  All
@@ -342,15 +362,21 @@ class Schema10OnlineExperimentBackend:
                         selection_failures[sid] = "stale_cascade_inventory_or_request"
                         continue
                     ordered = [row for row in ordered if row.source_variant_id in shortlist.retained_source_ids]
-                current = context.observe_current_k(sid, depth)
+                if cached is not None and int(getattr(cached, "completed_depth", -1)) == depth:
+                    current = None
+                else:
+                    current = context.observe_current_k(sid, depth)
                 # The observation and comparator use the same CUDA stream.
                 # The comparator's host score read fences the dependent work;
                 # there is no need for another device-wide synchronization.
                 # This interval measures enqueue time, not GPU completion.
                 ledger.observe_shared_interval(f"{rid}:{sid}:{depth}:metadata-current-k", metadata_begin, time.perf_counter_ns())
                 try:
-                    values, plans, available, cost_failures = self._compare(context, sid, depth, ordered,
-                        current, ledger, rid)
+                    if cached is not None and int(getattr(cached, "completed_depth", -1)) == depth:
+                        values, plans, available, cost_failures = (), {}, 0, {}
+                    else:
+                        values, plans, available, cost_failures = self._compare(context, sid, depth, ordered,
+                            current, ledger, rid)
                 except UnsupportedTimelineCost as exc:
                     selection_failures[sid] = str(exc)
                     runtime_events.append({"kind": "dense_fallback", "segment_id": sid, "reason": str(exc)})
@@ -369,8 +395,9 @@ class Schema10OnlineExperimentBackend:
                 states_available = sum(depth in self.store.objects[r.source_variant_id].metadata[
                     "selection_completed_depths"] for r in rows)
                 counts = CandidateCounts(len(visible[sid]), len(rows), states_available, available, len(values))
-                decision = selection.step(sid, completed_depth=depth, counts=counts,
-                    candidates=values, gate1_plan_by_source=plans)
+                if cached is None or int(getattr(cached, "completed_depth", -1)) != depth:
+                    decision = selection.step(sid, completed_depth=depth, counts=counts,
+                        candidates=values, gate1_plan_by_source=plans)
                 if depth == 1 and decision.state == "continue_probe" and selector.depth2_keep_fraction is not None:
                     from .source_policy_development import plan_depth2_shortlist
                     shortlist = plan_depth2_shortlist({row.source_variant_id: row.residual_score for row in values},
@@ -433,6 +460,8 @@ class Schema10OnlineExperimentBackend:
                                            "timing": dict(preparation_intervals[sid])})
             if len(selection.decisions) + len(set(selection_failures) - set(selection.decisions)) == len(segments):
                 break
+        if request.get("selection_cache_enabled", False) and selection.closed:
+            self._put_cached_selection(selection_cache_key, selection.decisions)
         context.finish_selection(frozen, prepared)
         selection_closed_ns = time.perf_counter_ns()
         # Adapter provides actual winner repair supports/ready boundaries, not selector trim rows.
