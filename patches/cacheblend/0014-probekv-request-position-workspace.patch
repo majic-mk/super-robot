@@ -1,0 +1,70 @@
+diff --git a/vllm_blend/vllm/model_executor/models/llama.py b/vllm_blend/vllm/model_executor/models/llama.py
+--- a/vllm_blend/vllm/model_executor/models/llama.py
++++ b/vllm_blend/vllm/model_executor/models/llama.py
+@@ -382,26 +382,21 @@
+         del source_handles
+         if not 1 <= int(layer) <= len(self.layers):
+             raise ValueError("invalid resumable layer")
+-        active = torch.as_tensor(active_positions, dtype=torch.long,
+-                                 device=hidden_states.device)
+-        target = torch.as_tensor(target_active_positions, dtype=torch.long,
+-                                 device=hidden_states.device)
+         metadata = self.cache_fuse_metadata
++        from probekv.position_workspace import request_position_tensors
++        active, target, full_positions = request_position_tensors(
++            metadata, active_positions, target_active_positions, hidden_states.device, torch)
+         defer_timing = bool(metadata.get("probekv_defer_layer_timing", False))
+         active_cpu = tuple(active_positions)
+         target_cpu = tuple(target_active_positions)
+         same_target = (active_cpu == target_cpu) if defer_timing else bool(torch.equal(active, target))
+         metadata["active_positions"] = active
+         metadata["target_active_positions"] = target
+-        metadata["org_pos"] = torch.arange(
+-            metadata["org_seq_len"], dtype=torch.long,
+-            device=hidden_states.device)
++        metadata["org_pos"] = full_positions
+         shrinking = not same_target
+         transition = bool(reuse_commit)
+         prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
+-        full_prompt_positions = torch.arange(
+-            metadata["org_seq_len"], dtype=torch.long,
+-            device=hidden_states.device)
++        full_prompt_positions = full_positions
+         same_full = (active_cpu == tuple(range(metadata["org_seq_len"]))) if defer_timing else bool(torch.equal(active, full_prompt_positions))
+         dense_full_repair = (
+             transition
+diff --git a/vllm_blend/vllm/model_executor/models/qwen2.py b/vllm_blend/vllm/model_executor/models/qwen2.py
+--- a/vllm_blend/vllm/model_executor/models/qwen2.py
++++ b/vllm_blend/vllm/model_executor/models/qwen2.py
+@@ -332,26 +332,21 @@
+         del source_handles
+         if not 1 <= int(layer) <= len(self.layers):
+             raise ValueError("invalid resumable layer")
+-        active = torch.as_tensor(active_positions, dtype=torch.long,
+-                                 device=hidden_states.device)
+-        target = torch.as_tensor(target_active_positions, dtype=torch.long,
+-                                 device=hidden_states.device)
+         metadata = self.cache_fuse_metadata
++        from probekv.position_workspace import request_position_tensors
++        active, target, full_positions = request_position_tensors(
++            metadata, active_positions, target_active_positions, hidden_states.device, torch)
+         defer_timing = bool(metadata.get("probekv_defer_layer_timing", False))
+         active_cpu = tuple(active_positions)
+         target_cpu = tuple(target_active_positions)
+         same_target = (active_cpu == target_cpu) if defer_timing else bool(torch.equal(active, target))
+         metadata["active_positions"] = active
+         metadata["target_active_positions"] = target
+-        metadata["org_pos"] = torch.arange(
+-            metadata["org_seq_len"], dtype=torch.long,
+-            device=hidden_states.device)
++        metadata["org_pos"] = full_positions
+         shrinking = not same_target
+         transition = bool(reuse_commit)
+         prefix_active = bool(metadata.get("exact_prefix_tokens", 0))
+-        full_prompt_positions = torch.arange(
+-            metadata["org_seq_len"], dtype=torch.long,
+-            device=hidden_states.device)
++        full_prompt_positions = full_positions
+         same_full = (active_cpu == tuple(range(metadata["org_seq_len"]))) if defer_timing else bool(torch.equal(active, full_prompt_positions))
+         dense_full_repair = (
+             transition

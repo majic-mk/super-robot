@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from probekv.cacheblend_patch import (
-    DEFERRED_TIMING_PATCH, combined_patch_sha256, load_patch_manifest,
+    DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, combined_patch_sha256, load_patch_manifest,
     native_patch_files, validate_native_patch_audit,
 )
 
@@ -35,6 +35,15 @@ class NativePatchProvenanceTests(unittest.TestCase):
         deferred["cacheblend_patch_sha256"] = self.audit()["cacheblend_patch_sha256"]
         with self.assertRaisesRegex(ValueError, "digest differs"):
             validate_native_patch_audit(deferred, self.manifest, deferred_timing=True)
+
+    def test_position_workspace_requires_ordered_independent_patch_audit(self):
+        audit = self.audit((DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH))
+        validate_native_patch_audit(audit, self.manifest, deferred_timing=True)
+        self.assertNotEqual(audit["cacheblend_patch_sha256"],
+                            self.audit((DEFERRED_TIMING_PATCH,))["cacheblend_patch_sha256"])
+        for extras in ((POSITION_WORKSPACE_PATCH,), (POSITION_WORKSPACE_PATCH, DEFERRED_TIMING_PATCH)):
+            with self.assertRaises(ValueError):
+                native_patch_files(self.manifest, self.mode, extras)
 
     def test_tree_edit_and_omitted_patch_are_rejected(self):
         for field, value in (("expected_cacheblend_tree", "b" * 40),

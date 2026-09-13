@@ -245,6 +245,11 @@ class PinnedCacheBlendResumableAdapter:
         working_kv: Any,
         model_signature: str,
     ) -> Tuple[Any, Any]:
+        # A model object is reused across requests; indices are not. This key
+        # is consumed only by the independently audited optional 0014 patch.
+        metadata = getattr(self.inner_model, "cache_fuse_metadata", None)
+        if metadata is not None:
+            metadata.pop("probekv_position_workspace", None)
         return self.inner_model.probekv_begin_prefill(
             token_ids,
             absolute_positions,
@@ -265,7 +270,12 @@ class PinnedCacheBlendResumableAdapter:
         return LayerAdvanceResult(**row)
 
     def finish_prefill(self, **kwargs: Any) -> Any:
-        return self.inner_model.probekv_finish_prefill(**kwargs)
+        try:
+            return self.inner_model.probekv_finish_prefill(**kwargs)
+        finally:
+            metadata = getattr(self.inner_model, "cache_fuse_metadata", None)
+            if metadata is not None:
+                metadata.pop("probekv_position_workspace", None)
 
     def observe_pre_rope_k(
         self,

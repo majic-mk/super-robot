@@ -78,3 +78,63 @@ do not compare different code revisions' single warm observations.
 The deployment attempt in this turn did not reach SSH: port 46068 returned
 connection-refused twice. Thus no new code or experiment was deployed by that
 attempt. The local bundle is ready; server v44 evidence is unchanged.
+
+## Restored connection: v45 results (053cf647)
+
+The later connection succeeded. New correctness/cost execution is archived at
+`/root/autodl-tmp/probekv_stage2/artifacts/native-053cf647-server46068-v45`.
+Prefix/K-hook/r=1 and matched cost probe passed. Formal qualification remains false.
+Native Prefix dense was 58.320671 ms; resumable dense was 79.856565 ms.
+The fixed-winner streaming ready future was 43.223463 ms. These are diagnostic
+observations, not repeated matched-quality performance estimates.
+
+Online cache-on replay 2 has the following exact, contiguous host partition:
+
+| Interval | ms |
+| --- | ---: |
+| Arrival to service | 0.018458 |
+| Open context | 5.202277 |
+| Selection plus preparation | 13.686794 |
+| Dispatch to ready check | 0.000125 |
+| Ready repair check | 1.118149 |
+| Final admission | 5.621966 |
+| Cancellation to finish call | 0.031235 |
+| Finish entry | 0.001301 |
+| Remaining prefill submission | 68.461919 |
+| Native prefill bookkeeping | 1.152099 |
+| Logits submission | 0.227802 |
+| First-token host readiness | 0.117202 |
+| First-token callback | 0.001121 |
+| **Total** | **95.640448** |
+
+`unaccounted_ns=0`. This request was rejected by FinalCommit, not executed with
+selective reuse. The residual was compatible, but compatibility is not economic
+admission. Warm cache-on replays: 94.262701, 95.640448, 98.963184 ms; cache-off:
+93.385196, 92.526613, 99.620022 ms. These small sequential process-level controls
+do not establish an E2E gain from projection caching (physical snapshot IDs also
+differ). Retain cold samples separately; do not claim a speedup.
+
+## Next execution-level fix: optional patch 0014
+
+Source inspection found that each resumable layer creates active/target device
+index tensors and two identical full-prompt arange tensors, even when masks are
+unchanged. Patch 0014 shares a request-owned bounded index workspace, reusing
+unchanged rows and one full-prompt range. It leaves QKV, attention kernels,
+numerical policy, repair masks and admission thresholds unchanged. Request begin,
+finish and exceptional context close clear the cache. Legacy patchsets remain
+unchanged; 0014 requires independently audited ordered 0013+0014 patches.
+
+Local acceptance: 863 tests, 862 passed and 1 skipped; compileall, contract
+validator and diff check passed. GPU numerical/performance effect remains to be
+checked on its own new SHA, patch tree and output directory.
+
+## Why the CacheBlend headline is not our current measured baseline
+
+The author publication reports 2.2--3.3x TTFT reduction versus full KV recompute,
+with selective recomputation pipelined with KV retrieval for multi-chunk inputs:
+https://www.microsoft.com/en-us/research/publication/you-only-prefill-once-combining-cached-knowledge-for-large-language-model-serving-with-cacheblend/
+Our current comparison is one 640-token non-prefix Segment with an already-hit
+256-token Prefix. We additionally pay live historical-Source selection and a
+custom resumable execution bridge. This does not excuse the overhead: the
+native-versus-resumable dense gap must be reduced before expanding the benchmark.
+The current evidence does not establish CacheBlend-matched performance or QA.

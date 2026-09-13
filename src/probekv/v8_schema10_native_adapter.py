@@ -720,6 +720,7 @@ class NativeRequestContext:
             self.engine = None
             self.prepared.clear()
             self._observation.clear()
+            self.adapter.inner.cache_fuse_metadata.pop("probekv_position_workspace", None)
             self.adapter.inner.old_kvs = [[None, None] for _ in range(self.adapter.spec.num_layers)]
             for block in self.adapter.inner.layers:
                 block.self_attn.hack_kv = []
