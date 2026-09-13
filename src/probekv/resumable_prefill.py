@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
 
@@ -381,6 +382,7 @@ class ProbeKVResumablePrefillSession:
             target = self._pending_target_positions or before
             if not set(target).issubset(before):
                 raise RuntimeError("adapter target would reintroduce active tokens")
+            host_layer_start_ns = time.perf_counter_ns()
             result = self.adapter.advance_layer(
                 layer=layer,
                 hidden_states=self.hidden_states,
@@ -397,6 +399,7 @@ class ProbeKVResumablePrefillSession:
             self.working_kv = result.working_kv
             self.active_positions = target
             self.current_layer = layer
+            host_layer_elapsed_ms = (time.perf_counter_ns() - host_layer_start_ns) / 1e6
             if result.timing_events is not None:
                 self.pending_timing_events[layer] = result.timing_events
             self.layer_audit.append(
@@ -405,7 +408,14 @@ class ProbeKVResumablePrefillSession:
                     "active_before": before,
                     "active_after": target,
                     "gpu_ms": result.gpu_ms,
+                    # ``host_ms`` from the adapter is optional and may be zero
+                    # for deferred timing. Keep an independent wall span so
+                    # Python launch/packing gaps can be distinguished from
+                    # CUDA service time without adding a synchronization.
                     "host_ms": result.host_ms,
+                    "host_layer_span_ms": host_layer_elapsed_ms,
+                    "host_launch_gap_ms": (max(0.0, host_layer_elapsed_ms - result.gpu_ms)
+                                           if result.gpu_ms is not None else None),
                     "union_mask_digest": result.union_mask_digest,
                     "runtime_debug": dict(result.runtime_debug),
                 }
