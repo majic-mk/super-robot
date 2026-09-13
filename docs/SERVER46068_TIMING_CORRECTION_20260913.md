@@ -232,3 +232,28 @@ approximately 5.04 ms in one warm replay; this is a small optimization, not a
 performance claim. The online decision remains dense because its measured total
 is well above the unchanged 0.8 threshold. A cache hit never bypasses the
 PlannerSnapshot check and never crosses request or shape boundaries.
+
+## Hot-cache diagnostic and root-cause closure (efc2876, 2026-09-13)
+
+An additional replay used packed-slice layout and prefetch window 8, retaining
+the winner GPU hot-cache. It still ended as `execution_disposition=dense`:
+cold 102.90 ms and later replays 86.88, 86.80 and 102.90 ms, versus the
+matched native Prefix dense reference of 58.04 ms. FinalCommit correctly
+rejected the ready candidate; this is not a correctness failure.
+
+The trace shows the additive path: live Residual-K selection and context
+setup, winner preparation/ready checking, FinalCommit planning, and then full
+dense continuation after rejection. A hot replica does not bypass the first
+term because the closure reconstructs the request and repeats Source selection
+on every replay. Thus the request pays selection overhead plus dense work.
+
+CacheBlend generally starts from an already identified cached chunk and
+overlaps retrieval with selective recomputation; it does not pay ProbeKV's
+multi-Source decision in the critical path. The next valid optimization is a
+correctness-scoped exact-request selection cache (or resident-winner fast
+path), keyed by model/dispatch, token-and-prefix identity, selection depth and
+pool-generation snapshot, with invalidation on changes that can alter hidden
+state or Source identity. It must not bypass FinalCommit, leases, HBM
+reservations, or the `gamma=0.8` check. Until this amortization is implemented
+and verified, the live path remains a dense fallback and no multi-Segment or
+paper-speed claim is permitted.
