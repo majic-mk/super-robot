@@ -248,6 +248,8 @@ def main():
                         help="Source-selection dispatch; legacy is the default")
     parser.add_argument("--kv-layout-mode", choices=("legacy", "packed_slice"), default=None,
                         help="override the audited request composite layout")
+    parser.add_argument("--prefetch-window", type=int, default=None,
+                        help="override the audited layer prefetch window")
     parser.add_argument("--no-restore", action="store_true",
                         help="keep one live Pool/runtime across replays for amortization diagnostics")
     parser.add_argument("--gpu-hot-cache", action="store_true",
@@ -336,6 +338,10 @@ def main():
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         if args.kv_layout_mode is not None:
             request["kv_layout_mode"] = args.kv_layout_mode
+        if args.prefetch_window is not None:
+            if args.prefetch_window < 0:
+                raise ValueError("prefetch window must be non-negative")
+            request["prefetch_window"] = args.prefetch_window
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
         backend.finalize_request(request, outcome)
         atomic_json(output / ("outcome-%02d.json" % replay), outcome)
