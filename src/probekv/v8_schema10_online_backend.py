@@ -58,15 +58,24 @@ class Schema10OnlineExperimentBackend:
         authorize reuse; callers must still run FinalCommit and lease checks.
         """
         model = self.provenance.get("model_signature")
-        generation = tuple(sorted((sid, self.store.pool.content_generation(
-            model, seg["content_key"])) for sid, seg in segments.items()))
+        # Request-use/LRU epochs are intentionally excluded: they do not
+        # change the model hidden state or Source identity and would defeat
+        # amortization on every successful request.  Identity is represented
+        # by the currently visible Source IDs and their immutable logical
+        # digests; pool mutations that add/remove/replace a Source invalidate
+        # the key without treating a mere access as a semantic change.
+        pool_identity = tuple(sorted(
+            (sid, tuple(sorted((v.source_variant_id,
+                                self.store.objects[v.source_variant_id].metadata.get("logical_digest"))
+                               for v in self.store.pool.variants_for_content(model, seg["content_key"]))))
+            for sid, seg in segments.items()))
         return digest_json({
             "model": model,
             "token_ids": list(request.get("token_ids", ())),
             "cached_prefix_tokens": int(getattr(context, "cached_prefix_tokens", 0)),
             "dispatch": dict(dispatch),
             "selection_path": dispatch.get("selection_path"),
-            "pool_content_generations": generation,
+            "pool_identity": pool_identity,
         })
 
     def _get_cached_selection(self, key):
