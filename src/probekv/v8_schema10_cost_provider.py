@@ -146,6 +146,18 @@ class ProfiledJointTimelineEstimator:
                 raise ValueError("duplicate exact-support measurement cell")
             self.rows[key] = row
         self.queries = []
+        # A request-level planner may ask the exact same joint shape more than
+        # once while evaluating subset alternatives.  Cache only verified,
+        # immutable results; the context key includes every execution state
+        # that can affect masks or scheduler feasibility.
+        self._lookup_cache = {}
+
+    @staticmethod
+    def _context_cache_key(context):
+        return (tuple(context.inventory_segment_ids), tuple(context.reuse_segment_ids),
+                tuple(context.dense_fallback_segment_ids), tuple(context.committed_segment_ids),
+                tuple(sorted(context.boundary_by_segment.items())),
+                context.union_mask_digest, context.scheduler_state_id)
 
     def for_shape(self, shape):
         """Bind immutable, already verified samples to one request snapshot.
@@ -219,6 +231,16 @@ class ProfiledJointTimelineEstimator:
                 "scheduler_snapshot": context.scheduler_state_id}
 
     def lookup(self, context) -> CostLookup:
+        cache_key = self._context_cache_key(context)
+        cached = self._lookup_cache.get(cache_key)
+        if cached is not None:
+            # Preserve the audit trail for every planner query without
+            # rebuilding masks or re-hashing the exact execution shape.
+            self.queries.append(asdict(cached))
+            if self.query_audit is not None:
+                self.query_audit.append({"query": "cached", **asdict(cached),
+                                         "cache_hit": True})
+            return cached
         try:
             query = self.query(context)
         except UnsupportedTimelineCost as exc:
@@ -256,6 +278,7 @@ class ProfiledJointTimelineEstimator:
                 audit_row["supported_cell_count"] = len(self.rows)
                 audit_row["strict_shape_match"] = True
             self.query_audit.append(audit_row)
+        self._lookup_cache[cache_key] = result
         return result
 
     def estimate(self, context):
