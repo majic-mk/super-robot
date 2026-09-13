@@ -166,7 +166,7 @@ class ProfiledJointTimelineEstimator:
         and checks its own exact query, masks and ownership snapshot.
         """
         result = copy(self)
-        result.shape, result.queries = shape, []
+        result.shape, result.queries, result._lookup_cache = shape, [], {}
         return result
 
     @classmethod
