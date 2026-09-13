@@ -193,3 +193,14 @@ semantics-preserving repeated preparation; qualify any native dense continuation
 against teacher logits before enabling it; reduce exact-shape Planner overhead
 without weakening snapshots; then repeat matched warm traces. No multi-Segment,
 Qwen, formal Profile, qualification, H1--H5 or locked test ran in this revision.
+
+## Joint-query memoization follow-up
+
+The request-local verified joint query cache was added at `c56aa92` and then
+revalidated after fixing cache invalidation when a bound execution shape is
+replaced. The full local suite remains 863 tests (862 passed, 1 skipped). On
+server v48, FinalCommit planner host time moved from approximately 5.55 ms to
+approximately 5.04 ms in one warm replay; this is a small optimization, not a
+performance claim. The online decision remains dense because its measured total
+is well above the unchanged 0.8 threshold. A cache hit never bypasses the
+PlannerSnapshot check and never crosses request or shape boundaries.
