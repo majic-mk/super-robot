@@ -137,6 +137,8 @@ class ProbeKVResumablePrefillSession:
     _pending_reuse_commit: bool = False
     _started: bool = False
     _finished: bool = False
+    _observation_key: Any = field(default=None, init=False, repr=False)
+    _observation_kv: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.model_signature:
@@ -204,12 +206,15 @@ class ProbeKVResumablePrefillSession:
             raise ValueError("K may only be observed at the actual completed depth")
         if not 0 <= depth < self.adapter.total_layers:
             raise ValueError("K observation must enter an existing next layer")
-        observed = self.adapter.observe_pre_rope_k(
-            completed_depth=depth,
-            hidden_states=self.hidden_states,
-            residual=self.residual,
-            active_positions=self.active_positions,
-        )
+        if getattr(self.adapter, "selection_projection_produces_kv", False):
+            observed = self._current_observation_kv(depth)[0]
+        else:
+            observed = self.adapter.observe_pre_rope_k(
+                completed_depth=depth,
+                hidden_states=self.hidden_states,
+                residual=self.residual,
+                active_positions=self.active_positions,
+            )
         self.layer_audit.append(
             {
                 "event": "selection_k_observation",
@@ -220,6 +225,22 @@ class ProbeKVResumablePrefillSession:
             }
         )
         return observed
+
+    def _clear_observation(self):
+        self._observation_key = self._observation_kv = None
+
+    def _current_observation_kv(self, depth):
+        # Session-owned, read-only CURRENT state, not historical Source data.
+        # Never memoize a projection across a layer advance or mask change.
+        key = (depth, id(self.hidden_states), id(self.residual), self.active_positions)
+        if self._observation_key != key:
+            observed = self.adapter.observe_pre_rope_kv(
+                completed_depth=depth, hidden_states=self.hidden_states,
+                residual=self.residual, active_positions=self.active_positions)
+            if not isinstance(observed, tuple) or len(observed) != 2:
+                raise RuntimeError("repair-check adapter must return current K and V")
+            self._observation_key, self._observation_kv = key, observed
+        return self._observation_kv
 
     def observe_repair_check_pre_rope_kv(
         self, completed_depth: Optional[int] = None
@@ -237,12 +258,12 @@ class ProbeKVResumablePrefillSession:
             raise ValueError("repair check must use the actual completed depth")
         if not 1 <= depth < self.adapter.total_layers:
             raise ValueError("repair check requires a completed layer and a consumer")
-        observed = self.adapter.observe_pre_rope_kv(
-            completed_depth=depth,
-            hidden_states=self.hidden_states,
-            residual=self.residual,
-            active_positions=self.active_positions,
-        )
+        if getattr(self.adapter, "selection_projection_produces_kv", False):
+            observed = self._current_observation_kv(depth)
+        else:
+            observed = self.adapter.observe_pre_rope_kv(
+                completed_depth=depth, hidden_states=self.hidden_states,
+                residual=self.residual, active_positions=self.active_positions)
         if not isinstance(observed, tuple) or len(observed) != 2:
             raise RuntimeError("repair-check adapter must return current K and V")
         self.layer_audit.append(
@@ -298,6 +319,7 @@ class ProbeKVResumablePrefillSession:
         self.current_repair_positions_by_segment[segment_id] = repair
         self._pending_target_positions = target
         self._pending_reuse_commit = True
+        self._clear_observation()
 
     def shrink_segment_repair_support(
         self,
@@ -352,6 +374,7 @@ class ProbeKVResumablePrefillSession:
         if not self.current_layer < target_layer <= self.adapter.total_layers:
             raise ValueError("target layer must advance within model depth")
         while self.current_layer < target_layer:
+            self._clear_observation()
             layer = self.current_layer + 1
             before = self.active_positions
             target = self._pending_target_positions or before
@@ -415,4 +438,5 @@ class ProbeKVResumablePrefillSession:
             working_kv=self.working_kv,
         )
         self._finished = True
+        self._clear_observation()
         return output

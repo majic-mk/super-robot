@@ -306,12 +306,10 @@ class Schema10OnlineExperimentBackend:
                         continue
                     ordered = [row for row in ordered if row.source_variant_id in shortlist.retained_source_ids]
                 current = context.observe_current_k(sid, depth)
-                # observe_current_k returns the device-resident tensor used by
-                # the vectorized comparator.  A second host synchronize here
-                # serialized the probe with the stream that computes the
-                # observation, defeating the overlap with winner preparation.
-                # The comparator's CUDA event/host read is the synchronization
-                # boundary; keep this interval asynchronous until then.
+                # The observation and comparator use the same CUDA stream.
+                # The comparator's host score read fences the dependent work;
+                # there is no need for another device-wide synchronization.
+                # This interval measures enqueue time, not GPU completion.
                 ledger.observe_shared_interval(f"{rid}:{sid}:{depth}:metadata-current-k", metadata_begin, time.perf_counter_ns())
                 try:
                     values, plans, available, cost_failures = self._compare(context, sid, depth, ordered,
@@ -416,19 +414,6 @@ class Schema10OnlineExperimentBackend:
         accepted = ()
         final_total = None
         if frozen:
-            # Joint-future measurements start at the selected boundary.  The
-            # Prefix and already completed Transformer blocks are shared with
-            # the dense reference and must not be charged again as sunk work.
-            # Account only for ProbeKV-specific probe, preparation and ready
-            # bookkeeping intervals here.
-            probe_sunk_ms = sum(
-                max(0.0, (iv[1] - iv[0]) / 1e6)
-                for iv in getattr(ledger, "intervals", ()) if len(iv) >= 2
-            )
-            preparation_sunk_ms = sum(
-                float(v.get("host_ms", 0.0)) for v in preparation_intervals.values()
-            )
-            ready_sunk_ms = (ready_finished_ns - ready_started_ns) / 1e6
             for attempt in range(3):
                 snapshot = context.planner_snapshot(self.hbm.epoch)
                 try:
@@ -437,7 +422,10 @@ class Schema10OnlineExperimentBackend:
                     result = FinalCommitPlanner(estimator).plan_ready_subset(inventory_segment_ids=tuple(inventory),
                         eligible_ready_segment_ids=tuple(ready_boundaries), committed_segment_ids=(),
                         actual_boundary_by_segment=ready_boundaries,
-                        actual_sunk_ms=probe_sunk_ms + preparation_sunk_ms + ready_sunk_ms,
+                        # E2E admission includes queue/setup/shared blocks too.
+                        # A future-only cost does NOT contain these elapsed
+                        # intervals. Excluding them would hide real TTFT.
+                        actual_sunk_ms=(planner_started_ns - arrival_ns) / 1e6,
                         dense_reference_total_ms=dense, snapshot=snapshot,
                         current_snapshot=context.planner_snapshot(self.hbm.epoch), union_mask_digest=union_digest)
                     snapshot.assert_current(context.planner_snapshot(self.hbm.epoch))

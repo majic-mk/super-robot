@@ -219,6 +219,10 @@ class PinnedCacheBlendResumableAdapter:
     falling back to a monolithic ``generate()`` call.
     """
 
+    # The pinned model computes Q/K/V together even for K-only observations.
+    # A request session may retain the already produced V for winner repair.
+    selection_projection_produces_kv = True
+
     def __init__(self, inner_model: Any, spec: ResumableModelSpec) -> None:
         self.inner_model = inner_model
         self.spec = spec

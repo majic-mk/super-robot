@@ -63,6 +63,22 @@ def validate_native_dense_reference(native, boundary_control):
             raise ValueError("native/reference boundary control mismatch: " + key)
 
 
+def ready_joint_sample(observation):
+    """Future after preparation/repair-check, matching FinalCommit's state.
+
+    The boundary-to-token sample also includes winner preparation, which is
+    already in the online request's elapsed wall time. Keep that sample for
+    Source-local prediction only, never add it again at FinalCommit.
+    """
+    interval = _interval(observation["winner_source_ready_ns"], observation["first_token_ns"],
+                         observation["ready_to_first_token_cuda_ms"], "ready_to_first_token")
+    sample = (interval["host_end_ns"] - interval["host_start_ns"]) / 1e6
+    reported = observation.get("ready_to_first_token_ms")
+    if not isinstance(reported, (int, float)) or abs(reported - sample) > 1e-6:
+        raise ValueError("ready joint sample differs from raw timing landmarks")
+    return sample, interval
+
+
 def build_cost_table(correctness_root, output_path):
     root = Path(correctness_root)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -182,9 +198,10 @@ def build_cost_table(correctness_root, output_path):
         ready_layers=source["winner_ready_layers"],
         copy_in_flight=source["winner_copy_in_flight_at_commit_check"])
     partial_source_joint["geometry"]["layer_active_positions"] = observed_masks
+    partial_sample, partial_interval = ready_joint_sample(source)
     partial_row = _row("joint_future", partial_source_joint, provenance,
-                       source["boundary_to_first_token_ms"], source_future,
-                       joint_future_wall_ms_samples=[source["boundary_to_first_token_ms"]])
+                       partial_sample, partial_interval,
+                       joint_future_wall_ms_samples=[partial_sample])
     # A fully-ready source arm may have the same key as fixed15_all_ready;
     # retain one cell per exact execution shape, never duplicate it.
     append_joint_if_new(partial_row)
@@ -208,11 +225,9 @@ def build_cost_table(correctness_root, output_path):
             if row["layer"] > depth}
         if set(query["geometry"]["layer_active_positions"]) != set(dense_masks):
             raise ValueError("all-ready cost evidence is missing future execution layers")
-        interval = _interval(observation["winner_source_ready_ns"], observation["first_token_ns"],
-                             observation["ready_to_first_token_cuda_ms"], "ready_to_first_token")
+        sample, interval = ready_joint_sample(observation)
         append_joint_if_new(_row("joint_future", query, provenance,
-            observation["ready_to_first_token_ms"], interval,
-            joint_future_wall_ms_samples=[observation["ready_to_first_token_ms"]]))
+            sample, interval, joint_future_wall_ms_samples=[sample]))
     payload = {"key_contract": EXECUTION_SHAPE_KEY, "provenance": provenance,
                "formal_profile_frozen": False, "rows": primitives, "joint_rows": joints,
                "source_correctness_manifest_sha256": manifest["manifest_sha256"],

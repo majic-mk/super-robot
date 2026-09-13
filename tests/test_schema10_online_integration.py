@@ -207,6 +207,15 @@ class OnlineIntegration(unittest.TestCase):
         self.assertGreaterEqual(result["queue_ms"], 10.)
         self.assertAlmostEqual(result["request_ttft_ms"], (result["first_token_ns"] - arrival) / 1e6)
 
+    def test_final_admission_cannot_erase_elapsed_time_outside_selection_ledger(self):
+        self.execute(1)
+        arrival = time.perf_counter_ns() - 200_000_000
+        result = self.backend.execute(request(2), self.dispatch, arrival_ns=arrival)
+        self.assertTrue(result["committed_source_variant_ids"])
+        # The future costs 10 ms. Queue/setup/shared computation must remain
+        # in total, even though the selection ledger does not account for it.
+        self.assertGreaterEqual(result["final_predicted_request_total_ms"], 210.)
+
     def test_each_k_has_its_own_actual_causal_run(self):
         result = run_causal_capacity_traces(self.backend, [request(1), request(2)], self.dispatch,
                                            global_byte_budget=2000000)

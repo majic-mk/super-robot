@@ -5,9 +5,23 @@ import unittest
 
 validate = runpy.run_path(str(Path(__file__).resolve().parents[1] /
     "scripts/server/run_schema10_native_online_closure.py"))["validate_native_dense_reference"]
+ready_sample = runpy.run_path(str(Path(__file__).resolve().parents[1] /
+    "scripts/server/run_schema10_native_online_closure.py"))["ready_joint_sample"]
 
 
 class NativeCostBaselineTests(unittest.TestCase):
+    def test_streaming_future_excludes_already_elapsed_preparation(self):
+        row = dict(selection_boundary_ready_ns=10_000_000,
+                   winner_source_ready_ns=12_000_000, first_token_ns=55_000_000,
+                   boundary_to_first_token_ms=45., ready_to_first_token_ms=43.,
+                   ready_to_first_token_cuda_ms=42.)
+        sample, interval = ready_sample(row)
+        self.assertEqual(sample, 43.)
+        self.assertEqual(interval["host_start_ns"], 12_000_000)
+        self.assertEqual(interval["wall_endpoint_kind"], "ready_to_first_token")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            ready_sample({**row, "ready_to_first_token_ms": 45.})
+
     def reference(self):
         return dict(resumable_engine_used=False, source_id=None, diagnostic_completed_depth=0,
             committed_segments={}, whole_request_origin="native_prefix_dense_remaining",

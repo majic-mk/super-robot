@@ -61,6 +61,31 @@ class CpuLayerAdapter:
 
 
 class ResumableSessionTests(unittest.TestCase):
+    def test_selection_and_repair_share_one_fused_current_projection(self):
+        adapter = CpuLayerAdapter()
+        adapter.selection_projection_produces_kv = True
+        with patch.object(adapter, "observe_pre_rope_kv", wraps=adapter.observe_pre_rope_kv) as project:
+            session = ProbeKVResumablePrefillSession(adapter=adapter, model_signature="m",
+                token_ids=(1, 2, 3), attention_metadata={}, working_kv=[])
+            session.begin_prefill()
+            session.advance_to_layer(1)
+            hidden = session.hidden_states
+            key = session.observe_pre_rope_k(1)
+            repaired_k, repaired_v = session.observe_repair_check_pre_rope_kv(1)
+            self.assertIs(key, repaired_k)
+            self.assertEqual(project.call_count, 1)
+            self.assertEqual(session.hidden_states, hidden)
+            session.advance_to_layer(2)
+            self.assertIsNone(session._observation_kv)
+            self.assertNotEqual(session.observe_pre_rope_k(2), key)
+            self.assertEqual(project.call_count, 2)
+            session.register_source_handle("c", "s", object())
+            session.commit_segment_reuse(segment_id="c", source_id="s", boundary=3,
+                segment_positions=(0, 1), repair_positions=(0,))
+            self.assertIsNone(session._observation_kv)
+            session.finish_prefill()
+            self.assertIsNone(session._observation_kv)
+
     def test_single_segment_mask_membership_tables_are_constant_count(self):
         for size in (128, 512, 640):
             with self.subTest(size=size):
