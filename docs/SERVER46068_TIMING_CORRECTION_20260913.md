@@ -194,6 +194,16 @@ against teacher logits before enabling it; reduce exact-shape Planner overhead
 without weakening snapshots; then repeat matched warm traces. No multi-Segment,
 Qwen, formal Profile, qualification, H1--H5 or locked test ran in this revision.
 
+## Prefetch-window comparison
+
+Using the same e70 code, Mistral request and 640-token shape, increasing the
+layer prefetch window from 1 to 8 reduced the fixed-winner diagnostic from
+52.05 ms to 50.58 ms (CUDA interval 50.55 ms). A window of 32 regressed to
+52.90 ms and increased preparation to 3.48 ms. Load/compute overlap is
+therefore present but partial and saturates near window 8; it is not yet
+sufficient for the 46.21 ms final-admission target. The v50/v51 raw directories
+are retained; this is a tuning observation, not a frozen RuntimeCostProfile.
+
 ## Joint-query memoization follow-up
 
 The request-local verified joint query cache was added at `c56aa92` and then
