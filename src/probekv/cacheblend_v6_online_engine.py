@@ -77,14 +77,31 @@ class LayerwiseLoadTicket:
     expected_layer_count: int = 0
     integrity_verification_pending: bool = False
     transfer_failed: bool = False
+    preparation_cancelled: bool = False
+
+    def cancel_pending(self) -> dict:
+        """Stop new submissions, retaining all submitted buffers/events.
+
+        This does not fence or release any lease. The owner must still fence
+        already submitted work before releasing backing or GPU reservations.
+        Keep pending inventory for audit; it must never be submitted later.
+        """
+        self.preparation_cancelled = True
+        return {"source_id": self.source_id,
+                "not_submitted_layers": sorted(self.pending_layers),
+                "submitted_layers": sorted(self.layer_events),
+                "not_submitted_bytes": sum(t.numel() * t.element_size()
+                    for pair in self.pending_layers.values() for t in pair)}
 
     def fully_ready(self) -> bool:
         expected = set(range(1, self.expected_layer_count + 1))
-        return bool(expected and not self.transfer_failed and not self.pending_layers
+        return bool(expected and not self.transfer_failed and not self.preparation_cancelled and not self.pending_layers
                     and set(self.layer_tensors) == set(self.layer_events) == expected
                     and all(event.query() for event in self.layer_events.values()))
 
     def wait_all(self, loader) -> None:
+        if self.preparation_cancelled:
+            raise RuntimeError("cancelled preparation cannot be resumed")
         if self.transfer_failed:
             raise RuntimeError("cannot complete a failed transfer")
         loader.prefetch_pending(self, self.expected_layer_count)
@@ -438,6 +455,8 @@ class TorchLayerwiseSourceLoader:
         """
         if ticket.transfer_failed:
             raise RuntimeError("failed transfer cannot be resumed")
+        if ticket.preparation_cancelled:
+            return
         pending = [layer for layer in sorted(ticket.pending_layers) if layer <= through_layer]
         if not pending:
             return
@@ -831,7 +850,7 @@ class CacheBlendV6OnlineEngine:
             # Enqueue future H2D only after current compute has been queued;
             # otherwise the copy stream drains eagerly and cannot overlap.
             for ticket in self.tickets.values():
-                if ticket.pending_layers:
+                if ticket.pending_layers and not ticket.preparation_cancelled:
                     self.source_loader.prefetch_pending(
                         ticket, next_layer + max(1, self.prefetch_window))
 

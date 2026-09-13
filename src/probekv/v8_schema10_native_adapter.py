@@ -237,6 +237,7 @@ class NativeRequestContext:
         self.generation = 1
         self._observation = {}
         self._setup_events = []
+        self.finish_timing_landmarks = {}
         with self._setup_span("native_inputs_and_sampling"):
             self._prepared_inputs = adapter.prepare(native.metadata(is_prompt=True))
         self.attention, self.sampling = self._prepared_inputs[2:4]
@@ -538,10 +539,22 @@ class NativeRequestContext:
             self.committed[sid] = boundary
         self.generation += 1
 
+    def cancel_uncommitted_preparation(self):
+        """Final online rejection: stop future copies, not in-flight ones."""
+        cancelled = []
+        for sid, ticket in self.prepared.items():
+            if sid not in self.committed:
+                cancelled.append({"segment_id": sid, **ticket.cancel_pending()})
+        if cancelled:
+            self.generation += 1
+        # close() still fences all in-flight work before releasing leases.
+        return cancelled
+
     def finish(self, on_first_token):
         if self.finished:
             raise RuntimeError("request finish is not repeatable")
         a, torch = self.adapter, self.adapter.torch
+        self.finish_timing_landmarks["finish_enter"] = time.perf_counter_ns()
         if self.engine is None:
             ids, pos = self._prepared_inputs[:2]
             a.inner.cache_fuse_metadata.update({"check": False, "collect": False, "probekv_cfo_collector": None})
@@ -552,6 +565,7 @@ class NativeRequestContext:
             hidden = self.engine.finish_prefill()
             if self.engine.session.active_positions[-1] != len(self.request["token_ids"]) - 1:
                 raise RuntimeError("native sampling lost the mandatory suffix row")
+        self.finish_timing_landmarks["remaining_prefill_submitted"] = time.perf_counter_ns()
         if self.capture_collector is not None and not self.committed and not self.cached_prefix_tokens:
             from .v8_schema10_canonical import export_original_full_prefill
             self.canonical_exports = export_original_full_prefill(a, self.request, self.capture_collector)
@@ -569,13 +583,16 @@ class NativeRequestContext:
         # No decode call may append to the full-prefill CFO capture.
         a.inner.cache_fuse_metadata.update(collect=False, probekv_cfo_collector=None)
         self.native.finish_prefill(exact_dense=not self.committed)
+        self.finish_timing_landmarks["native_prefill_bookkeeping_done"] = time.perf_counter_ns()
         selected = self.sampling.selected_token_indices.clone()
         try:
             self.sampling.selected_token_indices[0] = hidden.shape[0] - 1
             logits = a.outer.compute_logits(hidden, self.sampling)
         finally:
             self.sampling.selected_token_indices.copy_(selected)
+        self.finish_timing_landmarks["logits_submitted"] = time.perf_counter_ns()
         predicted = [int(logits.argmax().item())]
+        self.finish_timing_landmarks["first_token_host_ready"] = time.perf_counter_ns()
         on_first_token()
         self.logit_trace = [logits.detach().float().cpu()] if self.request.get("capture_logits") else []
         teachers = self.request.get("teacher_token_ids", ())

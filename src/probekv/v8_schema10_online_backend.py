@@ -459,12 +459,27 @@ class Schema10OnlineExperimentBackend:
                         "snapshot_difference": getattr(exc, "snapshot_difference", None)})
         else:
             runtime_events.append({"kind": "dense_fallback", "reason": "no_frozen_sources"})
+        final_admission_finished_ns = time.perf_counter_ns()
+        if hasattr(context, "cancel_uncommitted_preparation"):
+            runtime_events.append({"kind": "final_rejection_preparation_cancellation",
+                "cancelled": context.cancel_uncommitted_preparation()})
+        finish_started_ns = time.perf_counter_ns()
         first = []
         output = context.finish(lambda: first.append(time.perf_counter_ns()))
         if len(first) != 1:
             raise RuntimeError("runtime did not record exactly one actual first-token endpoint")
         completion = time.perf_counter_ns()
         ttft = (first[0] - arrival_ns) / 1e6
+        from .request_wallclock import partition_request_wallclock
+        landmarks = [("service_start", started)]
+        opened = getattr(context, "online_context_opened_ns", None)
+        if opened is not None:
+            landmarks.append(("context_opened", opened))
+        landmarks += [("selection_closed", selection_closed_ns),
+            ("ready_check_begin", ready_started_ns), ("ready_check_end", ready_finished_ns),
+            ("final_admission_end", final_admission_finished_ns), ("finish_call", finish_started_ns)]
+        landmarks += list(getattr(context, "finish_timing_landmarks", {}).items())
+        wallclock = partition_request_wallclock(arrival_ns, first[0], landmarks)
         selected = [d.selected_source_variant_id for d in selection.decisions.values() if d.selected_source_variant_id]
         committed = [frozen[sid] for sid in accepted]
         not_applicable = None
@@ -484,6 +499,7 @@ class Schema10OnlineExperimentBackend:
         exports = context.export_exact_dense() if (not accepted and context.cached_prefix_tokens == 0
             and output.get("whole_request_origin") == "exact_dense_full_prefill") else {}
         row = {**output, "request_id": rid, "arrival_ns": arrival_ns, "service_start_ns": started,
+            "request_wallclock": wallclock,
             "queue_ms": (started - arrival_ns) / 1e6, "first_token_ns": first[0], "completion_ns": completion,
             "request_ttft_ms": ttft, "execution_kind": "online_policy", "forced_source": False,
             "selection_events": selection.events, "selection_failures": selection_failures,
