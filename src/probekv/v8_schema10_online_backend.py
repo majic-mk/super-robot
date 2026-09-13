@@ -346,8 +346,11 @@ class Schema10OnlineExperimentBackend:
                 if cached is not None and int(getattr(cached, "completed_depth", -1)) == depth:
                     decision = selection.restore_cached_decision(
                         sid, cached, evidence_digest=selection_cache_key)
-                    compatible.update(v.source_variant_id for v in eligible[sid]
-                                      if v.residual_score <= decision.absolute_threshold)
+                    # Cached decisions already contain the audited winner;
+                    # StoredSourceVariant rows do not carry a live residual
+                    # score, so do not re-evaluate compatibility here.
+                    if decision.selected_source_variant_id:
+                        compatible.add(decision.selected_source_variant_id)
                     # Continue through the common winner preparation path.
                     if decision.selected_source_variant_id:
                         source_id = decision.selected_source_variant_id
