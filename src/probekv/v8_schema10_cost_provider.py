@@ -153,8 +153,11 @@ class ProfiledJointTimelineEstimator:
         self._lookup_cache = {}
 
     @staticmethod
-    def _context_cache_key(context):
-        return (tuple(context.inventory_segment_ids), tuple(context.reuse_segment_ids),
+    def _context_cache_key(self, context):
+        # ``shape`` is intentionally immutable by contract; tests and the
+        # rebind path may replace it between planner calls. Include its object
+        # identity so a replacement cannot reuse a prior request's result.
+        return (id(self.shape), tuple(context.inventory_segment_ids), tuple(context.reuse_segment_ids),
                 tuple(context.dense_fallback_segment_ids), tuple(context.committed_segment_ids),
                 tuple(sorted(context.boundary_by_segment.items())),
                 context.union_mask_digest, context.scheduler_state_id)
