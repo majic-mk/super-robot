@@ -306,7 +306,12 @@ class Schema10OnlineExperimentBackend:
                         continue
                     ordered = [row for row in ordered if row.source_variant_id in shortlist.retained_source_ids]
                 current = context.observe_current_k(sid, depth)
-                context.synchronize()
+                # observe_current_k returns the device-resident tensor used by
+                # the vectorized comparator.  A second host synchronize here
+                # serialized the probe with the stream that computes the
+                # observation, defeating the overlap with winner preparation.
+                # The comparator's CUDA event/host read is the synchronization
+                # boundary; keep this interval asynchronous until then.
                 ledger.observe_shared_interval(f"{rid}:{sid}:{depth}:metadata-current-k", metadata_begin, time.perf_counter_ns())
                 try:
                     values, plans, available, cost_failures = self._compare(context, sid, depth, ordered,
