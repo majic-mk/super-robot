@@ -246,6 +246,8 @@ def main():
     parser.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
                         default="legacy_multicheckpoint",
                         help="Source-selection dispatch; legacy is the default")
+    parser.add_argument("--kv-layout-mode", choices=("legacy", "packed_slice"), default=None,
+                        help="override the audited request composite layout")
     parser.add_argument("--no-restore", action="store_true",
                         help="keep one live Pool/runtime across replays for amortization diagnostics")
     parser.add_argument("--gpu-hot-cache", action="store_true",
@@ -332,6 +334,8 @@ def main():
                    "reuse_current_kv_observation": not args.disable_current_kv_cache,
                    "use_gpu_hot_cache": bool(args.gpu_hot_cache),
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
+        if args.kv_layout_mode is not None:
+            request["kv_layout_mode"] = args.kv_layout_mode
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
         backend.finalize_request(request, outcome)
         atomic_json(output / ("outcome-%02d.json" % replay), outcome)
