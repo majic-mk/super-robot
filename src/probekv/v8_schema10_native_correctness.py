@@ -214,6 +214,8 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "block_size": adapter.scheduler.block_manager.block_size,
                     "source_digest_before": before, "destination_digest": destination, "source_digest_after": after,
                     "layer_rows": layer_rows, "committed_segments": dict(context.committed),
+                    "native_dense_continuation_layers": [r["layer"] for r in output["layer_audit"]
+                        if r.get("runtime_debug", {}).get("native_dense_continuation")],
                     "overlap_trace": list(output.get("overlap_trace", ())),
                     "resumable_engine_used": context.engine is not None,
                     "kv_layout_mode": q.get("kv_layout_mode", "legacy"),
@@ -349,6 +351,16 @@ def run_combined_native_r1(backend, *, request, warm_request, source_id, segment
         "arm_digests": {name: r["raw_observation_sha256"] for name, r in records.items()},
         "production_admission_applicable": False, "paper_evidence": False}
     atomic_json(root / "comparison.json", row)
+    if request.get("native_dense_continuation", False):
+        control = records["resumable_prefix_teacher"]
+        expected = list(range(2, backend.adapters[next(iter(backend.adapters))].spec.num_layers + 1))
+        if control["native_dense_continuation_layers"] != expected:
+            raise RuntimeError("native dense continuation omitted expected layers")
+        if records["dense_prefix_free"]["token_ids"] != records["dense_free"]["token_ids"]:
+            raise RuntimeError("native dense continuation changed greedy tokens")
+        error = controls["resumable_prefix_teacher"]["vs_dense_per_position_relative_l2"]
+        if max(error) > 1e-4:
+            raise RuntimeError("native dense continuation violates teacher logit tolerance")
     validate_correctness_observation("r1", row)
     row["raw_observation_sha256"] = digest_json(row)
     atomic_json(root / "r1.json", row)

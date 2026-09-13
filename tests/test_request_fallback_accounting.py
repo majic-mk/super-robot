@@ -10,6 +10,47 @@ from probekv.request_wallclock import partition_request_wallclock
 
 
 class FallbackAccountingTests(unittest.TestCase):
+    def dense_context(self):
+        calls = []
+        class Layer:
+            def __init__(self, index):
+                self.index = index
+            def __call__(self, positions, hidden, kv, metadata, residual, status, fuse_metadata, old_kv):
+                calls.append((self.index, status, old_kv, positions.tolist()))
+                return hidden + self.index, residual + 1
+        session = SimpleNamespace(current_layer=1, commits={}, active_positions=(2, 3),
+            _pending_target_positions=None, _pending_reuse_commit=False,
+            hidden_states=torch.ones(2, 1), residual=torch.ones(2, 1),
+            working_kv=[None]*3, attention_metadata=object(), pending_timing_events={}, layer_audit=[])
+        adapter = SimpleNamespace(inner=SimpleNamespace(layers=[Layer(i) for i in range(3)],
+                cache_fuse_metadata={}), spec=SimpleNamespace(num_layers=3), check_deadline=lambda: None,
+                torch=SimpleNamespace(cuda=SimpleNamespace(Event=lambda **kw: Mock())))
+        context = SimpleNamespace(adapter=adapter, engine=SimpleNamespace(session=session),
+            cached_prefix_tokens=2, request={"token_ids": [1, 2, 3, 4]}, committed={},
+            _prepared_inputs=(None, torch.tensor([2, 3])), generation=1)
+        return context, calls
+
+    def test_native_continuation_preserves_state_and_skips_completed_layer(self):
+        context, calls = self.dense_context()
+        NativeRequestContext._advance_native_dense_remaining(context)
+        self.assertEqual(calls, [(1, 0, (None, None), [2, 3]), (2, 0, (None, None), [2, 3])])
+        self.assertEqual(context.engine.session.current_layer, 3)
+        self.assertTrue(torch.equal(context.engine.session.hidden_states, torch.full((2, 1), 4.)))
+        self.assertEqual([r["layer"] for r in context.engine.session.layer_audit], [2, 3])
+
+    def test_native_continuation_rejects_selective_or_shrunk_state(self):
+        for case in ("commit", "shrunk", "pending"):
+            context, calls = self.dense_context()
+            if case == "commit":
+                context.engine.session.commits = {"C": 2}
+            elif case == "shrunk":
+                context.engine.session.active_positions = (3,)
+            else:
+                context.engine.session._pending_target_positions = (3,)
+            with self.assertRaises(RuntimeError):
+                NativeRequestContext._advance_native_dense_remaining(context)
+            self.assertEqual(calls, [])
+
     def ticket(self):
         pair = (torch.ones(4, dtype=torch.bfloat16), torch.ones(4, dtype=torch.bfloat16))
         event = Mock()

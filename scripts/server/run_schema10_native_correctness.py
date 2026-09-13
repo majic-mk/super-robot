@@ -78,6 +78,8 @@ def main():
                    help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
     p.add_argument("--hardware-trace", action="store_true",
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
+    p.add_argument("--native-dense-continuation", action="store_true",
+                   help="verify opt-in native Prefix continuation after a dense-only probe")
     p.add_argument("--defer-layer-timing", action="store_true",
                    help="opt-in audited 0013 patch: resolve timing after prefill, preserve layer dependency waits")
     p.add_argument("--gpu-hot-cache", action="store_true",
@@ -145,6 +147,7 @@ def main():
                                    prefetch_window=args.prefetch_window)
     for request_name in ("target", "warm", "source"):
         requests[request_name]["defer_layer_timing"] = args.defer_layer_timing
+        requests[request_name]["native_dense_continuation"] = args.native_dense_continuation
         requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
         requests[request_name]["component_timing"] = args.component_timing
     requests["target"]["layout_ab_repeats"] = args.layout_ab_repeats
@@ -196,6 +199,7 @@ def main():
         "diagnostic_segment_tokens": args.segment_tokens,
         "hardware_trace": args.hardware_trace,
         "defer_layer_timing": args.defer_layer_timing,
+        "native_dense_continuation": args.native_dense_continuation,
         "eager_cfo_reference": not args.skip_eager_cfo,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}

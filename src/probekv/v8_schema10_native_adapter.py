@@ -561,7 +561,11 @@ class NativeRequestContext:
             self._enable_original_capture()
             hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv, attn_metadata=self.attention)
         else:
-            self.advance_to_depth(a.spec.num_layers)
+            if (self.request.get("native_dense_continuation", False)
+                    and not self.committed and self.capture_collector is None):
+                self._advance_native_dense_remaining()
+            else:
+                self.advance_to_depth(a.spec.num_layers)
             hidden = self.engine.finish_prefill()
             if self.engine.session.active_positions[-1] != len(self.request["token_ids"]) - 1:
                 raise RuntimeError("native sampling lost the mandatory suffix row")
@@ -570,6 +574,45 @@ class NativeRequestContext:
             from .v8_schema10_canonical import export_original_full_prefill
             self.canonical_exports = export_original_full_prefill(a, self.request, self.capture_collector)
         return self.finish_from_prefill_hidden(hidden, on_first_token)
+
+    def _advance_native_dense_remaining(self):
+        """Continue current hidden/residual on native Prefix attention.
+
+        Only legal before any selective commit. Preserve the original paged
+        blocks and sampling metadata; never re-embed or replay earlier layers.
+        Opt-in until the matched dense/teacher controls have passed on GPU.
+        """
+        a, session = self.adapter, self.engine.session
+        expected = tuple(range(self.cached_prefix_tokens, len(self.request["token_ids"])))
+        if (self.committed or session.commits or tuple(session.active_positions) != expected
+                or session._pending_target_positions is not None or session._pending_reuse_commit):
+            raise RuntimeError("native dense continuation requires unmodified complete active rows")
+        positions = self._prepared_inputs[1]
+        if len(positions) != len(expected) or session.hidden_states.shape[0] != len(expected):
+            raise RuntimeError("native dense continuation input geometry mismatch")
+        metadata = a.inner.cache_fuse_metadata
+        metadata.update(probekv_resumable=False, check=False, collect=False,
+                        probekv_cfo_collector=None, reuse_active=False)
+        mask_digest = digest_json(expected)
+        for index in range(session.current_layer, a.spec.num_layers):
+            a.check_deadline()
+            begin, end = (a.torch.cuda.Event(enable_timing=True) for _ in range(2))
+            host_start = time.perf_counter_ns()
+            begin.record()
+            hidden, residual = a.inner.layers[index](positions, session.hidden_states,
+                session.working_kv[index], session.attention_metadata, session.residual,
+                0, metadata, (None, None))
+            end.record()
+            session.hidden_states, session.residual = hidden, residual
+            session.current_layer = index + 1
+            session.pending_timing_events[index + 1] = (begin, end)
+            session.layer_audit.append({"layer": index + 1, "active_before": expected,
+                "active_after": expected, "gpu_ms": None,
+                "host_ms": (time.perf_counter_ns() - host_start) / 1e6,
+                "union_mask_digest": mask_digest,
+                "runtime_debug": {"status": 0, "native_dense_continuation": True,
+                    "prefix_active": bool(self.cached_prefix_tokens)}})
+            self.generation += 1
 
     def finish_from_prefill_hidden(self, hidden, on_first_token):
         """Common sampling/decode endpoint, also used by isolated loop diagnostics.
