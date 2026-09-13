@@ -139,6 +139,7 @@ class ProbeKVResumablePrefillSession:
     _finished: bool = False
     _observation_key: Any = field(default=None, init=False, repr=False)
     _observation_kv: Any = field(default=None, init=False, repr=False)
+    reuse_current_kv_observation: bool = True
 
     def __post_init__(self) -> None:
         if not self.model_signature:
@@ -206,7 +207,7 @@ class ProbeKVResumablePrefillSession:
             raise ValueError("K may only be observed at the actual completed depth")
         if not 0 <= depth < self.adapter.total_layers:
             raise ValueError("K observation must enter an existing next layer")
-        if getattr(self.adapter, "selection_projection_produces_kv", False):
+        if self.reuse_current_kv_observation and getattr(self.adapter, "selection_projection_produces_kv", False):
             observed = self._current_observation_kv(depth)[0]
         else:
             observed = self.adapter.observe_pre_rope_k(
@@ -258,7 +259,7 @@ class ProbeKVResumablePrefillSession:
             raise ValueError("repair check must use the actual completed depth")
         if not 1 <= depth < self.adapter.total_layers:
             raise ValueError("repair check requires a completed layer and a consumer")
-        if getattr(self.adapter, "selection_projection_produces_kv", False):
+        if self.reuse_current_kv_observation and getattr(self.adapter, "selection_projection_produces_kv", False):
             observed = self._current_observation_kv(depth)
         else:
             observed = self.adapter.observe_pre_rope_kv(

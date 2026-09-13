@@ -63,3 +63,18 @@ fresh output directories; no previous result is overwritten or relabelled.
   exists; do not claim a measured speedup from unit tests.
 
 Formal Profile, qualification, H1--H5 and locked test remain disabled.
+
+## Local acceptance and deployment status
+
+Full local unittest discovery: 859 tests, 858 passed and 1 skipped. Contract
+validator and `git diff --check` passed. This is CPU/local verification only.
+
+The closure runner now has `--disable-current-kv-cache` for a same-SHA baseline.
+The default and this control must use the same new correctness/cost root and
+separate fresh output directories. The manifest and summary explicitly record
+which mode ran. Interleave control/candidate sessions and retain cold samples;
+do not compare different code revisions' single warm observations.
+
+The deployment attempt in this turn did not reach SSH: port 46068 returned
+connection-refused twice. Thus no new code or experiment was deployed by that
+attempt. The local bundle is ready; server v44 evidence is unchanged.

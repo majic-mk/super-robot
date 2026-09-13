@@ -279,6 +279,9 @@ class NativeRequestContext:
     def _begin(self):
         if self.engine is not None:
             return
+        reuse_observation = self.request.get("reuse_current_kv_observation", True)
+        if not isinstance(reuse_observation, bool):
+            raise ValueError("reuse_current_kv_observation must be boolean")
         if self.probe_fallback_reason:
             raise RuntimeError("missing Prefix shadow must use native dense fallback")
         a = self.adapter
@@ -321,6 +324,7 @@ class NativeRequestContext:
                 absolute_positions=tuple(range(self.cached_prefix_tokens, n)),
                 exact_prefix_tokens=self.cached_prefix_tokens, exact_prefix_layers=shadows,
                 attention_metadata=self.attention, working_kv=a.kv)
+            self.engine.session.reuse_current_kv_observation = reuse_observation
         except Exception:
             a.torch.cuda.synchronize()
             self.engine = None

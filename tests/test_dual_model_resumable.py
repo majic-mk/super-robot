@@ -61,6 +61,21 @@ class CpuLayerAdapter:
 
 
 class ResumableSessionTests(unittest.TestCase):
+    def test_projection_cache_disabled_control_repeats_identical_projection(self):
+        adapter = CpuLayerAdapter()
+        adapter.selection_projection_produces_kv = True
+        adapter.observe_pre_rope_k = lambda **kwargs: adapter.observe_pre_rope_kv(**kwargs)[0]
+        with patch.object(adapter, "observe_pre_rope_kv", wraps=adapter.observe_pre_rope_kv) as project:
+            session = ProbeKVResumablePrefillSession(adapter=adapter, model_signature="m",
+                token_ids=(1, 2, 3), attention_metadata={}, working_kv=[], reuse_current_kv_observation=False)
+            session.begin_prefill()
+            session.advance_to_layer(1)
+            key = session.observe_pre_rope_k(1)
+            repair_key, _ = session.observe_repair_check_pre_rope_kv(1)
+            self.assertEqual(key, repair_key)
+            self.assertEqual(project.call_count, 2)
+            self.assertIsNone(session._observation_kv)
+
     def test_selection_and_repair_share_one_fused_current_projection(self):
         adapter = CpuLayerAdapter()
         adapter.selection_projection_produces_kv = True

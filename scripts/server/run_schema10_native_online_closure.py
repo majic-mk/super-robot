@@ -250,6 +250,8 @@ def main():
                         help="keep one live Pool/runtime across replays for amortization diagnostics")
     parser.add_argument("--gpu-hot-cache", action="store_true",
                         help="retain the winner GPU replica across the online replay (diagnostic only)")
+    parser.add_argument("--disable-current-kv-cache", action="store_true",
+                        help="same-SHA diagnostic control: repeat the current QKV projection at repair check")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -277,7 +279,8 @@ def main():
     cost_sha = file_digest(cost_path)
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
-                    locked_test_accessed=False, closure_replays=args.replays)
+                    locked_test_accessed=False, closure_replays=args.replays,
+                    current_kv_observation_cache_enabled=not args.disable_current_kv_cache)
     manifest["binding"]["runtime_measurement_sha256"] = cost_sha
     runtime = manifest["native_runtime"]
     runtime.update(cost_table_path=str(cost_path), cost_table_sha256=cost_sha,
@@ -326,6 +329,7 @@ def main():
             backend.restore(initial)
         request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay),
                    "request_epoch": int(requests["target"].get("request_epoch", 10)) + replay,
+                   "reuse_current_kv_observation": not args.disable_current_kv_cache,
                    "use_gpu_hot_cache": bool(args.gpu_hot_cache),
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
@@ -342,6 +346,7 @@ def main():
     atomic_json(output / "joint_query_audit.json", backend.costs.joint_query_audit)
     closed = bool(outcome.get("committed_source_variant_ids"))
     summary = {"code_commit": code, "source_variant_id": source.source_variant_id,
+               "current_kv_observation_cache_enabled": not args.disable_current_kv_cache,
                "prefix_khook_r1_prerequisite_passed": True,
                "online_closed_loop_passed": closed,
                "execution_disposition": outcome.get("execution_disposition"),
