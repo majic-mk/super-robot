@@ -138,3 +138,58 @@ Our current comparison is one 640-token non-prefix Segment with an already-hit
 custom resumable execution bridge. This does not excuse the overhead: the
 native-versus-resumable dense gap must be reduced before expanding the benchmark.
 The current evidence does not establish CacheBlend-matched performance or QA.
+
+## v46b: optional position workspace on real A800
+
+Execution code: `e70ccfd392c3831358f84acd768afe5ba15642f1`.
+Patch SHA: `105c75a8f52e5e8fcad79d59aee0ac1b0ab1b4fca3f2b1c4fff4034a0320d2fd`.
+Independently rebuilt tree: `17598b539577193d7ea71c4819c9fec94b21a803`.
+Patch directory: `/root/autodl-tmp/probekv_stage2/src/CacheBlend-native-e70ccfd`.
+Existing compiled extensions were copied unchanged (no CUDA kernel change).
+
+The first v46 launch failed its import/tree gate: environment startup prepended
+the old vendor path ahead of PYTHONPATH. Its log is preserved. v46b explicitly
+prepends the audited vendor path via runpy, with a staged index matching the
+independent audit. No global environment or old vendor tree was overwritten.
+
+Raw correctness/cost: `artifacts/native-e70ccfd-server46068-v46b`.
+Raw online replays: `artifacts/online-e70ccfd-v46b` (both under server stage2).
+Prefix/K-hook/r=1 and matched cost probe passed. Fixed15 commits at layer 2:
+704 active rows in layer 1; 160 active rows in layers 2--32.
+
+| Diagnostic arm | First-token host ms |
+| --- | ---: |
+| Native Prefix dense | 57.766389 |
+| Resumable dense | 73.291246 |
+| Fixed15 streaming, fixed winner (not online selection) | 52.208928 |
+
+Online cold replay: 106.615149 ms. Three subsequent replays:
+87.720428, 85.127865, 87.388006 ms. All rejected reuse under the unchanged gamma.
+The observed reduction relative to v45 is encouraging but not an interleaved
+repeated matched control establishing an optimization effect size.
+
+Exact partition for online replay 2 (all host wall intervals, no GPU-time sums):
+
+| Interval group | ms |
+| --- | ---: |
+| Context open | 4.460190 |
+| Selection/shared work/preparation | 10.340288 |
+| Ready repair check | 1.233436 |
+| Final admission | 5.656842 |
+| Remaining dense prefill submission | 61.912071 |
+| Bookkeeping/logits/host token readiness | 1.478859 |
+| Queue and intervening call boundaries | 0.046179 |
+| **Total** | **85.127865** |
+
+`unaccounted_ns=0`. This is a rejected online request, not a selective execution
+time. At this baseline gamma permits only 46.2131112 ms total. Even the observed
+fixed-winner control exceeds that amount before live selector overhead. Therefore
+next work must prioritize executor critical-path reduction and matched native
+fallback correctness, not declare success from a faster selector or enlarge the
+benchmark to hide single-Segment overhead. Full online convergence is not achieved.
+
+Next diagnostic order: per-layer launch/attention/composite breakdown; remove
+semantics-preserving repeated preparation; qualify any native dense continuation
+against teacher logits before enabling it; reduce exact-shape Planner overhead
+without weakening snapshots; then repeat matched warm traces. No multi-Segment,
+Qwen, formal Profile, qualification, H1--H5 or locked test ran in this revision.
