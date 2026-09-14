@@ -87,3 +87,35 @@ inputs before another gain claim. Keep gamma=0.8 and all failure evidence.
 
 `formal_profile_bundle_frozen=false`, `gpu_runtime_qualified=false`,
 `h1_h2_execution_allowed=false`, `paper_evidence=false`, `locked_test_accessed=false`.
+
+## Follow-up: cold-start attribution and deferred timing control
+
+Same execution SHA, separate output directories, no admission bypass:
+
+- `online-27c2577-hostprofile-v2`: three cProfile diagnostic replays. `_compare`
+  cumulative time was 19.401 / 2.624 / 2.696 ms; first-run argsort calls accounted
+  for 16.068 ms. `digest_json` cumulative time was about 8 ms per replay, with
+  profiler overhead included. These nested function times must not be summed.
+  The whole execute profile includes post-first-token decoding (32 generated
+  tokens), so its roughly 0.5 second duration is NOT TTFT.
+- `online-27c2577-unprofiled-r3-v3`: no profiler, same restored initial pool,
+  selector cache disabled. TTFT 118.925947 / 92.748874 / 88.659755 ms. No commits.
+- `native-27c2577-deferred-512-v2`: only `--defer-layer-timing` added to the
+  previous correctness/cost command. Correctness and matched costs passed.
+  Native dense 53.342492 ms; fixed15 boundary future 42.512950 ms; ready future
+  39.459286 ms; resumable dense TTFT 66.099977 ms. These single samples suggest
+  lower executor timing cost but do not prove stable end-to-end improvement.
+- `online-27c2577-deferred-r3-v4`: consumes that deferred cost bundle, with no
+  profiler. TTFT 106.910701 / 101.249063 / 106.345820 ms. Again no commits.
+
+Deferred timing did not establish an end-to-end improvement: warm online
+replays were slower than the earlier unprofiled batch. These are sequential
+small batches, not randomized paired trials; do not attribute the difference
+solely to the flag or promote it on this evidence. All raw outputs are retained.
+
+The next bottleneck work must preserve the cold/warm distinction and separately
+address shape/hash/planner overhead and dense/repair executor continuation.
+Do not hide first-use compilation from whole-trace accounting. Do not enable
+native dense continuation merely because it is faster: its separate numerical
+qualification remains required. Multi-Source net gain stays blocked by the
+single-Segment production-commit prerequisite.
