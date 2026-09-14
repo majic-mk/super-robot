@@ -705,13 +705,25 @@ class CacheBlendV6OnlineEngine:
         )
         if len(ticket.layer_tensors) + len(ticket.pending_layers) != self.model_spec.num_layers:
             raise ValueError("canonical Source layer count differs from model")
-        if len(ticket.segment_positions) != canonical_layers[0][0].shape[0]:
+        # A GPU-hot replica is authoritative for this request's shape.  Do not
+        # touch a CPU/SSD LayerFile merely to inspect its first layer.
+        shape_template = (
+            ticket.layer_tensors[min(ticket.layer_tensors)]
+            if ticket.layer_tensors
+            else canonical_layers[0]
+        )
+        if len(ticket.segment_positions) != shape_template[0].shape[0]:
             raise ValueError("canonical Source rows differ from Segment length")
         if not self._composite_old_kvs:
             request_span = self.session.absolute_positions[-1] + 1
+            allocation_layers = (
+                tuple(ticket.layer_tensors[layer] for layer in sorted(ticket.layer_tensors))
+                if not ticket.pending_layers and ticket.layer_tensors
+                else canonical_layers
+            )
             with self._component("composite_allocate_zero"):
                 self._composite_old_kvs = allocate_working_composite(
-                    self.source_loader.torch, canonical_layers, request_span,
+                    self.source_loader.torch, allocation_layers, request_span,
                     self.source_loader.device, packed=self.kv_layout_mode == "packed_slice")
             for layer, (key, value) in enumerate(canonical_layers, start=1):
                 composite_key, composite_value = self._composite_old_kvs[layer - 1]
