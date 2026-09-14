@@ -678,7 +678,8 @@ class NativeRequestContext:
         from .v8_schema10_qa import answer_evidence
         evidence = answer_evidence(predicted, tokenizer=a.llm.get_tokenizer(), request=self.request)
         return {**evidence, "whole_request_origin": origin,
-                "position_validation_audit": dict(a.inner.cache_fuse_metadata.get("probekv_position_validation_audit", {})),
+                "position_validation_audit": (dict(a.inner.cache_fuse_metadata.get("probekv_position_validation_audit", {}))
+                                              if self.engine else {}),
                 "cached_prefix_tokens": self.cached_prefix_tokens,
                 "prefix_shadow_audit": getattr(self.native, "shadow_lookup_audit", {}),
                 "layer_audit": self.engine.session.layer_audit if self.engine else [],
