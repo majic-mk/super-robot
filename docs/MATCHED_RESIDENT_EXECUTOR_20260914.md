@@ -59,3 +59,13 @@ Patch tree: `dcb41b56ef3ea2831e8fe8b0fcb66f56682bbff4`; patch SHA256: `236f4f85b
 Runtime package: `/root/autodl-tmp/probekv_stage2/src/CacheBlend-matched-4881010-0016/vllm_blend/vllm` (explicit process import, independently audited patches 0001–0016).
 
 No online admission/profile/QA qualification is unlocked by this result. No dynamic repair, multi-Source selection, Qwen or multi-Segment experiments were run.
+
+## 2026-09-14 hot-path event optimization rerun
+
+Commit `43f4e59be8d45688c1690c9987b03095927ed2c6` disables per-layer compute
+CUDA events when hardware tracing is disabled. The qualification/profiling path
+still records the events. A fresh 20-pair A800 run in
+`matched-43f4e59-resident512-r20` reduced the boundary-only gap from 1.255329 ms
+to 0.957688 ms (CacheBlend 43.751159 ms; ProbeKV 44.708847 ms). Token IDs,
+logits, mask digest, Source digest and cleanup remained identical. This is an
+executor optimization result, not paper evidence or a frozen runtime profile.
