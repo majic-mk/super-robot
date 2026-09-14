@@ -119,3 +119,39 @@ Do not hide first-use compilation from whole-trace accounting. Do not enable
 native dense continuation merely because it is faster: its separate numerical
 qualification remains required. Multi-Source net gain stays blocked by the
 single-Segment production-commit prerequisite.
+
+## Matched position-validation control
+
+`native-27c2577-hostpos-512-v3` holds the same deferred-timing baseline and adds
+only the existing owned-host position-validation option (audited patch 0015).
+The pair manifest freezes target tokens, Prefix warm-up, depth/boundary, layout,
+Source-free dense-control mode, timing endpoint, two warmup pairs and six
+measured pairs with alternating order. This is not a resident CacheBlend reuse
+comparison and must not be combined with earlier boundary-only executor results.
+
+Six measured pairs: device-check mean **66.176451 ms**, owned-host-check mean
+**59.640212 ms**, paired mean delta **-6.536239 ms**, median delta **-6.361964 ms**.
+All generated token IDs match. Prefix/K-hook/r=1 prerequisites and cost probe
+pass. The CPU proof applies only to request-owned, version-unchanged indices;
+unknown tensors still use device validation, and mutated owned tensors fail.
+
+The new `aggregate_position_validation_ab.py` checks preregistered pair order,
+warmup exclusion, exact prompt/Prefix/sampling/depth/tokens/masks, no source or
+reuse commit, and wall-clock endpoint arithmetic. It binds file digests and
+validates any embedded producer digest. Historical pair files without embedded
+digests remain explicitly marked as such; calculated file hashes must not be
+described as independently authenticated producer signatures. Missing pairs
+and mismatched conditions cause an error rather than silent sample removal.
+
+The corresponding `online-27c2577-hostpos-r3-v5` consumes fresh matching cost
+evidence: native dense 56.208308 ms, online TTFT **105.244413 / 81.797840 /
+76.835476 ms**, all dense fallback, no production commit. These sequential
+online batches are not paired and establish no stable end-to-end speedup.
+The standalone fixed15 cost arm is 41.077689 ms boundary-to-first-token and
+37.883289 ms ready-to-first-token; neither is full online TTFT.
+
+Local regression with the new aggregator: 888 tests, one existing skip;
+compile and contract validation pass. Runtime remains on the exact `27c2577`
+SHA; local analysis/report changes do not retroactively rebind GPU evidence.
+Next: reduce duplicated shape/digest/planner work and initialization, with
+separate numerical validation before any alternative fallback execution path.
