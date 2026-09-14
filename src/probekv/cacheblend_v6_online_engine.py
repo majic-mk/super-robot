@@ -833,20 +833,28 @@ class CacheBlendV6OnlineEngine:
         while self.session.current_layer < layer:
             next_layer = self.session.current_layer + 1
             torch = self.source_loader.torch
-            compute_start = torch.cuda.Event(enable_timing=True)
-            compute_end = torch.cuda.Event(enable_timing=True)
+            # Per-layer CUDA timing events are diagnostic-only.  Creating and
+            # recording them on the formal online path adds synchronization
+            # bookkeeping even when no hardware overlap trace is requested.
+            # Keep the exact instrumentation for qualification/profiling, but
+            # make the normal executor hot path event-free.
+            capture_trace = bool(getattr(self.source_loader, "capture_hardware_trace", False))
+            compute_start = torch.cuda.Event(enable_timing=True) if capture_trace else None
+            compute_end = torch.cuda.Event(enable_timing=True) if capture_trace else None
             with self._component("source_rows_install"):
                 self._install_ready_source_rows(next_layer)
             # Record the launch boundary after current-layer source rows have
             # been installed (and any dependency wait has been enqueued).
             # Otherwise a not-yet-ready source layer can make the copy stream
             # run before the actual compute work, falsely eliminating overlap.
-            compute_start.record(torch.cuda.current_stream())
+            if capture_trace:
+                compute_start.record(torch.cuda.current_stream())
             with (torch.profiler.record_function(f"probekv.compute_layer.{next_layer}")
                   if getattr(self.source_loader, "capture_hardware_trace", False) else nullcontext()):
                 self.session.advance_to_layer(next_layer)
-            compute_end.record(torch.cuda.current_stream())
-            self._compute_events[next_layer] = (compute_start, compute_end)
+            if capture_trace:
+                compute_end.record(torch.cuda.current_stream())
+                self._compute_events[next_layer] = (compute_start, compute_end)
             # Enqueue future H2D only after current compute has been queued;
             # otherwise the copy stream drains eagerly and cannot overlap.
             for ticket in self.tickets.values():
