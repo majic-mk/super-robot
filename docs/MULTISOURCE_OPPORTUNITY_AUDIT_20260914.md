@@ -47,3 +47,19 @@ establish winner switching over multiple future targets in a common Source pool.
 No Source-complementarity, production-commit, positive-net-gain or architecture
 freeze conclusion is available yet. Missing targets mean insufficient evidence,
 not proof that multi-Source has no value. No new GPU job was started by this audit.
+
+## Original-record verification
+
+The CPU-only `audit_multisource_origins.py` checked the 17 frozen MuSiQue
+corpus-repeat cases against `data/official/musique-train.jsonl` and the local
+Mistral tokenizer revision `c170c708c41dac9275d15a8fff4eca08d52bab71`.
+All 17 passed: four distinct historical origin IDs excluding the target,
+original document identity, preceding-context rendering, complete parent-token
+reconstruction and target question/answers. Only partition-member origins were
+normalized/emitted. Output:
+`/root/autodl-tmp/probekv_stage2/artifacts/multisource-origin-musique-418bb39-v1.json`.
+The report binds raw/partition/case file digests. This is corpus provenance
+evidence, not GPU execution, complementarity, chronological production frequency
+or selector quality evidence. Other two datasets remain pending original-record
+verification. The audit reported an environment OMP_NUM_THREADS warning; it did
+not execute CUDA timing.
