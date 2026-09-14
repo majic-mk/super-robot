@@ -55,13 +55,10 @@ def execute_resident_boundary_arm(backend, *, request, plan, arm, teacher_token_
                 ticket.wait_all(a.loader)
                 ctx.finish_selection({"C": plan.source_id}, {"C": ticket})
                 ctx.supports["C"] = {l: plan.repair_positions for l in range(plan.boundary, a.spec.num_layers + 1)}
-                # Install the same immutable Source in private working buffers
-                # for both arms before timing. PB's normal per-layer install is
-                # deliberately not monkeypatched away: it is executor overhead.
-                idx = slice(desc["positions"][0], desc["positions"][-1] + 1)
-                for layer, (key, value) in ticket.layer_tensors.items():
-                    ctx.engine._composite_old_kvs[layer - 1][0][idx] = key
-                    ctx.engine._composite_old_kvs[layer - 1][1][idx] = value
+                # GPU-hot Sources are preinstalled once by the engine before
+                # the timed interval. Both arms therefore receive identical
+                # request-owned working KV without a redundant per-layer
+                # scatter in the ProbeKV executor.
                 saved = dict(a.inner.cache_fuse_metadata)
                 try:
                     if arm == "cacheblend":

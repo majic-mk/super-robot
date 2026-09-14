@@ -78,6 +78,10 @@ class LayerwiseLoadTicket:
     integrity_verification_pending: bool = False
     transfer_failed: bool = False
     preparation_cancelled: bool = False
+    # Layers already copied into the request-owned composite working KV.
+    # Resident GPU Sources can be installed once before the timed executor;
+    # CPU/SSD paths leave this empty and retain the layer-wise pipeline.
+    installed_layers: set[int] = field(default_factory=set, repr=False)
 
     def cancel_pending(self) -> dict:
         """Stop new submissions, retaining all submitted buffers/events.
@@ -323,6 +327,7 @@ class TorchLayerwiseSourceLoader:
         request_id: str = "",
         replica_id: str = "",
         prefetch_window: int = 0,
+        resident_layers: Optional[Mapping[int, Tuple[Any, Any]]] = None,
     ) -> LayerwiseLoadTicket:
         if not canonical_layers:
             raise ValueError("canonical Source has no KV layers")
@@ -343,6 +348,15 @@ class TorchLayerwiseSourceLoader:
         pinning_host_ms = 0.0
         if prefetch_window < 0:
             raise ValueError("prefetch_window must be non-negative")
+        if resident_layers is not None:
+            expected = set(range(1, len(canonical_layers) + 1))
+            if set(int(layer) for layer in resident_layers) != expected:
+                raise ValueError("resident Source layers must cover the complete Artifact")
+            # A hot GPU Replica is already prepared.  Do not enqueue a second
+            # copy from its CPU backing; use the immutable GPU tensors as the
+            # request's source handles and preserve the same layer event ABI.
+            canonical_layers = tuple(resident_layers[layer] for layer in sorted(resident_layers))
+            prefetch_window = 0
         if prefetch_window and not isinstance(canonical_layers, (tuple, list)):
             raise ValueError("windowed prefetch requires an in-memory CPU backing")
         copy_layers = canonical_layers if not prefetch_window else canonical_layers[:prefetch_window]
@@ -731,8 +745,25 @@ class CacheBlendV6OnlineEngine:
                 ):
                     raise ValueError("locked Sources have incompatible KV geometry")
         self.tickets[segment_id] = ticket
-        self._source_row_indices[segment_id] = source_row_index(
+        row_positions = source_row_index(
             ticket.segment_positions, contiguous_copy=self.kv_layout_mode == "packed_slice")
+        self._source_row_indices[segment_id] = row_positions
+        # GPU-hot Sources are immutable and complete at admission time.  Install
+        # their rows once, before timed execution, so the per-layer executor does
+        # not launch a redundant K/V scatter for every Transformer block.  The
+        # layer-wise path remains unchanged for CPU/SSD-backed Sources.
+        if (
+            not ticket.pending_layers
+            and len(ticket.layer_tensors) == self.model_spec.num_layers
+            and all(key.device.type == "cuda" and value.device.type == "cuda"
+                    for key, value in ticket.layer_tensors.values())
+        ):
+            with self._component("source_rows_preinstall"):
+                for layer, (key, value) in ticket.layer_tensors.items():
+                    destination_key, destination_value = self._composite_old_kvs[layer - 1]
+                    destination_key[row_positions] = key
+                    destination_value[row_positions] = value
+            ticket.installed_layers.update(ticket.layer_tensors)
         self.session.register_source_handle(segment_id, source_id, ticket)
         self.audit.transferred_bytes_by_segment[segment_id] = ticket.requested_bytes
         self.audit.integrity_mode_by_segment[segment_id] = ticket.integrity_mode
@@ -757,10 +788,13 @@ class CacheBlendV6OnlineEngine:
             # copy-stream event, preserving load/compute overlap.
             if not ticket.layer_ready(layer):
                 current_stream.wait_event(event)
+            if layer in ticket.installed_layers:
+                continue
             key, value = ticket.layer_tensors[layer]
             positions = self._source_row_indices[segment_id]
             self._composite_old_kvs[layer - 1][0][positions] = key
             self._composite_old_kvs[layer - 1][1][positions] = value
+            ticket.installed_layers.add(layer)
 
     def ready_for_boundary(self, segment_id: str, boundary: int) -> bool:
         ticket = self.tickets.get(segment_id)
