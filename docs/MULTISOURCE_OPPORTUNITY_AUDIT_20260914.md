@@ -1,5 +1,48 @@
 # Fast-path safety and multi-Source data audit
 
+## Evidence correction: native capture is not a complementarity certificate
+
+The server report `multisource-complementarity-79424e5.json` was inspected on
+2026-09-14. It contains three captures, four Sources in each, and d1/d2 winner
+disagreement in two of the three captures. These are dense-shadow observations:
+native K is captured on GPU, but comparison/extraction is on CPU. They do not
+measure online selector latency, QA, commit coverage, or net gain.
+
+The v1 aggregator incorrectly set `multisource_complementarity_observed=true`
+when global winner IDs differed across captures. Different candidate pools
+necessarily have different Source IDs; this is not evidence of complementary
+Sources for future requests. The old report must not drive Go/No-Go. Preserve
+it as superseded evidence; do not rewrite its historical bytes.
+
+The v2 aggregator requires raw `observation.json`, validates its digest and
+recomputes `replay.json`. Duplicate observations and tampered replay are rejected.
+CPU tests retain CPU provenance. Cross-request ranking changes are grouped only
+within identical Source ID sets and model/tokenizer/code/patch/config/partition
+bindings. Even such ranking changes leave complementarity **pending**: fixed-pool
+multi-target QA and matched net-gain/coverage evidence are still necessary.
+
+The previous conversational statement that these three captures prove Source
+complementarity is withdrawn. Likewise, different d1/d2 winners do not tell us
+which depth is correct; deep residual and QA oracles remain pending.
+
+### Cost probe continuation status
+
+The current remote checkout (`79424e5474bb65a4ee97dfeea7463b337de61e21`)
+correctly rejected the old `native-9e296fef-server46068-v44-costprobe` inputs
+because of code revision mismatch. A fresh cost run has **not been confirmed**.
+The SSH session subsequently closed; two later TCP probes of port 46068 were
+refused. Do not interpret this as proof that the instance is powered off or that
+the submitted command ran. Inspect processes and output files after reconnecting
+before launching another run. Never delete or reuse an existing output directory.
+
+Resume with verified model/patch assets and the intended imported vLLM path.
+Use the basic single-Segment correctness + `--cost-probe` path, not the separate
+matched-executor-only path. A 512-token Segment exceeds the bounded eager CFO
+reference's total-source limit; explicitly use `--skip-eager-cfo`, which must
+not claim CFO qualification. Collect costs and run online closure at the same
+exact checkout SHA. The three-cohort replay must be reaggregated into a new v2
+output after deployment; no corrected server report is claimed yet.
+
 ## Safety revision (CPU-tested; GPU rerun pending)
 
 Automatic preinstallation is removed from production preparation. An explicit
