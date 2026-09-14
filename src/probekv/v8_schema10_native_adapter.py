@@ -10,6 +10,7 @@ from dataclasses import asdict
 import inspect
 import math
 import time
+from functools import lru_cache
 
 from .cacheblend_v6_online_engine import CacheBlendV6OnlineEngine
 from .model_adapters import PinnedCacheBlendResumableAdapter
@@ -33,6 +34,22 @@ def dispatch_depths(selection_path, model_spec):
         # model_spec must be the schema6+ spec, not historical v6 MISTRAL_SPEC.
         return tuple(model_spec.checkpoints)
     raise ValueError("unconnected native dispatch")
+
+
+@lru_cache(maxsize=128)
+def _defer_layer_timing_capability(method):
+    """Fail-closed patch capability check, cached per implementation object.
+
+    The audited patch is immutable for a running adapter, so repeating
+    ``inspect.getsource`` on every request only adds host setup overhead.
+    Keeping this as a pure cached function preserves the existing rejection
+    behavior while making the check a one-time adapter capability probe.
+    """
+    try:
+        source = inspect.getsource(method)
+    except (OSError, TypeError) as exc:
+        raise RuntimeError("deferred timing capability cannot be audited") from exc
+    return "probekv_defer_layer_timing" in source
 
 
 def validate_native_sampling_request(request):
@@ -290,9 +307,8 @@ class NativeRequestContext:
         n = len(self.request["token_ids"])
         defer_timing = bool(self.request.get("defer_layer_timing", False))
         if defer_timing:
-            import inspect
             with self._setup_span("patch_capability_check"):
-                if "probekv_defer_layer_timing" not in inspect.getsource(a.inner.probekv_advance_prefill):
+                if not _defer_layer_timing_capability(a.inner.probekv_advance_prefill):
                     raise RuntimeError("deferred timing requires the independently audited 0013 patch")
         a.inner.cache_fuse_metadata["probekv_defer_layer_timing"] = defer_timing
         a.inner.cache_fuse_metadata["probekv_host_position_validation"] = bool(
