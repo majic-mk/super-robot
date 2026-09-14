@@ -63,3 +63,23 @@ evidence, not GPU execution, complementarity, chronological production frequency
 or selector quality evidence. Other two datasets remain pending original-record
 verification. The audit reported an environment OMP_NUM_THREADS warning; it did
 not execute CUDA timing.
+
+## Follow-up: remaining datasets and multi-target candidates
+
+Original-record checks also passed for all 13 frozen 2Wiki and 17 frozen HotPotQA
+corpus-repeat cases (same Mistral tokenizer). Reports on server:
+`multisource-origin-2wiki-c8afd4e-v1.json` and
+`multisource-origin-hotpot-c8afd4e-v1.json`. Thus all 47 corpus-repeat candidates
+passed origin, context, question/answer and exact parent-token reconstruction.
+This supersedes the pending two-dataset status above, but not the usefulness gate.
+
+Within the 17 authorized MuSiQue document groups, recovery found additional
+distinct-context targets for 12 groups. Extra-target count distribution is
+0:5 groups, 1:4, 2:5, 3:1, 5:1, 7:1 (29 extra records total). Each is after all
+four historical Sources under the frozen seed-20260726 pseudo-time ordering.
+They exclude existing Source and target example IDs. Recovery does not assign
+partition roles or grant execution: exact retokenization and group-isolation
+checks must precede a derived development manifest. Report:
+`/root/autodl-tmp/probekv_stage2/artifacts/multisource-target-recovery-musique-v2.json`.
+The first recovery attempt failed on a string/Path output API mismatch; v2 fixes
+the writer, with a fresh output name. No GPU job or qualification was started.
