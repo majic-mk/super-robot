@@ -523,6 +523,8 @@ class Schema10OnlineExperimentBackend:
                     planner_elapsed_ms = (time.perf_counter_ns() - planner_started_ns) / 1e6
                     result = replace(result, request_total_ms=result.request_total_ms + planner_elapsed_ms)
                     result = replace(result, cost_audit={**result.cost_audit,
+                        "decision_start_elapsed_ns": planner_started_ns - arrival_ns,
+                        "decision_end_elapsed_ns": time.perf_counter_ns() - arrival_ns,
                         "planner_elapsed_ms": planner_elapsed_ms,
                         "post_prune_total_after_planner_ms": result.request_total_ms,
                         "initial_candidate_total_after_planner_ms": (

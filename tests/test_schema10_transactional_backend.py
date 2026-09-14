@@ -231,6 +231,10 @@ class MeasuredCostLookup(unittest.TestCase):
         self.assertEqual(audit["pruning_steps"][0]["removed_segment_id"], "b")
         self.assertEqual(audit["pruning_steps"][0]["marginal_saving_ms"], -30)
         self.assertEqual(len(audit["evaluated_subsets"]), 3)
+        cells = [r["measurement_evidence"] for r in audit["evaluated_subsets"]]
+        self.assertEqual(len({c["measurement_key_sha256"] for c in cells}), 3)
+        self.assertEqual(len({c["union_mask_digest"] for c in cells}), 3)
+        self.assertTrue(all(len(c["measurement_row_sha256"]) == 64 for c in cells))
 
     def test_candidate_rejection_does_not_report_dense_as_candidate_cost(self):
         estimator = self.estimator([(("a",), 90), ((), 100)])

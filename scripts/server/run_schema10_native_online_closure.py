@@ -258,6 +258,8 @@ def main():
                         help="same-SHA diagnostic control: repeat the current QKV projection at repair check")
     parser.add_argument("--selection-cache-mode", choices=("off", "exact_request"), default="off",
                         help="explicit repeated-request control; never enable caching just because replay > 0")
+    parser.add_argument("--host-profile", action="store_true",
+                        help="instrument backend.execute with cProfile; attribution only, not performance evidence")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -287,6 +289,8 @@ def main():
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
                     locked_test_accessed=False, closure_replays=args.replays,
                     selection_cache_mode=args.selection_cache_mode,
+                    host_profile_enabled=args.host_profile,
+                    performance_comparison_eligible=not args.host_profile,
                     current_kv_observation_cache_enabled=not args.disable_current_kv_cache)
     manifest["binding"]["runtime_measurement_sha256"] = cost_sha
     runtime = manifest["native_runtime"]
@@ -346,7 +350,17 @@ def main():
             if args.prefetch_window < 0:
                 raise ValueError("prefetch window must be non-negative")
             request["prefetch_window"] = args.prefetch_window
-        outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
+        if args.host_profile:
+            import cProfile
+            profiler = cProfile.Profile()
+            try:
+                profiler.enable()
+                outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
+            finally:
+                profiler.disable()
+                profiler.dump_stats(str(output / ("host-profile-%02d.pstats" % replay)))
+        else:
+            outcome = backend.execute(request, dispatch, arrival_ns=time.perf_counter_ns())
         backend.finalize_request(request, outcome)
         atomic_json(output / ("outcome-%02d.json" % replay), outcome)
         replay_summaries.append({"replay": replay, "kernel_state": "cold_selector" if replay == 0 else "after_prior_replay",

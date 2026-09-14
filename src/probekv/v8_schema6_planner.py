@@ -42,6 +42,7 @@ class JointTimelineEstimate:
     joint_future_ms: float
     critical_path_components_ms: Mapping[str, float]
     per_segment_attribution_ms: Mapping[str, float] = field(default_factory=dict)
+    measurement_evidence: Mapping = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not all(math.isfinite(x) for x in (self.joint_future_ms, *self.critical_path_components_ms.values(), *self.per_segment_attribution_ms.values())):
@@ -284,6 +285,7 @@ class RefinedJointPlannerV6:
                 "request_total_at_snapshot_ms": actual_sunk_ms + result.joint_future_ms,
                 # These are alternatives, not additive times or executed paths.
                 "critical_path_components_ms": dict(result.critical_path_components_ms),
+                "measurement_evidence": dict(result.measurement_evidence),
             })
             return result
 

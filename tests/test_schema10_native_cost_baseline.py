@@ -7,9 +7,19 @@ validate = runpy.run_path(str(Path(__file__).resolve().parents[1] /
     "scripts/server/run_schema10_native_online_closure.py"))["validate_native_dense_reference"]
 ready_sample = runpy.run_path(str(Path(__file__).resolve().parents[1] /
     "scripts/server/run_schema10_native_online_closure.py"))["ready_joint_sample"]
+source_options = runpy.run_path(str(Path(__file__).resolve().parents[1] /
+    "scripts/server/run_schema10_native_correctness.py"))["cost_probe_source_options"]
 
 
 class NativeCostBaselineTests(unittest.TestCase):
+    def test_gpu_resident_control_never_relabels_streaming_measurement(self):
+        for hot in (False, True):
+            options = source_options(hot)
+            self.assertEqual(options["streaming"], {"wait_all_source_layers": False,
+                "use_gpu_hot_cache": False, "retain_gpu_hot_cache": False})
+            self.assertTrue(options["all_ready"]["wait_all_source_layers"])
+            self.assertEqual(options["all_ready"]["retain_gpu_hot_cache"], hot)
+
     def test_streaming_future_excludes_already_elapsed_preparation(self):
         row = dict(selection_boundary_ready_ns=10_000_000,
                    winner_source_ready_ns=12_000_000, first_token_ns=55_000_000,

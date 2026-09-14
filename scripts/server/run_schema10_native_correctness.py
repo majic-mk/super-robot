@@ -58,6 +58,16 @@ def diagnostic_requests(tokenizer, model_signature, tokenizer_hash, *, segment_t
         "teacher_token_ids": suffix[:31]}
 
 
+def cost_probe_source_options(gpu_hot_cache):
+    """Keep streaming measurement independent from resident-control setup."""
+    return {
+        "streaming": {"wait_all_source_layers": False, "use_gpu_hot_cache": False,
+                      "retain_gpu_hot_cache": False},
+        "all_ready": {"wait_all_source_layers": True, "use_gpu_hot_cache": False,
+                      "retain_gpu_hot_cache": bool(gpu_hot_cache)},
+    }
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model-audit", required=True)
@@ -261,6 +271,7 @@ def main():
             cost_root = root / "cost-probe"
             cost_root.mkdir()
             loader.integrity_mode = "online_immutable"
+            source_options = cost_probe_source_options(args.gpu_hot_cache)
             native_dense_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], verify_full_digests=False)
             dense_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
@@ -269,12 +280,11 @@ def main():
             source_cost, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
-                retain_gpu_hot_cache=args.gpu_hot_cache,
-                wait_all_source_layers=args.gpu_hot_cache)
+                **source_options["streaming"])
             source_all_ready, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
-                wait_all_source_layers=True, use_gpu_hot_cache=args.gpu_hot_cache)
+                **source_options["all_ready"])
             prepared_dense, _ = execute_fixed_source_arm(backend, request=requests["target"],
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,

@@ -127,6 +127,7 @@ class ProfiledJointTimelineEstimator:
             raise ValueError("unknown measurement key contract")
         self.key_contract = key_contract
         self.measurement_digest, self.rows = measurement_digest, {}
+        self.row_digests = {}
         self.query_audit = query_audit
         self.formal_profile_frozen = False
         for raw in measurements:
@@ -145,6 +146,7 @@ class ProfiledJointTimelineEstimator:
             if key in self.rows:
                 raise ValueError("duplicate exact-support measurement cell")
             self.rows[key] = row
+            self.row_digests[key] = claimed
         self.queries = []
         # A request-level planner may ask the exact same joint shape more than
         # once while evaluating subset alternatives.  Cache only verified,
@@ -260,7 +262,13 @@ class ProfiledJointTimelineEstimator:
             # NOT a calibrated probabilistic guarantee or a formally frozen UCB.
             upper = max(row["joint_future_wall_ms_samples"])
             estimate = JointTimelineEstimate(upper, {"measured_joint_critical_path": upper},
-                                             row.get("per_segment_attribution_ms", {}))
+                row.get("per_segment_attribution_ms", {}),
+                {"measurement_key_sha256": key,
+                 "measurement_row_sha256": self.row_digests[key],
+                 "measurement_table_sha256": self.measurement_digest,
+                 "union_mask_digest": (digest_json(query["geometry"]["layer_active_positions"])
+                     if "geometry" in query else query.get("union_mask_digest")),
+                 "formal_profile_frozen": False})
             result = CostLookup("SUPPORTED", key, estimate, None, self.measurement_digest)
         self.queries.append(asdict(result))
         if self.query_audit is not None:
