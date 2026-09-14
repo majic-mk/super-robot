@@ -1,5 +1,7 @@
 # ProbeKV 系统性创新点文献审计
 
+> 2026-09-14 状态限定：下文是2026-07-27历史方案的文献审计。其“calibrated interval / conservative safe budget”等描述不是当前training-free主路径已实现或已验证的能力，不得直接复制为当前创新结论。当前待验证主张是：同一exact non-prefix Segment的目标模型早期当前状态，是否比单Source或历史metadata选择提供更好的匹配质量端到端效率。多variants、query-aware repair和overlap本身已有先例。验证顺序与SparseX/QCFuse借鉴边界见[收敛执行总计划](PROBEKV_CONVERGENCE_EXECUTION_PLAN_20260914.md)。
+
 审计冻结日期：2026-07-27
 
 审计对象：公开可检索的论文、会议论文和专利文本

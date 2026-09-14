@@ -224,6 +224,27 @@ class MeasuredCostLookup(unittest.TestCase):
             actual_sunk_ms=10, dense_reference_total_ms=100, snapshot=snapshot, current_snapshot=snapshot, union_mask_digest="stale")
         self.assertEqual(result.accepted_ready_segment_ids, ("a",))
         self.assertEqual(result.request_total_ms, 70)
+        audit = result.cost_audit
+        self.assertEqual(audit["initial_candidate_total_at_snapshot_ms"], 100)
+        self.assertEqual(audit["post_prune_total_at_snapshot_ms"], 70)
+        self.assertEqual(audit["admission_limit_ms"], 80)
+        self.assertEqual(audit["pruning_steps"][0]["removed_segment_id"], "b")
+        self.assertEqual(audit["pruning_steps"][0]["marginal_saving_ms"], -30)
+        self.assertEqual(len(audit["evaluated_subsets"]), 3)
+
+    def test_candidate_rejection_does_not_report_dense_as_candidate_cost(self):
+        estimator = self.estimator([(("a",), 90), ((), 100)])
+        snapshot = PlannerSnapshot(1, 1, "scheduler", 1, "profile")
+        result = RefinedJointPlannerV6(estimator).plan_subset(inventory_segment_ids=("a", "b"),
+            eligible_ready_segment_ids=("a",), committed_segment_ids=(), actual_boundary_by_segment={"a": 2},
+            actual_sunk_ms=10, dense_reference_total_ms=100, snapshot=snapshot,
+            current_snapshot=snapshot, union_mask_digest="input-reference-not-rebuilt-mask")
+        self.assertEqual(result.accepted_ready_segment_ids, ())
+        self.assertEqual(result.cost_audit["initial_candidate_total_at_snapshot_ms"], 100)
+        self.assertEqual(result.request_total_ms, 110)
+        self.assertEqual(result.cost_audit["post_prune_joint_future_ms"], 100)
+        self.assertEqual(result.cost_audit["evaluated_subsets"][0]["dense_fallback_segment_ids"], ["b"])
+        self.assertEqual(result.cost_audit["evaluated_subsets"][1]["dense_fallback_segment_ids"], ["a", "b"])
 
     def test_pruning_memo_is_limited_to_one_snapshot_call(self):
         estimator = self.estimator([(("a", "b"), 90), (("a",), 60), (("b",), 85), ((), 100)])

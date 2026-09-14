@@ -109,4 +109,5 @@ class FinalCommitPlanner:
             dense_reference_total_ms=legacy.dense_reference_total_ms,
             planner_snapshot=snapshot,
             reason_by_segment=legacy.reason_by_segment,
+            cost_audit=legacy.cost_audit,
         )

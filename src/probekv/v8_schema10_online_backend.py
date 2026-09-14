@@ -69,6 +69,12 @@ class Schema10OnlineExperimentBackend:
                                 self.store.objects[v.source_variant_id].metadata.get("logical_digest"))
                                for v in self.store.pool.variants_for_content(model, seg["content_key"]))))
             for sid, seg in segments.items()))
+        # A cache key with a missing digest would turn an incomplete identity
+        # into a reusable decision.  Treat it as cache-ineligible instead of
+        # silently accepting ``None`` as part of the key.
+        if any(digest is None or not isinstance(digest, str) or not digest
+               for _, variants in pool_identity for _, digest in variants):
+            return None
         return digest_json({
             "model": model,
             "token_ids": list(request.get("token_ids", ())),
@@ -79,6 +85,8 @@ class Schema10OnlineExperimentBackend:
         })
 
     def _get_cached_selection(self, key):
+        if key is None:
+            return None
         value = self.selection_result_cache.get(key)
         return deepcopy(value) if value is not None else None
 
@@ -86,6 +94,8 @@ class Schema10OnlineExperimentBackend:
         # Store only selector evidence/decisions, never tensors, leases or
         # physical locations. A bounded cache prevents untrusted request input
         # from becoming an unbounded memory sink.
+        if key is None:
+            return
         if len(self.selection_result_cache) >= 64 and key not in self.selection_result_cache:
             self.selection_result_cache.pop(next(iter(self.selection_result_cache)))
         self.selection_result_cache[key] = deepcopy(decisions)
@@ -512,12 +522,19 @@ class Schema10OnlineExperimentBackend:
                     snapshot.assert_current(context.planner_snapshot(self.hbm.epoch))
                     planner_elapsed_ms = (time.perf_counter_ns() - planner_started_ns) / 1e6
                     result = replace(result, request_total_ms=result.request_total_ms + planner_elapsed_ms)
+                    result = replace(result, cost_audit={**result.cost_audit,
+                        "planner_elapsed_ms": planner_elapsed_ms,
+                        "post_prune_total_after_planner_ms": result.request_total_ms,
+                        "initial_candidate_total_after_planner_ms": (
+                            result.cost_audit["initial_candidate_total_at_snapshot_ms"] + planner_elapsed_ms
+                            if result.cost_audit else None)})
                     if result.accepted_ready_segment_ids and result.request_total_ms > .8 * dense:
                         # The actual planner is part of request sunk time. A slow
                         # query must not authorize a path with an obsolete budget.
                         runtime_events.append({"kind": "final_commit", "accepted_ready_segment_ids": [],
                             "rejected_ready_segment_ids": list(ready_boundaries), "request_total_ms": None,
                             "proposed_request_total_ms": result.request_total_ms,
+                            "cost_audit": dict(result.cost_audit),
                             "planner_elapsed_ms": planner_elapsed_ms, "reason": "planner_elapsed_exceeds_gamma"})
                     else:
                         context.commit_reuse(result)

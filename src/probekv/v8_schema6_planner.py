@@ -255,6 +255,8 @@ class RefinedJointPlannerV6:
         # Its shape/boundaries/snapshot are fixed here. Never retain estimates
         # across calls or after the accepted execution set is changed outside.
         subset_estimates = {}
+        evaluated_subsets = []
+        pruning_steps = []
 
         def evaluate(active: set[str]) -> JointTimelineEstimate:
             key = frozenset(active)
@@ -273,19 +275,36 @@ class RefinedJointPlannerV6:
                 )
             )
             subset_estimates[key] = result
+            evaluated_subsets.append({
+                "reuse_segment_ids": sorted(active),
+                "dense_fallback_segment_ids": sorted(dense),
+                "committed_segment_ids": sorted(committed),
+                "boundary_by_segment": {sid: actual_boundary_by_segment[sid] for sid in sorted(active)},
+                "joint_future_ms": result.joint_future_ms,
+                "request_total_at_snapshot_ms": actual_sunk_ms + result.joint_future_ms,
+                # These are alternatives, not additive times or executed paths.
+                "critical_path_components_ms": dict(result.critical_path_components_ms),
+            })
             return result
 
         active = set(eligible)
         estimate = evaluate(active)
+        initial_future_ms = estimate.joint_future_ms
         while active and actual_sunk_ms + estimate.joint_future_ms > self.gamma * dense_reference_total_ms + 1e-12:
             marginal = []
-            for segment_id in active:
+            for segment_id in sorted(active, key=order.__getitem__):
                 without = evaluate(active - {segment_id})
                 saving = without.joint_future_ms - estimate.joint_future_ms
                 marginal.append((saving, order[segment_id], segment_id))
-            _, _, victim = min(marginal)
+            saving, _, victim = min(marginal)
+            before_future_ms = estimate.joint_future_ms
             active.remove(victim)
             estimate = evaluate(active)
+            pruning_steps.append({"removed_segment_id": victim,
+                "before_joint_future_ms": before_future_ms,
+                "after_joint_future_ms": estimate.joint_future_ms,
+                "marginal_saving_ms": saving,
+                "reason": "candidate_total_exceeds_gamma"})
         accepted = tuple(segment_id for segment_id in inventory if segment_id in active)
         rejected = tuple(segment_id for segment_id in inventory if segment_id in eligible - active)
         untouched = tuple(segment_id for segment_id in inventory if segment_id not in eligible)
@@ -302,6 +321,18 @@ class RefinedJointPlannerV6:
             dense_reference_total_ms,
             snapshot,
             reasons,
+            {"timing_semantics": "profiled_alternatives_at_planner_snapshot_not_actual_ttft",
+             "actual_sunk_at_snapshot_ms": actual_sunk_ms,
+             "gamma": self.gamma,
+             "admission_limit_ms": self.gamma * dense_reference_total_ms,
+             "initial_candidate_segment_ids": [sid for sid in inventory if sid in eligible],
+             "initial_candidate_joint_future_ms": initial_future_ms,
+             "initial_candidate_total_at_snapshot_ms": actual_sunk_ms + initial_future_ms,
+             "post_prune_segment_ids": list(accepted),
+             "post_prune_joint_future_ms": estimate.joint_future_ms,
+             "post_prune_total_at_snapshot_ms": actual_sunk_ms + estimate.joint_future_ms,
+             "evaluated_subsets": evaluated_subsets,
+             "pruning_steps": pruning_steps},
         )
 
 

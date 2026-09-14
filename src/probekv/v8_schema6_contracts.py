@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 
 V8_SCHEMA6_VERSION = 6
@@ -119,6 +119,7 @@ class Gate3SubsetDecision:
     dense_reference_total_ms: float
     planner_snapshot: PlannerSnapshot
     reason_by_segment: Mapping[str, str] = field(default_factory=dict)
+    cost_audit: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         accepted = set(self.accepted_ready_segment_ids)

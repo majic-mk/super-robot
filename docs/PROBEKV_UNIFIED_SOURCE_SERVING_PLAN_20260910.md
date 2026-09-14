@@ -1,5 +1,7 @@
 # ProbeKV 统一方案：质量约束下的历史 Source 选择、修复与分层服务
 
+> **2026-09-14 下一步执行顺序更新：**以[收敛执行总计划](PROBEKV_CONVERGENCE_EXECUTION_PLAN_20260914.md)为准：成本候选/剪枝账本与执行器修复 → 多 Source 价值矩阵 → d1/d2 独立 QA/cost 验证 → Source×repair → SparseX/QCFuse 独立候选 → 因果池、多 Segment、Qwen及正式实验。CFO不恢复主路径；旧组合规格不代表启用。35.093678 ms是boundary-to-first-token，不是完整请求TTFT；最新单候选replay不能证明多Source必要性。下文保留历史设计和实现记录，不追溯改写。
+
 状态：**统一框架 + 用户确认后的无卡候选实现；不是已冻结的 GPU 执行合同。**
 
 日期：2026-09-10。审计基线：`73ec107`；最近已记录的后端实验运行 SHA：`3b365bc`。

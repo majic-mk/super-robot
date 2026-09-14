@@ -256,6 +256,8 @@ def main():
                         help="retain the winner GPU replica across the online replay (diagnostic only)")
     parser.add_argument("--disable-current-kv-cache", action="store_true",
                         help="same-SHA diagnostic control: repeat the current QKV projection at repair check")
+    parser.add_argument("--selection-cache-mode", choices=("off", "exact_request"), default="off",
+                        help="explicit repeated-request control; never enable caching just because replay > 0")
     args = parser.parse_args()
     if not 1 <= args.replays <= 20:
         raise ValueError("closure replay count must be between 1 and 20")
@@ -284,6 +286,7 @@ def main():
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
                     locked_test_accessed=False, closure_replays=args.replays,
+                    selection_cache_mode=args.selection_cache_mode,
                     current_kv_observation_cache_enabled=not args.disable_current_kv_cache)
     manifest["binding"]["runtime_measurement_sha256"] = cost_sha
     runtime = manifest["native_runtime"]
@@ -334,7 +337,7 @@ def main():
         request = {**requests["target"], "request_id": requests["target"]["request_id"] + ":replay:" + str(replay),
                    "request_epoch": int(requests["target"].get("request_epoch", 10)) + replay,
                    "reuse_current_kv_observation": not args.disable_current_kv_cache,
-                   "selection_cache_enabled": bool(replay > 0),
+                   "selection_cache_enabled": args.selection_cache_mode == "exact_request",
                    "use_gpu_hot_cache": bool(args.gpu_hot_cache),
                    "retain_gpu_hot_cache": bool(args.gpu_hot_cache)}
         if args.kv_layout_mode is not None:

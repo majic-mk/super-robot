@@ -192,6 +192,7 @@ class FinalCommitDecision:
     dense_reference_total_ms: float
     planner_snapshot: Any
     reason_by_segment: Mapping[str, str] = field(default_factory=dict)
+    cost_audit: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         import math

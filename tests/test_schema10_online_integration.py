@@ -189,6 +189,21 @@ class OnlineIntegration(unittest.TestCase):
             hit = self.execute(2, n)
             self.assertEqual(len(hit["committed_source_variant_ids"]), n)
 
+    def test_selection_cache_requires_complete_source_digest(self):
+        self.execute(1)
+        q = request(2)
+        context = TinyLiveContext(q)
+        source = next(iter(self.backend.store.objects.values()))
+        source.metadata.pop("logical_digest", None)
+        key = self.backend._selection_cache_key(q, self.dispatch, context, context.segments)
+        self.assertIsNone(key)
+        self.backend._put_cached_selection(key, {"unsafe": True})
+        self.assertIsNone(self.backend._get_cached_selection(key))
+        source.metadata["logical_digest"] = "a" * 64
+        first = self.backend._selection_cache_key(q, self.dispatch, context, context.segments)
+        source.metadata["logical_digest"] = "b" * 64
+        self.assertNotEqual(first, self.backend._selection_cache_key(q, self.dispatch, context, context.segments))
+
     def test_missing_cost_falls_back_without_fabricating_total(self):
         self.execute(1)
         self.costs.missing_joint = True
@@ -289,6 +304,12 @@ class OnlineIntegration(unittest.TestCase):
         self.assertFalse(row["committed_source_variant_ids"])
         self.assertTrue(row["selected_source_variant_ids"])
         self.assertTrue(any(e.get("reason") == "planner_elapsed_exceeds_gamma" for e in row["runtime_events"]))
+        event = next(e for e in row["runtime_events"] if e.get("reason") == "planner_elapsed_exceeds_gamma")
+        audit = event["cost_audit"]
+        self.assertLess(audit["initial_candidate_total_at_snapshot_ms"], audit["admission_limit_ms"])
+        self.assertGreater(audit["initial_candidate_total_after_planner_ms"], audit["admission_limit_ms"])
+        self.assertAlmostEqual(audit["post_prune_total_at_snapshot_ms"] + audit["planner_elapsed_ms"],
+                               event["proposed_request_total_ms"])
         self.assertEqual(self.backend.hbm.active_reserved_bytes, 0)
 
     def test_transient_snapshot_progress_replans_same_winner_without_recopy(self):

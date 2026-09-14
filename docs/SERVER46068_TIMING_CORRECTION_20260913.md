@@ -1,5 +1,13 @@
 # Single-Segment timing correction and projection deduplication
 
+> 2026-09-14 clarification: the later 35.09 ms fixed15 observation in this
+> document is **boundary-to-first-token**, not full request TTFT. Statements
+> below implying that this alone clears the end-to-end 0.8 target are superseded.
+> Exact-request caching is an optional diagnostic, not a prerequisite or proof
+> of multi-Source value. Candidate reuse cost must be recorded before pruning;
+> the final returned dense cost is not that candidate cost. Historical records
+> remain intact. See [the convergence plan](PROBEKV_CONVERGENCE_EXECUTION_PLAN_20260914.md).
+
 ## Corrections to the v44 interpretation
 
 The v44 online run used server commit `9e296fef40c6c50c2f8d14c818d092d950a3e2f7`.
