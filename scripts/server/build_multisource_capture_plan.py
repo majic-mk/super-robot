@@ -52,6 +52,7 @@ def build_plan(cases_path, partition_path, runtime_manifest_path, tokenizer_path
                output_path, group_id=None, case_index=0):
     from transformers import AutoTokenizer
 
+    output_path = Path(output_path)
     rows = [json.loads(line) for line in Path(cases_path).read_text(encoding="utf-8").splitlines() if line.strip()]
     cohorts = [r for r in rows if r.get("regime") == "corpus-repeat" and len(r.get("sources", [])) >= 4]
     if group_id is not None:
