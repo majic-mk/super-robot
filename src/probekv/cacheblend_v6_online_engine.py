@@ -350,12 +350,13 @@ class TorchLayerwiseSourceLoader:
             raise ValueError("prefetch_window must be non-negative")
         if resident_layers is not None:
             expected = set(range(1, len(canonical_layers) + 1))
-            if set(int(layer) for layer in resident_layers) != expected:
+            normalized_resident = {int(layer): value for layer, value in resident_layers.items()}
+            if set(normalized_resident) != expected:
                 raise ValueError("resident Source layers must cover the complete Artifact")
             # A hot GPU Replica is already prepared.  Do not enqueue a second
             # copy from its CPU backing; use the immutable GPU tensors as the
             # request's source handles and preserve the same layer event ABI.
-            canonical_layers = tuple(resident_layers[layer] for layer in sorted(resident_layers))
+            canonical_layers = tuple(normalized_resident[layer] for layer in sorted(normalized_resident))
             prefetch_window = 0
         if prefetch_window and not isinstance(canonical_layers, (tuple, list)):
             raise ValueError("windowed prefetch requires an in-memory CPU backing")
@@ -780,6 +781,11 @@ class CacheBlendV6OnlineEngine:
         current_stream = self.source_loader.torch.cuda.current_stream()
         for segment_id in self.session.commits if self.session else ():
             ticket = self.tickets[segment_id]
+            # A complete GPU-hot ticket was installed before execution and has
+            # no pending copy events.  Skip even the ready-event query in this
+            # case; it is a pure bookkeeping operation on the hot path.
+            if layer in ticket.installed_layers:
+                continue
             event = ticket.layer_events.get(int(layer))
             if event is None:
                 raise RuntimeError("committed Source layer has no ready event")
@@ -788,8 +794,6 @@ class CacheBlendV6OnlineEngine:
             # copy-stream event, preserving load/compute overlap.
             if not ticket.layer_ready(layer):
                 current_stream.wait_event(event)
-            if layer in ticket.installed_layers:
-                continue
             key, value = ticket.layer_tensors[layer]
             positions = self._source_row_indices[segment_id]
             self._composite_old_kvs[layer - 1][0][positions] = key
