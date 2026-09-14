@@ -15,7 +15,22 @@ pair_specs = runpy.run_path(str(Path(__file__).resolve().parents[1] /
 
 class NativeCostBaselineTests(unittest.TestCase):
     def test_prefix_shadow_transfer_mode_is_explicit(self):
-        self.assertEqual(set(("layerwise", "batched")), {"layerwise", "batched"})
+        import ast
+        path = Path(__file__).resolve().parents[1] / "src/probekv/v8_schema10_native_adapter.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        modes = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Attribute):
+                    continue
+                if target.value.attr == "finish_timing_landmarks":
+                    self.assertNotIsInstance(node.value, ast.Constant,
+                        "timing landmarks must not contain mode strings")
+                if target.value.attr == "transfer_diagnostics" and isinstance(node.value, ast.Constant):
+                    modes.add(node.value.value)
+        self.assertEqual(modes, {"layerwise", "batched"})
     def test_position_pairs_preregister_warmup_and_alternate_order(self):
         rows = pair_specs(20)
         self.assertEqual(len(rows), 22)

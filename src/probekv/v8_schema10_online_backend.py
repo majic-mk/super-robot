@@ -607,6 +607,7 @@ class Schema10OnlineExperimentBackend:
             and output.get("whole_request_origin") == "exact_dense_full_prefill") else {}
         row = {**output, "request_id": rid, "arrival_ns": arrival_ns, "service_start_ns": started,
             "request_wallclock": wallclock,
+            "transfer_diagnostics": dict(getattr(context, "transfer_diagnostics", {})),
             "queue_ms": (started - arrival_ns) / 1e6, "first_token_ns": first[0], "completion_ns": completion,
             "request_ttft_ms": ttft, "execution_kind": "online_policy", "forced_source": False,
             "selection_events": selection.events, "selection_failures": selection_failures,

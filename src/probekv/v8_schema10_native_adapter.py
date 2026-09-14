@@ -239,6 +239,7 @@ class NativeRequestContext:
         self._observation = {}
         self._setup_events = []
         self.finish_timing_landmarks = {}
+        self.transfer_diagnostics = {}
         with self._setup_span("native_inputs_and_sampling"):
             self._prepared_inputs = adapter.prepare(native.metadata(is_prompt=True))
         self.attention, self.sampling = self._prepared_inputs[2:4]
@@ -332,11 +333,11 @@ class NativeRequestContext:
                         v_gpu = v_host.to(a.runner.device, non_blocking=True)
                         self._prefix_transfer_buffers = (k_host, v_host, k_gpu, v_gpu)
                         shadows = tuple((k_gpu[index], v_gpu[index]) for index in range(layers))
-                        self.finish_timing_landmarks["prefix_shadow_transfer_mode"] = "batched"
+                        self.transfer_diagnostics["prefix_shadow_transfer_mode"] = "batched"
                     else:
                         shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
                                               for t in pair) for pair in prefix_cpu)
-                        self.finish_timing_landmarks["prefix_shadow_transfer_mode"] = "layerwise"
+                        self.transfer_diagnostics["prefix_shadow_transfer_mode"] = "layerwise"
             else:
                 shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec,
