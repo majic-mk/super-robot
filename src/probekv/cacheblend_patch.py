@@ -258,12 +258,14 @@ def combined_patch_sha256(paths: Sequence[Path]) -> str:
 
 DEFERRED_TIMING_PATCH = "0013-probekv-deferred-layer-timing.patch"
 POSITION_WORKSPACE_PATCH = "0014-probekv-request-position-workspace.patch"
+OWNED_POSITION_VALIDATION_PATCH = "0015-probekv-owned-position-validation.patch"
 
 
 def native_patch_files(manifest_path: Path, mode: str, extra_patches=()) -> Tuple[Path, ...]:
     """Resolve an ordered, auditable opt-in patchset without rewriting history."""
     extras = tuple(extra_patches)
-    if extras not in ((), (DEFERRED_TIMING_PATCH,), (DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH)):
+    if extras not in ((), (DEFERRED_TIMING_PATCH,), (DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH),
+                      (DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, OWNED_POSITION_VALIDATION_PATCH)):
         raise ValueError("unsupported or duplicate optional native patches")
     if extras and mode != "probekv_v8_variant_growth_counterfactual":
         raise ValueError("deferred timing is only supported by the native schema10 patchset")

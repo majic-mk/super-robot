@@ -1,0 +1,14 @@
+diff --git a/vllm_blend/vllm/attention/backends/xformers.py b/vllm_blend/vllm/attention/backends/xformers.py
+--- a/vllm_blend/vllm/attention/backends/xformers.py
++++ b/vllm_blend/vllm/attention/backends/xformers.py
+@@ -294,7 +294,9 @@
+             if active_positions.numel() != query.shape[0]:
+                 raise ValueError("active positions do not match query rows")
+-            if not torch.all(active_positions[1:] > active_positions[:-1]):
++            from probekv.position_workspace import active_positions_strictly_increasing
++            if not active_positions_strictly_increasing(
++                    cache_fuse_metadata, active_positions, torch):
+                 raise ValueError("active positions must be strictly increasing")
+             key_old[active_positions] = key
+             value_old[active_positions] = value
+             full_prompt_positions = torch.arange(

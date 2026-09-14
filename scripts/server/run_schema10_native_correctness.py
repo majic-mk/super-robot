@@ -68,6 +68,13 @@ def cost_probe_source_options(gpu_hot_cache):
     }
 
 
+def position_validation_pair_specs(repeats):
+    if not 1 <= repeats <= 20:
+        raise ValueError("position validation pairs require 1..20 repeats")
+    return [{"pair": i, "warmup": i < 2, "arm_order": ([False, True] if i % 2 == 0 else [True, False])}
+            for i in range(repeats + 2)]
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model-audit", required=True)
@@ -88,6 +95,10 @@ def main():
                    help="capture CFO metadata without the bounded eager reference; never marks CFO passed")
     p.add_argument("--hardware-trace", action="store_true",
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
+    p.add_argument("--host-position-validation", action="store_true",
+                   help="opt-in audited 0015: validate owned immutable indices on CPU")
+    p.add_argument("--position-validation-ab-repeats", type=int, default=0,
+                   help="same-SHA interleaved dense-continuation control, two warmup pairs plus 1..20 measured pairs")
     p.add_argument("--native-dense-continuation", action="store_true",
                    help="verify opt-in native Prefix continuation after a dense-only probe")
     p.add_argument("--defer-layer-timing", action="store_true",
@@ -110,6 +121,10 @@ def main():
                    default="legacy_multicheckpoint",
                    help="Source-selection dispatch used for the diagnostic; legacy is the default")
     args = p.parse_args()
+    if args.position_validation_ab_repeats:
+        position_validation_pair_specs(args.position_validation_ab_repeats)
+        if not args.cost_probe or not args.host_position_validation:
+            p.error("position-validation A/B requires --cost-probe and --host-position-validation")
     if args.repair_backend_continuation and not args.matched_repair_backends:
         p.error("--repair-backend-continuation requires --matched-repair-backends")
     if args.matched_repair_backends and not args.cacheblend_loop_control:
@@ -133,6 +148,8 @@ def main():
     from probekv.cacheblend_patch import validate_native_patch_audit
     validate_native_patch_audit(patch, repo / "patches/cacheblend/manifest.json",
                                 deferred_timing=args.defer_layer_timing)
+    if args.host_position_validation and "0015-probekv-owned-position-validation.patch" not in patch["patches"]:
+        raise ValueError("host position validation requires independently audited 0015")
     if not audit.get("complete") or not audit.get("files") or not audit.get("tokenizer_assets_sha256"):
         raise ValueError("complete current model asset audit required")
     spec = SCHEMA6_MODEL_SPECS[audit["model_id"]]
@@ -160,6 +177,7 @@ def main():
         requests[request_name]["native_dense_continuation"] = args.native_dense_continuation
         requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
         requests[request_name]["component_timing"] = args.component_timing
+        requests[request_name]["host_position_validation"] = args.host_position_validation
     requests["target"]["layout_ab_repeats"] = args.layout_ab_repeats
     requests["target"]["cacheblend_loop_control"] = args.cacheblend_loop_control
     if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:
@@ -289,6 +307,27 @@ def main():
                 warm_request=requests["warm"], source_id=source.source_variant_id, segment_id="C",
                 boundary=args.reuse_boundary, repair_ratio=.15, verify_full_digests=False,
                 wait_all_source_layers=True, commit_source=False)
+            if args.position_validation_ab_repeats:
+                pair_root = root / "position-validation-ab"
+                pair_root.mkdir()
+                specs = position_validation_pair_specs(args.position_validation_ab_repeats)
+                atomic_json(pair_root / "manifest.json", {"code_commit": sha, "patch_sha256": patch_sha,
+                    "request": requests["target"], "specs": specs,
+                    "scope": "resumable_dense_control_not_live_selector_or_reuse", "paper_evidence": False})
+                for pair in specs:
+                    rows = {}
+                    for enabled in pair["arm_order"]:
+                        row, _ = execute_fixed_source_arm(backend,
+                            request={**requests["target"], "host_position_validation": enabled},
+                            warm_request=requests["warm"], diagnostic_completed_depth=args.reuse_boundary - 1,
+                            boundary=args.reuse_boundary, verify_full_digests=False)
+                        label = "host" if enabled else "device"
+                        rows[label] = row
+                        atomic_json(pair_root / ("pair-%02d-%s.json" % (pair["pair"], label)), row)
+                    if rows["host"]["token_ids"] != rows["device"]["token_ids"]:
+                        raise RuntimeError("owned position validation changed dense-control token IDs")
+                    if rows["host"]["position_validation_audit"].get("owned_host_checks") != adapter.spec.num_layers:
+                        raise RuntimeError("owned position validation branch did not execute at every Prefix layer")
             if (source_cost["integrity_verification_mode"] != "online_immutable"
                     or any(source_cost[k] is not None for k in (
                         "source_digest_before", "destination_digest", "source_digest_after"))):

@@ -2,6 +2,9 @@ import unittest
 from types import SimpleNamespace
 
 from probekv.position_workspace import request_position_tensors, POSITION_WORKSPACE_KEY
+from probekv.position_workspace import active_positions_strictly_increasing
+from unittest.mock import patch
+import torch as real_torch
 
 
 class FakeTorch:
@@ -20,6 +23,27 @@ class FakeTorch:
 
 
 class PositionWorkspaceTests(unittest.TestCase):
+    def test_owned_host_validation_avoids_device_scalar_check_in_inference_mode(self):
+        m = {"org_seq_len": 10, "probekv_host_position_validation": True}
+        with real_torch.inference_mode():
+            a, _, _ = request_position_tensors(m, (2, 4, 9), (2, 4, 9), "cpu", real_torch)
+            with patch.object(real_torch, "all", side_effect=AssertionError("device fence")):
+                self.assertTrue(active_positions_strictly_increasing(m, a, real_torch))
+            self.assertEqual(m["probekv_position_validation_audit"], {"owned_host_checks": 1})
+            a[1] = 2
+            with self.assertRaisesRegex(RuntimeError, "mutated"):
+                active_positions_strictly_increasing(m, a, real_torch)
+            with self.assertRaisesRegex(RuntimeError, "mutated"):
+                request_position_tensors(m, (2, 4, 9), (2, 4, 9), "cpu", real_torch)
+
+    def test_unbound_and_disabled_positions_keep_device_validation(self):
+        for m in ({}, {"org_seq_len": 10, "probekv_host_position_validation": True}):
+            self.assertFalse(active_positions_strictly_increasing(m, real_torch.tensor([2, 2]), real_torch))
+            self.assertEqual(m["probekv_position_validation_audit"]["device_checks"], 1)
+        m = {"org_seq_len": 10, "probekv_host_position_validation": True}
+        a, _, _ = request_position_tensors(m, (4, 2), (4, 2), "cpu", real_torch)
+        self.assertFalse(active_positions_strictly_increasing(m, a, real_torch))
+
     def test_unchanged_layers_allocate_indices_once(self):
         torch, metadata = FakeTorch(), {"org_seq_len": 960}
         active = tuple(range(256, 960))

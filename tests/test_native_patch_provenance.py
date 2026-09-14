@@ -4,6 +4,7 @@ from pathlib import Path
 from probekv.cacheblend_patch import (
     DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, combined_patch_sha256, load_patch_manifest,
     native_patch_files, validate_native_patch_audit,
+    OWNED_POSITION_VALIDATION_PATCH,
 )
 
 
@@ -53,6 +54,12 @@ class NativePatchProvenanceTests(unittest.TestCase):
             audit[field] = value
             with self.assertRaises(ValueError):
                 validate_native_patch_audit(audit, self.manifest)
+
+    def test_owned_validation_patch_requires_full_prerequisite_chain(self):
+        validate_native_patch_audit(self.audit((DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH,
+            OWNED_POSITION_VALIDATION_PATCH)), self.manifest, deferred_timing=True)
+        with self.assertRaises(ValueError):
+            self.audit((DEFERRED_TIMING_PATCH, OWNED_POSITION_VALIDATION_PATCH))
 
     def test_extras_cannot_inject_paths_or_duplicate_patches(self):
         for extras in (("../unknown.patch",), (DEFERRED_TIMING_PATCH,) * 2):

@@ -9,9 +9,20 @@ ready_sample = runpy.run_path(str(Path(__file__).resolve().parents[1] /
     "scripts/server/run_schema10_native_online_closure.py"))["ready_joint_sample"]
 source_options = runpy.run_path(str(Path(__file__).resolve().parents[1] /
     "scripts/server/run_schema10_native_correctness.py"))["cost_probe_source_options"]
+pair_specs = runpy.run_path(str(Path(__file__).resolve().parents[1] /
+    "scripts/server/run_schema10_native_correctness.py"))["position_validation_pair_specs"]
 
 
 class NativeCostBaselineTests(unittest.TestCase):
+    def test_position_pairs_preregister_warmup_and_alternate_order(self):
+        rows = pair_specs(20)
+        self.assertEqual(len(rows), 22)
+        self.assertEqual(sum(r["warmup"] for r in rows), 2)
+        self.assertEqual(rows[0]["arm_order"], [False, True])
+        self.assertEqual(rows[1]["arm_order"], [True, False])
+        with self.assertRaises(ValueError):
+            pair_specs(0)
+
     def test_gpu_resident_control_never_relabels_streaming_measurement(self):
         for hot in (False, True):
             options = source_options(hot)

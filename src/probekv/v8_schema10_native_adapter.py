@@ -293,6 +293,9 @@ class NativeRequestContext:
                 if "probekv_defer_layer_timing" not in inspect.getsource(a.inner.probekv_advance_prefill):
                     raise RuntimeError("deferred timing requires the independently audited 0013 patch")
         a.inner.cache_fuse_metadata["probekv_defer_layer_timing"] = defer_timing
+        a.inner.cache_fuse_metadata["probekv_host_position_validation"] = bool(
+            self.request.get("host_position_validation", False))
+        a.inner.cache_fuse_metadata["probekv_position_validation_audit"] = {}
         # Full request working composite, not just per-winner rows. This was
         # previously an unaccounted HBM allocation inside the engine.
         layer = a.inner.layers[0].self_attn
@@ -675,6 +678,7 @@ class NativeRequestContext:
         from .v8_schema10_qa import answer_evidence
         evidence = answer_evidence(predicted, tokenizer=a.llm.get_tokenizer(), request=self.request)
         return {**evidence, "whole_request_origin": origin,
+                "position_validation_audit": dict(a.inner.cache_fuse_metadata.get("probekv_position_validation_audit", {})),
                 "cached_prefix_tokens": self.cached_prefix_tokens,
                 "prefix_shadow_audit": getattr(self.native, "shadow_lookup_audit", {}),
                 "layer_audit": self.engine.session.layer_audit if self.engine else [],
