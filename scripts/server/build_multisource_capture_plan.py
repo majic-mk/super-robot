@@ -38,7 +38,7 @@ def _request(tokenizer, request_id, epoch, prefix_text, segment_text, segment_id
         "max_new_tokens": 32,
         "prefetch_window": 1,
         "evidence_class": "development_multisource_capture",
-        "partition_role": "development_profile_freeze",
+        "partition_role": "development",
         "content_group": group,
         "development_partition_digest": parent_digest,
         "paper_evidence": False,
