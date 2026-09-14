@@ -97,6 +97,8 @@ def main():
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
     p.add_argument("--host-position-validation", action="store_true",
                    help="opt-in audited 0015: validate owned immutable indices on CPU")
+    p.add_argument("--prefix-shadow-transfer", choices=("layerwise", "batched"), default="layerwise",
+                   help="same-value Prefix shadow H2D diagnostic; batched mode is not a frozen default")
     p.add_argument("--position-validation-ab-repeats", type=int, default=0,
                    help="same-SHA interleaved dense-continuation control, two warmup pairs plus 1..20 measured pairs")
     p.add_argument("--native-dense-continuation", action="store_true",
@@ -178,6 +180,7 @@ def main():
         requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
         requests[request_name]["component_timing"] = args.component_timing
         requests[request_name]["host_position_validation"] = args.host_position_validation
+        requests[request_name]["prefix_shadow_transfer_mode"] = args.prefix_shadow_transfer
     requests["target"]["layout_ab_repeats"] = args.layout_ab_repeats
     requests["target"]["cacheblend_loop_control"] = args.cacheblend_loop_control
     if not args.skip_eager_cfo and len(requests["source"]["token_ids"]) > 512:

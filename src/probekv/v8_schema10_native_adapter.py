@@ -229,6 +229,7 @@ class NativeRequestContext:
         if self.repair_ratio not in {.15, 1.0}:
             raise ValueError("native fixed15 path only accepts .15 or correctness r=1")
         self.engine = None
+        self._prefix_transfer_buffers = None
         self.workspace = None
         self.capture_reservation = None
         self.capture_collector = None
@@ -313,8 +314,29 @@ class NativeRequestContext:
                 # pinned immutable inputs; a batched stack can introduce a
                 # second allocation and erase the intended transfer benefit.
                 with self._setup_span("prefix_shadow_to_gpu"):
-                    shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
-                                          for t in pair) for pair in prefix_cpu)
+                    if self.request.get("prefix_shadow_transfer_mode", "layerwise") == "batched":
+                        # One pinned host staging tensor and one H2D per K/V
+                        # stream. Unbind views preserve the per-layer API and
+                        # exact BF16 values while avoiding 2*num_layers copy
+                        # submissions. The base tensors stay alive through the
+                        # returned views; no synchronization is introduced.
+                        layers, rows = len(prefix_cpu), prefix_cpu[0][0].shape
+                        k_host = a.torch.empty((layers, *rows), dtype=prefix_cpu[0][0].dtype,
+                                                device="cpu", pin_memory=True)
+                        v_host = a.torch.empty((layers, *rows), dtype=prefix_cpu[0][1].dtype,
+                                                device="cpu", pin_memory=True)
+                        for index, (key, value) in enumerate(prefix_cpu):
+                            k_host[index].copy_(key)
+                            v_host[index].copy_(value)
+                        k_gpu = k_host.to(a.runner.device, non_blocking=True)
+                        v_gpu = v_host.to(a.runner.device, non_blocking=True)
+                        self._prefix_transfer_buffers = (k_host, v_host, k_gpu, v_gpu)
+                        shadows = tuple((k_gpu[index], v_gpu[index]) for index in range(layers))
+                        self.finish_timing_landmarks["prefix_shadow_transfer_mode"] = "batched"
+                    else:
+                        shadows = tuple(tuple(t.to(a.runner.device, non_blocking=t.is_pinned())
+                                              for t in pair) for pair in prefix_cpu)
+                        self.finish_timing_landmarks["prefix_shadow_transfer_mode"] = "layerwise"
             else:
                 shadows = ()
             self.engine = CacheBlendV6OnlineEngine(inner_model=a.inner, model_spec=a.spec,
@@ -331,6 +353,7 @@ class NativeRequestContext:
         except Exception:
             a.torch.cuda.synchronize()
             self.engine = None
+            self._prefix_transfer_buffers = None
             shadows = ()
             a.inner.old_kvs = [[None, None] for _ in range(a.spec.num_layers)]
             a.hbm.release(self.workspace.reservation_id)
@@ -723,6 +746,7 @@ class NativeRequestContext:
                 for source, replica in unique.values():
                     pool._delete_replica(source, replica, "single_request_execution_complete")
             self.engine = None
+            self._prefix_transfer_buffers = None
             self.prepared.clear()
             self._observation.clear()
             self.adapter.inner.cache_fuse_metadata.pop("probekv_position_workspace", None)
