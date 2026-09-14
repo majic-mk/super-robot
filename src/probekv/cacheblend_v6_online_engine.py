@@ -82,6 +82,7 @@ class LayerwiseLoadTicket:
     # Resident GPU Sources can be installed once before the timed executor;
     # CPU/SSD paths leave this empty and retain the layer-wise pipeline.
     installed_layers: set[int] = field(default_factory=set, repr=False)
+    supplied_resident_replica: bool = False
 
     def cancel_pending(self) -> dict:
         """Stop new submissions, retaining all submitted buffers/events.
@@ -351,8 +352,11 @@ class TorchLayerwiseSourceLoader:
         if resident_layers is not None:
             expected = set(range(1, len(canonical_layers) + 1))
             normalized_resident = {int(layer): value for layer, value in resident_layers.items()}
-            if set(normalized_resident) != expected:
+            if len(normalized_resident) != len(resident_layers) or set(normalized_resident) != expected:
                 raise ValueError("resident Source layers must cover the complete Artifact")
+            if any(t.device.type != "cuda" for pair in normalized_resident.values() for t in pair):
+                raise ValueError("resident Source tensors must be CUDA tensors")
+            self.stream.wait_stream(self.torch.cuda.current_stream())
             # A hot GPU Replica is already prepared.  Do not enqueue a second
             # copy from its CPU backing; use the immutable GPU tensors as the
             # request's source handles and preserve the same layer event ABI.
@@ -725,7 +729,7 @@ class CacheBlendV6OnlineEngine:
                 self._composite_old_kvs = allocate_working_composite(
                     self.source_loader.torch, allocation_layers, request_span,
                     self.source_loader.device, packed=self.kv_layout_mode == "packed_slice")
-            for layer, (key, value) in enumerate(canonical_layers, start=1):
+            for layer, (composite_key, composite_value) in enumerate(self._composite_old_kvs, start=1):
                 composite_key, composite_value = self._composite_old_kvs[layer - 1]
                 if self._exact_prefix_layers:
                     prefix_key, prefix_value = self._exact_prefix_layers[layer - 1]
@@ -761,22 +765,10 @@ class CacheBlendV6OnlineEngine:
         row_positions = source_row_index(
             ticket.segment_positions, contiguous_copy=self.kv_layout_mode == "packed_slice")
         self._source_row_indices[segment_id] = row_positions
-        # GPU-hot Sources are immutable and complete at admission time.  Install
-        # their rows once, before timed execution, so the per-layer executor does
-        # not launch a redundant K/V scatter for every Transformer block.  The
-        # layer-wise path remains unchanged for CPU/SSD-backed Sources.
-        if (
-            not ticket.pending_layers
-            and len(ticket.layer_tensors) == self.model_spec.num_layers
-            and all(key.device.type == "cuda" and value.device.type == "cuda"
-                    for key, value in ticket.layer_tensors.values())
-        ):
-            with self._component("source_rows_preinstall"):
-                for layer, (key, value) in ticket.layer_tensors.items():
-                    destination_key, destination_value = self._composite_old_kvs[layer - 1]
-                    destination_key[row_positions] = key
-                    destination_value[row_positions] = value
-            ticket.installed_layers.update(ticket.layer_tensors)
+        # Residency must be explicit, never inferred from completed H2D copies.
+        # Production continues to install layer-wise; the diagnostic opts in
+        # only after validating its complete, single-Segment inventory.
+        ticket.supplied_resident_replica = resident_layers is not None
         self.session.register_source_handle(segment_id, source_id, ticket)
         self.audit.transferred_bytes_by_segment[segment_id] = ticket.requested_bytes
         self.audit.integrity_mode_by_segment[segment_id] = ticket.integrity_mode
@@ -788,6 +780,30 @@ class CacheBlendV6OnlineEngine:
         self.audit.pinning_copy_bytes_by_segment[segment_id] = ticket.pinning_copy_bytes
         self.audit.pinning_host_ms_by_segment[segment_id] = ticket.pinning_host_ms
         return ticket
+
+    def preinstall_resident_diagnostic(self, segment_id: str, *, segment_count: int) -> None:
+        """Explicit fixed-Source diagnostic; costs remain in the setup ledger."""
+        ticket = self.tickets[segment_id]
+        expected = set(range(1, self.model_spec.num_layers + 1))
+        if (segment_count != 1 or len(self.tickets) != 1
+                or self.session.exact_prefix_tokens or self._exact_prefix_layers
+                or not ticket.supplied_resident_replica
+                or ticket.pending_layers or ticket.preparation_cancelled or ticket.transfer_failed
+                or set(ticket.layer_tensors) != expected
+                or set(ticket.layer_events) != expected
+                or any(t.device.type != "cuda" for pair in ticket.layer_tensors.values() for t in pair)):
+            raise RuntimeError("preinstall requires one complete resident Source without Prefix")
+        stream = self.source_loader.torch.cuda.current_stream()
+        with self._component("source_rows_preinstall"):
+            for layer in sorted(expected):
+                if layer in ticket.installed_layers:
+                    continue
+                # Establish copy-stream dependency BEFORE reading its tensors.
+                stream.wait_event(ticket.layer_events[layer])
+                positions = self._source_row_indices[segment_id]
+                for destination, source in zip(self._composite_old_kvs[layer - 1], ticket.layer_tensors[layer]):
+                    destination[positions] = source
+                ticket.installed_layers.add(layer)
 
     def _install_ready_source_rows(self, layer: int) -> None:
         current_stream = self.source_loader.torch.cuda.current_stream()

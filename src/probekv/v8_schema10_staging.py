@@ -120,6 +120,9 @@ class PhysicalLayerwiseSourceLoader:
             if any(key.device.type != "cuda" or value.device.type != "cuda"
                    for key, value in resident_layers.values()):
                 raise ValueError("GPU-resident Source tensors must remain on CUDA")
+            # Resident handles are published to the caller stream; carry that
+            # dependency into the loader's ready events before consumers wait.
+            self.stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(self.stream):
                 start.record()
                 for layer in sorted(resident_layers):

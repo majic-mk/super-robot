@@ -53,6 +53,7 @@ def execute_resident_boundary_arm(backend, *, request, plan, arm, teacher_token_
                     rows=(("C", size, HBMReservationKind.WINNER_PREFETCH),))[0]
                 ticket = ctx.prepare_winner("C", plan.source_id, layers, reservation)
                 ticket.wait_all(a.loader)
+                ctx.engine.preinstall_resident_diagnostic("C", segment_count=len(ctx.segments))
                 ctx.finish_selection({"C": plan.source_id}, {"C": ticket})
                 ctx.supports["C"] = {l: plan.repair_positions for l in range(plan.boundary, a.spec.num_layers + 1)}
                 # GPU-hot Sources are preinstalled once by the engine before
