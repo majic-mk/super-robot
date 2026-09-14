@@ -37,7 +37,7 @@ class MatchedBackendSummaryTests(unittest.TestCase):
             self.assertEqual(result["comparisons"]["boundary_executor"]["probekv"]["n"],2)
 
     def test_failed_equivalence_missing_sample_bad_digest_and_mismatched_mask_rejected(self):
-        for kind in ("equivalence", "missing", "digest", "mask"):
+        for kind in ("equivalence", "missing", "digest", "mask", "boundary"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as d:
                 root=Path(d); put=self.fixture(root)
                 p=root/"02-probekv.json"
@@ -45,7 +45,8 @@ class MatchedBackendSummaryTests(unittest.TestCase):
                 elif kind=="missing": p.unlink()
                 else:
                     row=json.loads(p.read_text()); row.pop("raw_observation_sha256")
-                    row["external_repair_mask_sha256"]="wrong"
-                    put(p.name,row,kind=="mask")
+                    if kind == "boundary": row.pop("boundary")
+                    else: row["external_repair_mask_sha256"]="wrong"
+                    put(p.name,row,kind in ("mask", "boundary"))
                 with self.assertRaises((ValueError, FileNotFoundError)):
                     summarize_matched_backend(root,repeats=2)

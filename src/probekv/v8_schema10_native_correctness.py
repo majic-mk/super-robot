@@ -231,6 +231,7 @@ def execute_fixed_source_arm(backend, *, request, source_id=None, segment_id=Non
                     "prefix_cache_mode": context.prefix_cache_mode,
                     "sampling_signature": dict(context.sampling_signature),
                     "diagnostic_completed_depth": diagnostic_completed_depth or (boundary - 1 if source_id else 0),
+                    "boundary": boundary if source_id is not None else None,
                     "diagnostic_repair_ratio": float(repair_ratio) if source_id is not None else None,
                     "executed_prefetch_window": int(q.get("prefetch_window", 0)),
                     "defer_layer_timing": bool(q.get("defer_layer_timing", False)),

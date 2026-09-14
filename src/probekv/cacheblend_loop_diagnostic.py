@@ -392,12 +392,14 @@ def run_resident_backend_fixture(backend, *, requests, output_dir, boundary, rep
     atomic_json(root / "resident-fixture-integrity.json", dict(
         canonical_digest=source.canonical_source_state_digest, resident_digest=resident_digest,
         passed=True, hashing_outside_timing=True))
-    run_cacheblend_loop_comparison(backend, request=requests["target"],
-        source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
-        output_dir=root / "comparison", boundary=boundary, repeats=repeats,
-        matched_mask=True, boundary_isolation=True)
-    summary = summarize_matched_backend(root / "comparison", repeats=repeats)
-    release_diagnostic_hot_caches(backend)
+    try:
+        run_cacheblend_loop_comparison(backend, request=requests["target"],
+            source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
+            output_dir=root / "comparison", boundary=boundary, repeats=repeats,
+            matched_mask=True, boundary_isolation=True)
+        summary = summarize_matched_backend(root / "comparison", repeats=repeats)
+    finally:
+        release_diagnostic_hot_caches(backend)
     if backend.hbm.active_reserved_bytes or a.active or backend.pending:
         raise RuntimeError("resident executor comparison retained execution resources")
     summary["resource_cleanup_passed"] = True
