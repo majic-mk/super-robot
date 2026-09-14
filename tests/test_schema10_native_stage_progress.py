@@ -11,13 +11,23 @@ import torch
 from probekv.v8_schema10_cost_collection import measurement_endpoint
 from probekv.v8_schema10_stage_journal import StageEvidenceJournal
 from probekv.v8_schema10_event_log import OnlineEventLog
-from probekv.v8_schema10_native_adapter import NativeRequestContext, validate_native_sampling_request
+from probekv.v8_schema10_native_adapter import NativeRequestContext, validate_native_sampling_request, _defer_layer_timing_capability
 from probekv.v8_schema10_native_factory import NativeExperimentBackend
 from probekv.v8_schema10_cost_provider import validate_measurement_provenance
 from probekv.v8_schema10_native_preflight import isolated_native_preflight, run_r1_equivalence_sentinel
 
 
 class MeasurementEndpointTests(unittest.TestCase):
+    def test_deferred_timing_capability_probe_is_cached(self):
+        class Impl:
+            def audited(self):
+                return "probekv_defer_layer_timing"
+        impl = Impl()
+        _defer_layer_timing_capability.cache_clear()
+        self.assertTrue(_defer_layer_timing_capability(impl.audited))
+        self.assertTrue(_defer_layer_timing_capability(impl.audited))
+        self.assertEqual(_defer_layer_timing_capability.cache_info().hits, 1)
+
     def test_new_provisional_costs_bind_plan_not_a_fake_profile(self):
         p = {k: "test" for k in ("model", "code", "patch", "gpu", "config", "timing_scope")}
         p.update(profile_binding_kind="preregistered_measurement_plan", measurement_plan_sha256="a"*64,
