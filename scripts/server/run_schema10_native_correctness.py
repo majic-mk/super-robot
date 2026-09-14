@@ -119,10 +119,18 @@ def main():
                    help="fixed-winner zero-Prefix common-mask backend equivalence; not live selector")
     p.add_argument("--repair-backend-continuation", action="store_true",
                    help="diagnose one-shot dense hidden/residual handoff; not production selector")
+    p.add_argument("--matched-executor-only", action="store_true",
+                   help="fixed resident Source/common mask; bypass other sentinel/cost sweeps, not online admission")
+    p.add_argument("--backend-repeats", type=int, default=3,
+                   help="matched backend measured repeats after two excluded warmups (1..20)")
     p.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
                    default="legacy_multicheckpoint",
                    help="Source-selection dispatch used for the diagnostic; legacy is the default")
     args = p.parse_args()
+    if not 1 <= args.backend_repeats <= 20:
+        p.error("--backend-repeats must be in 1..20")
+    if args.matched_executor_only and not args.matched_repair_backends:
+        p.error("--matched-executor-only requires --matched-repair-backends")
     if args.position_validation_ab_repeats:
         position_validation_pair_specs(args.position_validation_ab_repeats)
         if not args.cost_probe or not args.host_position_validation:
@@ -152,6 +160,8 @@ def main():
                                 deferred_timing=args.defer_layer_timing)
     if args.host_position_validation and "0015-probekv-owned-position-validation.patch" not in patch["patches"]:
         raise ValueError("host position validation requires independently audited 0015")
+    if args.matched_repair_backends and "0016-probekv-matched-boundary-source-kv.patch" not in patch["patches"]:
+        raise ValueError("matched repair comparison requires independently audited 0016")
     if not audit.get("complete") or not audit.get("files") or not audit.get("tokenizer_assets_sha256"):
         raise ValueError("complete current model asset audit required")
     spec = SCHEMA6_MODEL_SPECS[audit["model_id"]]
@@ -231,6 +241,9 @@ def main():
         "hardware_trace": args.hardware_trace,
         "defer_layer_timing": args.defer_layer_timing,
         "native_dense_continuation": args.native_dense_continuation,
+        "matched_executor_only": args.matched_executor_only,
+        "matched_repair_backends": args.matched_repair_backends,
+        "backend_repeats": args.backend_repeats,
         "eager_cfo_reference": not args.skip_eager_cfo,
         "diagnostic_backing_tier": args.backing_tier, "diagnostic_reuse_boundary": args.reuse_boundary,
         "paper_evidence": False, "locked_test_accessed": False}
@@ -245,6 +258,15 @@ def main():
         backend = create_native_measurement_backend(manifest)
         backend.reset(capacity=16, global_byte_budget=binding["global_byte_budget"])
         adapter = backend.adapters[args.selection_path]
+        if args.matched_executor_only:
+            from probekv.cacheblend_loop_diagnostic import run_resident_backend_fixture
+            result = run_resident_backend_fixture(backend, requests=requests,
+                output_dir=root / "matched-executors", boundary=args.reuse_boundary,
+                repeats=args.backend_repeats)
+            atomic_json(root / "result.json", {**result, "code_commit": sha,
+                "runtime_binding": binding, "online_trace_execution_allowed": False,
+                "gpu_runtime_qualified": False, "paper_evidence": False})
+            return
         with adapter.open_request(requests["target"], arrival_ns=time.perf_counter_ns()) as context:
             first = []
             output = context.finish(lambda: first.append(time.perf_counter_ns()))
@@ -447,6 +469,7 @@ def main():
                 request={**requests["target"], "component_timing": False},
                 source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
                 output_dir=root / "cacheblend-loop", boundary=args.reuse_boundary,
+                repeats=args.backend_repeats,
                 matched_mask=args.matched_repair_backends,
                 continuation=args.repair_backend_continuation)
         release_diagnostic_hot_caches(backend)

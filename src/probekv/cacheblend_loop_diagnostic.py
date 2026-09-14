@@ -195,7 +195,7 @@ def execute_cacheblend_loop_arm(backend, *, request, source_id, boundary=2,
 
 def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token_ids,
                                   output_dir, boundary=2, repeats=3, matched_mask=False,
-                                  continuation=False):
+                                  continuation=False, boundary_isolation=False):
     import torch
     from .v8_schema10_native_correctness import execute_fixed_source_arm
     root = Path(output_dir)
@@ -306,6 +306,30 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
             row, _ = arm(name)
             row.update(repeat=i, warmup=i < 2, arm_order=order, arm=name)
             save(f"{i:02d}-{name}", row)
+    if boundary_isolation:
+        from .resident_boundary_diagnostic import execute_resident_boundary_arm
+        isolated = {}
+        for ratio in (1.0, .15):
+            for name in ("cacheblend", "probekv"):
+                for teacher in (None, teacher_token_ids):
+                    key = (name, teacher is not None)
+                    row, logits = execute_resident_boundary_arm(backend, request=request,
+                        plan=plans[ratio], arm=name, teacher_token_ids=teacher)
+                    save(f"boundary-check-{ratio}-{name}-{'teacher' if teacher else 'free'}", row, logits)
+                    isolated[key] = (row, logits)
+            left, right = isolated[("cacheblend", True)][1], isolated[("probekv", True)][1]
+            l2 = float((left.float()-right.float()).norm()/left.float().norm().clamp_min(1e-12))
+            equal = isolated[("cacheblend", False)][0]["token_ids"] == isolated[("probekv", False)][0]["token_ids"]
+            if left.shape != right.shape or not torch.isfinite(right).all() or not equal or l2 > 1e-4:
+                raise RuntimeError("isolated boundary executor equivalence failed")
+            atomic_json(root / f"boundary-equivalence-{ratio}.json",
+                        dict(token_ids_equal=equal, logit_relative_l2=l2, passed=True))
+        for i in range(2 + repeats):
+            order = ("cacheblend", "probekv") if i % 2 == 0 else ("probekv", "cacheblend")
+            for name in order:
+                row, _ = execute_resident_boundary_arm(backend, request=request, plan=plans[.15], arm=name)
+                row.update(repeat=i, warmup=i < 2, arm=name, arm_order=order)
+                save(f"boundary-{i:02d}-{name}", row)
     from .prefill_phase_diagnostic import summarize_prefill_phase
     for name in backend_names:
         a.loader.capture_hardware_trace = True
@@ -328,3 +352,54 @@ def run_cacheblend_loop_comparison(backend, *, request, source_id, teacher_token
         unchanged=before==after, hashing_outside_timing=True))
     if before != after:
         raise RuntimeError("CacheBlend control mutated the canonical GPU Source")
+
+
+def run_resident_backend_fixture(backend, *, requests, output_dir, boundary, repeats):
+    """Fresh canonical fixture, then same-Source diagnostic; no online policy.
+
+    The pinned normal-loop adapter supports zero Prefix only. Both arms reset
+    native Prefix identically. Persistent hot-cache establishment and digests
+    are explicit untimed setup, never claimed as free production preparation.
+    """
+    from .v8_schema10_canonical import capture_exact_dense_source
+    from .v8_schema10_native_correctness import execute_fixed_source_arm, release_diagnostic_hot_caches
+    from .v7_contracts import SourceVariantIdentity
+    from .matched_backend_summary import summarize_matched_backend
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=False)
+    a = backend.adapters["legacy_multicheckpoint"]
+    capture = capture_exact_dense_source(a, requests["source"], "C", eager_reference=False)
+    desc = requests["source"]["segments"][0]
+    identity = SourceVariantIdentity(desc["content_key"],
+        digest_json(requests["source"]["token_ids"][:desc["positions"][0]]),
+        digest_json(desc["positions"]), "diagnostic-source-1", backend.provenance["model_signature"])
+    source = backend.store.publish_exact_dense(identity, layers=capture["layers"],
+        selection_states=capture["selection_states"], metadata=capture["source_metadata"],
+        request_epoch=1, whole_request_origin="exact_dense_full_prefill", materialization_reason="content_miss")
+    atomic_json(root / "capture-audit.json", capture["capture_audit"])
+    a.loader.integrity_mode = "online_immutable"
+    seed, _ = execute_fixed_source_arm(backend, request=requests["target"],
+        source_id=source.source_variant_id, segment_id="C", boundary=boundary,
+        repair_ratio=1.0, verify_full_digests=False, wait_all_source_layers=True,
+        retain_gpu_hot_cache=True)
+    atomic_json(root / "resident-fixture-setup.json", seed)
+    if source.source_variant_id not in a.hot_layer_cache:
+        raise RuntimeError("resident benchmark fixture was not retained; cannot substitute a different Source")
+    hot = a.hot_layer_cache[source.source_variant_id]
+    resident_digest = tensor_digest(t for l in sorted(hot) for t in hot[l])
+    if resident_digest != source.canonical_source_state_digest:
+        raise RuntimeError("resident fixture differs from canonical creation digest")
+    atomic_json(root / "resident-fixture-integrity.json", dict(
+        canonical_digest=source.canonical_source_state_digest, resident_digest=resident_digest,
+        passed=True, hashing_outside_timing=True))
+    run_cacheblend_loop_comparison(backend, request=requests["target"],
+        source_id=source.source_variant_id, teacher_token_ids=requests["teacher_token_ids"],
+        output_dir=root / "comparison", boundary=boundary, repeats=repeats,
+        matched_mask=True, boundary_isolation=True)
+    summary = summarize_matched_backend(root / "comparison", repeats=repeats)
+    release_diagnostic_hot_caches(backend)
+    if backend.hbm.active_reserved_bytes or a.active or backend.pending:
+        raise RuntimeError("resident executor comparison retained execution resources")
+    summary["resource_cleanup_passed"] = True
+    atomic_json(root / "summary.json", summary)
+    return summary

@@ -5,6 +5,7 @@ from probekv.cacheblend_patch import (
     DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, combined_patch_sha256, load_patch_manifest,
     native_patch_files, validate_native_patch_audit,
     OWNED_POSITION_VALIDATION_PATCH,
+    MATCHED_BOUNDARY_PATCH,
 )
 
 
@@ -65,6 +66,14 @@ class NativePatchProvenanceTests(unittest.TestCase):
         for extras in (("../unknown.patch",), (DEFERRED_TIMING_PATCH,) * 2):
             with self.assertRaises(ValueError):
                 native_patch_files(self.manifest, self.mode, extras)
+
+    def test_matched_boundary_patch_is_explicit_and_ordered(self):
+        extras = (DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, OWNED_POSITION_VALIDATION_PATCH,
+                  MATCHED_BOUNDARY_PATCH)
+        validate_native_patch_audit(self.audit(extras), self.manifest)
+        for bad in ((MATCHED_BOUNDARY_PATCH,), extras[::-1], extras + (MATCHED_BOUNDARY_PATCH,)):
+            with self.assertRaises(ValueError):
+                self.audit(bad)
 
 
 if __name__ == "__main__":

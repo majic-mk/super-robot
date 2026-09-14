@@ -17,6 +17,7 @@ from probekv.cacheblend_patch import (
     DEFERRED_TIMING_PATCH,
     POSITION_WORKSPACE_PATCH,
     OWNED_POSITION_VALIDATION_PATCH,
+    MATCHED_BOUNDARY_PATCH,
 )
 from probekv.io import atomic_write_json
 
@@ -62,7 +63,8 @@ def main() -> int:
     )
     parser.add_argument("--manifest")
     parser.add_argument("--extra-patch", action="append", default=[],
-                        choices=(DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, OWNED_POSITION_VALIDATION_PATCH),
+                        choices=(DEFERRED_TIMING_PATCH, POSITION_WORKSPACE_PATCH, OWNED_POSITION_VALIDATION_PATCH,
+                                 MATCHED_BOUNDARY_PATCH),
                         help="explicit optional patch, independently rebuilt after the base patchset")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
