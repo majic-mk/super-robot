@@ -83,7 +83,7 @@ def main():
     config_sha = hashlib.sha256((repo/'configs/a800_server_lock_v8_schema10.json').read_bytes()).hexdigest()
     if Path(args.output).exists():
         raise FileExistsError('fresh manifest required')
-    atomic_write_json(args.output, build_plan(sha, config_sha, args.python, args.cacheblend,
+    atomic_write_json(Path(args.output), build_plan(sha, config_sha, args.python, args.cacheblend,
                                             args.model_audit, args.remote_output_root))
 
 
