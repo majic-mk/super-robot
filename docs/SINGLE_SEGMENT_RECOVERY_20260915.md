@@ -43,7 +43,7 @@ Additional no-GPU changes:
   36 ordered tasks with actual argv, dependencies and explicit timing scopes.
   Runtime asset/cost hashes remain null until independently measured.
 
-Local acceptance: 914 tests, 913 passed and one pre-existing skip; 24 local CLI
+Local acceptance: 915 tests, 914 passed and one pre-existing skip; 24 local CLI
 configurations, compileall, contract validation and diff check passed. CPU arithmetic equivalence and
 reservation cleanup tests do not establish GPU numerical/performance evidence.
 
