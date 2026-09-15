@@ -204,6 +204,22 @@ class OnlineIntegration(unittest.TestCase):
         source.metadata["logical_digest"] = "b" * 64
         self.assertNotEqual(first, self.backend._selection_cache_key(q, self.dispatch, context, context.segments))
 
+    def test_disabled_selection_cache_does_no_identity_work_or_publication(self):
+        with patch.object(self.backend, '_selection_cache_key', side_effect=AssertionError('cache disabled')), \
+             patch.object(self.backend, '_put_cached_selection', side_effect=AssertionError('cache disabled')):
+            self.execute(1)
+            row = self.execute(2)
+        self.assertTrue(row['committed_source_variant_ids'])
+
+    def test_unsupported_dense_has_complete_wallclock_partition(self):
+        self.costs.dense_reference = lambda context: None
+        row = self.execute(1)
+        ledger = row['request_wallclock']
+        self.assertEqual(ledger['ttft_ns'], row['first_token_ns'] - row['arrival_ns'])
+        self.assertEqual(sum(i['duration_ns'] for i in ledger['intervals']), ledger['ttft_ns'])
+        self.assertIsNone(row['matched_dense_ttft_ms'])
+        self.assertFalse(row['committed_source_variant_ids'])
+
     def test_missing_cost_falls_back_without_fabricating_total(self):
         self.execute(1)
         self.costs.missing_joint = True

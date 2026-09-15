@@ -49,10 +49,21 @@ class MeasuredRequestCostProvider:
 
     @staticmethod
     def identity(context):
-        return {"prompt_token_ids_sha256": digest_json(context.request["token_ids"]),
+        # A tuple comparison detects mutation without repeating JSON/SHA256.
+        # Only token identity is memoized: Prefix and sampling remain live.
+        tokens = tuple(context.request["token_ids"])
+        if any(type(token) is not int or token < 0 for token in tokens):
+            raise ValueError("cost identity requires nonnegative integer token IDs")
+        cached = getattr(context, "_cost_token_identity", None)
+        if cached is None or cached[0] != tokens:
+            cached = (tokens, digest_json(tokens))
+            context._cost_token_identity = cached
+        return {"prompt_token_ids_sha256": cached[1],
                 "cached_prefix_tokens": context.cached_prefix_tokens,
                 "prefix_cache_mode": context.prefix_cache_mode,
-                "timing_scope": "arrival_to_first_token", "sampling": context.sampling_signature}
+                "timing_scope": "arrival_to_first_token", "sampling": (
+                    dict(context.sampling_signature) if isinstance(context.sampling_signature, dict)
+                    else context.sampling_signature)}
 
     def _lookup(self, category, query):
         return self.rows.get((category, digest_json(query)))
@@ -71,7 +82,7 @@ class MeasuredRequestCostProvider:
         return max(row["samples_ms"]) if row else None
 
     def gate1(self, context, sid, source_id, depth):
-        query = {"request": self.identity(context), "segment_id": sid, "source_id": source_id,
+        query = lambda: {"request": self.identity(context), "segment_id": sid, "source_id": source_id,
                  "completed_depth": depth, "first_reuse_layer": depth + 1}
         reuse = self._lookup("source_local_marginal", self._source_query(context, sid, source_id, depth, "source_local_marginal", query))
         dense = self._lookup("source_local_dense", self._source_query(context, sid, source_id, depth, "source_local_dense", query))
@@ -87,7 +98,7 @@ class MeasuredRequestCostProvider:
             Gate1MarginalLowerBound(*(parts[n] for n in names)), min(dense["samples_ms"]))
 
     def candidate_future_ms(self, context, sid, source_id, depth):
-        query = {"request": self.identity(context),
+        query = lambda: {"request": self.identity(context),
             "segment_id": sid, "source_id": source_id, "completed_depth": depth,
             "first_reuse_layer": depth + 1}
         row = self._lookup("source_future", self._source_query(context, sid, source_id, depth, "source_future", query))
@@ -95,7 +106,7 @@ class MeasuredRequestCostProvider:
 
     def _source_query(self, context, sid, source_id, depth, category, legacy):
         if self.key_contract == LEGACY_IDENTITY_KEY:
-            return legacy
+            return legacy() if callable(legacy) else legacy
         shape = context.source_measurement_shape(sid, source_id, depth)
         required = {"prompt_tokens", "prefix_tokens", "positions", "completed_depth",
                     "num_layers", "dtype", "kv_heads", "head_dim", "tier", "bytes", "layout"}
@@ -104,7 +115,7 @@ class MeasuredRequestCostProvider:
         return MeasurementKey(category, shape).query()
 
     def preparation(self, context, sid, source_id):
-        query = {"source_id": source_id,
+        query = lambda: {"source_id": source_id,
                             "request": self.identity(context), "segment_id": sid,
                             "boundary": context.current_completed_depth + 1}
         copy = self._lookup("winner_visible_preparation", self._source_query(context, sid, source_id,

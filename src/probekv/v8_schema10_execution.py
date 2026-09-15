@@ -49,6 +49,7 @@ class SelectionCostLedger:
         self.dense_reference_ttft_ms = dense_reference_ttft_ms
         self.policy = policy
         self.intervals: list[tuple[int, int]] = []
+        self.interval_events: list[dict] = []
         self.pending: dict[str, float] = {}
         self.completed: set[str] = set()
 
@@ -85,6 +86,7 @@ class SelectionCostLedger:
         del self.pending[event_id]
         self.completed.add(event_id)
         self.intervals.append((start_ns, end_ns))
+        self.interval_events.append({"event_id": event_id, "start_ns": start_ns, "end_ns": end_ns})
 
     def cancel(self, event_id: str) -> None:
         del self.pending[event_id]
@@ -101,6 +103,7 @@ class SelectionCostLedger:
             raise ValueError("invalid shared selection interval")
         self.completed.add(event_id)
         self.intervals.append((start_ns, end_ns))
+        self.interval_events.append({"event_id": event_id, "start_ns": start_ns, "end_ns": end_ns})
 
     def continuation_proven_infeasible(self, actual_sunk_ms: float, *,
                                        joint_future_lower_ms: float,

@@ -62,8 +62,15 @@ def main():
     p.add_argument('--defer-layer-timing', action='store_true')
     p.add_argument('--host-position-validation', action='store_true')
     p.add_argument('--native-dense-continuation', action='store_true')
+    p.add_argument('--position-validation-ab-repeats', type=int, default=0, choices=range(21))
+    p.add_argument('--matched-executor-only', action='store_true')
+    p.add_argument('--backend-repeats', type=int, default=20, choices=range(1, 21))
     p.add_argument('--execute', action='store_true', help='run correctness + cost-probe after verification')
     args = p.parse_args()
+    if args.position_validation_ab_repeats and not args.host_position_validation:
+        p.error('position-validation A/B requires --host-position-validation')
+    if args.matched_executor_only and args.position_validation_ab_repeats:
+        p.error('executor-only and continuation A/B require separate runs')
     repo = Path(__file__).resolve().parents[2]
     cb, output = Path(args.cacheblend).resolve(), Path(args.output).resolve()
     config, audit_path = Path(args.config).resolve(), Path(args.model_audit).resolve()
@@ -109,6 +116,7 @@ def main():
         for name in ('torch', 'transformers', 'vllm._C'):
             module = importlib.import_module(name)
             origins[name] = str(Path(module.__file__).resolve())
+        require_origin(origins['vllm._C'], cb / 'vllm_blend')
         extensions = {name: {'path': path, 'sha256': file_sha(path)}
                       for name, path in origins.items() if name == 'vllm._C'}
         launch = [str(repo / 'scripts/server/run_schema10_native_correctness.py'),
@@ -118,6 +126,11 @@ def main():
         for key in ('defer_layer_timing', 'host_position_validation', 'native_dense_continuation'):
             if getattr(args, key):
                 launch.append('--' + key.replace('_', '-'))
+        if args.position_validation_ab_repeats:
+            launch.extend(['--position-validation-ab-repeats', str(args.position_validation_ab_repeats)])
+        if args.matched_executor_only:
+            launch.extend(['--matched-executor-only', '--matched-repair-backends',
+                           '--cacheblend-loop-control', '--backend-repeats', str(args.backend_repeats)])
         lock = dict(code_sha=sha, patch_audit_sha256=file_sha(patch_audit),
                     cacheblend_tree=patch['cacheblend_tree'], model_audit_sha256=file_sha(audit_path),
                     model_id=audit['model_id'], model_revision=audit['revision'],
@@ -134,7 +147,9 @@ def main():
             # Same interpreter and explicitly pinned paths; no global installation change.
             sys.argv = launch
             runpy.run_path(launch[0], run_name='__main__')
-    except Exception as error:
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code in (None, 0):
+            raise
         atomic_write_json(output / 'failed.json', {'error': str(error), 'type': type(error).__name__,
                           'paper_evidence': False, 'gpu_runtime_qualified': False})
         raise

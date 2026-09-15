@@ -23,8 +23,28 @@ The old `patch-audit-418b0628-schema10.json` was manually annotated without an
 independent rebuild. It is invalid evidence; preserve it but do not consume it.
 The new launcher produces its own audit using the existing independent verifier.
 
-Local acceptance: 901 tests, 900 passed and one pre-existing skip; compileall,
-contract validation and diff check passed. CPU arithmetic equivalence and
+Additional no-GPU changes:
+
+- Disabled selection-result caching now skips cache-key/pool digest creation
+  and decision publication. The explicit exact-request diagnostic still works.
+- Request token identity is memoized with a content comparison; mutations
+  invalidate it. Prefix and sampling remain live. Execution-shape queries no
+  longer build unused legacy identity dictionaries. Historical sampling string
+  signatures remain readable.
+- The initial pool snapshot digest is computed once per request. Dynamic
+  scheduler/ready/generation/placement checks still execute before commit.
+- Unsupported dense outcomes now contain the complete host partition.
+  Selection events have names and raw nanosecond bounds. The offline analyzer
+  splits nested intervals once and rejects inconsistent endpoints/accounting.
+- The launcher also verifies the imported vLLM extension location, preserves
+  interrupted/nonzero-exit failure evidence, and forwards paired executor and
+  owned-position controls to their existing implementations.
+- The recovery manifest generator binds the committed code/config and emits
+  36 ordered tasks with actual argv, dependencies and explicit timing scopes.
+  Runtime asset/cost hashes remain null until independently measured.
+
+Local acceptance: 914 tests, 913 passed and one pre-existing skip; 24 local CLI
+configurations, compileall, contract validation and diff check passed. CPU arithmetic equivalence and
 reservation cleanup tests do not establish GPU numerical/performance evidence.
 
 ## Reproducible first remote run
@@ -57,7 +77,32 @@ First run preserves baseline flags. Subsequent runs add exactly one control:
 `--defer-layer-timing`, then owned-host validation, then native continuation
 after numerical validation. Each uses a fresh directory. No mixed-SHA cost table.
 
-## Remaining work (not claimed complete)
+## Freeze the GPU task schedule after committing
+
+```powershell
+$env:PYTHONPATH='src'
+python scripts/server/generate_single_segment_recovery_plan.py --python /root/autodl-tmp/probekv_stage1/envs/cacheblend-cu121/bin/python --cacheblend /root/autodl-tmp/probekv_stage2/src/CacheBlend-matched-4881010-0016 --model-audit /root/autodl-tmp/probekv_stage2/artifacts/model-audit-9e296fef-mistral.json --remote-output-root /root/autodl-tmp/probekv_stage2/artifacts --output artifacts/local-no-gpu-recovery-20260915/gpu-plan.json
+```
+
+Run job argv from the exact clean checkout, with the manifest's explicit
+PYTHONPATH. Dependencies must pass; this schedule does not execute jobs itself.
+The first job is 512-token environment/correctness/cost collection. Online jobs
+consume that same SHA's evidence through the existing cost validator. A failed
+prerequisite stops dependent jobs. Never resume by overwriting outputs.
+
+Twenty-pair same-process measurements are wired for the existing host-position
+and fixed-Source backend comparisons. The online 22-replay sweeps provide two
+warmups and 20 measured warm requests; separate sweeps are not paired A/B
+evidence. Independent-process correctness runs record setup/cold initialization,
+not cold online TTFT. Do not infer a paired confidence interval or cold online
+speedup from those sweeps. Additional online paired/cold instrumentation, if
+needed for a default promotion, follows the first real correctness results.
+
+The historical raw outcome `online-27c2577-hostpos-r3-v5/outcome-00.json`
+was reanalyzed locally: **105244413 ns** accounted, **0 ns** unaccounted.
+Its source SHA remains `27c2577`; this is an accounting check, not a new GPU run.
+
+## Remaining GPU work (not claimed complete)
 
 1. Restore SSH access to the requested 46068 instance. On 2026-09-15 the port
    refused the connection before authentication; no new remote GPU job started.
@@ -68,9 +113,8 @@ after numerical validation. Each uses a fresh directory. No mixed-SHA cost table
 4. Recollect exact costs and rerun production FinalCommit. No forced commit.
 5. Validate arithmetic optimization and ownership guards on GPU; measure
    normalization savings versus the extra workspace reservation bookkeeping.
-6. Audit request-static digest caching separately from dynamic readiness/epoch
-   snapshots; these caches are **not yet implemented**. Source tensor stacking
-   and cross-checkpoint scratch reuse remain unoptimized.
+6. Measure whether Source stacking or reservation overhead is material before
+   adding further workspace changes. Cross-checkpoint data reuse is forbidden.
 7. Run 20 interleaved measured pairs plus two excluded warmup pairs per accepted
    factor, three cold processes separately, followed by 128/640 boundary tests.
 
@@ -80,3 +124,6 @@ Keep gamma=0.8; if the measured execution lower limit leaves no admission
 headroom, report the limitation instead of hiding preparation costs.
 
 All runtime/positive-gain/profile/paper gates remain unpassed for this new SHA.
+Local preparation is ready for the first GPU environment/correctness stage.
+Actual server assets, imports, GPU availability and numerical correctness must
+still pass onsite; online trace is conditional on valid measured cost support.

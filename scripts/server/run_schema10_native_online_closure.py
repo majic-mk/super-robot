@@ -261,8 +261,8 @@ def main():
     parser.add_argument("--host-profile", action="store_true",
                         help="instrument backend.execute with cProfile; attribution only, not performance evidence")
     args = parser.parse_args()
-    if not 1 <= args.replays <= 20:
-        raise ValueError("closure replay count must be between 1 and 20")
+    if not 1 <= args.replays <= 22:
+        raise ValueError("closure replay count must be between 1 and 22 (two warmups plus 20 measured)")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[2]

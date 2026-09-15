@@ -309,14 +309,16 @@ class Schema10OnlineExperimentBackend:
                 raise ValueError("production entry forbids diagnostic admission bypass")
             started = time.perf_counter_ns()
             initial = self.snapshot(retain_backing=False)
+            initial_digest = digest_json(initial)
             self._emit("request_started", rid, {"request": request, "dispatch": dispatch, "arrival_ns": arrival_ns,
-                                                "initial_snapshot_sha256": digest_json(initial)})
+                                                "initial_snapshot_sha256": initial_digest})
             try:
                 # Native context fences and drops GPU working tensors BEFORE
                 # the outer stack releases physical leases/HBM reservations.
                 with ExitStack() as leases, adapter.open_request(request, arrival_ns=arrival_ns) as context:
                     context.online_context_opened_ns = time.perf_counter_ns()
-                    row, exports = self._execute_context(context, request, dispatch, arrival_ns, started, initial, leases)
+                    row, exports = self._execute_context(context, request, dispatch, arrival_ns, started, initial, leases,
+                                                         initial_digest=initial_digest)
                 self._emit("request_completed", rid, row)
                 self.pending = (deepcopy(request), row, exports)
                 return row
@@ -325,7 +327,8 @@ class Schema10OnlineExperimentBackend:
                 self._emit("request_failed", rid, {"error": str(exc), "type": type(exc).__name__, "timestamp_ns": time.perf_counter_ns()})
                 raise
 
-    def _execute_context(self, context, request, dispatch, arrival_ns, started, initial, leases):
+    def _execute_context(self, context, request, dispatch, arrival_ns, started, initial, leases, *, initial_digest=None):
+        initial_digest = digest_json(initial) if initial_digest is None else initial_digest
         rid, epoch = request["request_id"], request["request_epoch"]
         selector = self.selector_factory(dispatch, self.store.pool.max_variants_per_content)
         context.selector = selector
@@ -339,14 +342,15 @@ class Schema10OnlineExperimentBackend:
         segments = {sid: segment for sid, segment in segments.items() if inventory[sid].comparison_eligible}
         if not segments or getattr(context, "probe_fallback_reason", None):
             return self._unsupported_dense(context, request, dispatch, arrival_ns, started, initial,
-                reason=getattr(context, "probe_fallback_reason", None) or "no_nonprefix_candidates")
+                reason=getattr(context, "probe_fallback_reason", None) or "no_nonprefix_candidates", initial_digest=initial_digest)
         dense = self.costs.dense_reference(context)
         if dense is None or not math.isfinite(dense) or dense <= 0:
             # Still execute actual dense; no invented reference, selector or cost.
-            return self._unsupported_dense(context, request, dispatch, arrival_ns, started, initial)
+            return self._unsupported_dense(context, request, dispatch, arrival_ns, started, initial, initial_digest=initial_digest)
         ledger = SelectionCostLedger(dense, SelectionCostPolicy(mode=dispatch.get("selection_budget_policy", "end_to_end_aware")))
         selection = ProductionSelectionSession(rid, tuple(segments), selector, ledger)
-        selection_cache_key = self._selection_cache_key(request, dispatch, context, segments)
+        selection_cache_key = (self._selection_cache_key(request, dispatch, context, segments)
+                               if request.get("selection_cache_enabled", False) else None)
         cached_selection = (self._get_cached_selection(selection_cache_key)
                             if request.get("selection_cache_enabled", False) else None)
         visible, eligible, compatible, frozen, prepared = {}, {}, set(), {}, {}
@@ -498,10 +502,9 @@ class Schema10OnlineExperimentBackend:
                                            "timing": dict(preparation_intervals[sid])})
             if len(selection.decisions) + len(set(selection_failures) - set(selection.decisions)) == len(segments):
                 break
-        # Populate the bounded cache for exact subsequent requests.  Whether
-        # a request is allowed to consume it remains an explicit request
-        # policy; publishing evidence is side-effect free for execution.
-        if selection.closed:
+        # Disabled means neither lookup nor pool-key construction/publication.
+        # Diagnostic exact-request caching remains an explicit opt-in.
+        if selection.closed and selection_cache_key is not None:
             self._put_cached_selection(selection_cache_key, selection.decisions)
         context.finish_selection(frozen, prepared)
         selection_closed_ns = time.perf_counter_ns()
@@ -513,6 +516,7 @@ class Schema10OnlineExperimentBackend:
             "context_opened_ns": getattr(context, "online_context_opened_ns", None),
             "selection_closed_ns": selection_closed_ns,
             "selection_intervals": list(ledger.intervals) if hasattr(ledger, "intervals") else None,
+            "selection_interval_events": list(ledger.interval_events),
             "preparation_intervals": preparation_intervals,
             "ready_for_final_commit_start_ns": ready_started_ns,
             "ready_for_final_commit_end_ns": ready_finished_ns,
@@ -634,7 +638,7 @@ class Schema10OnlineExperimentBackend:
             "final_commit_executed": bool(frozen), "final_commit_not_applicable_reason": not_applicable,
             "final_predicted_request_total_ms": final_total,
             "realized_overrun_ms": max(0, ttft - .8 * dense) if committed else None,
-            "initial_pool_snapshot_sha256": digest_json(initial), "dispatch_config": dict(dispatch),
+            "initial_pool_snapshot_sha256": initial_digest, "dispatch_config": dict(dispatch),
             "winner_repair_metric": getattr(getattr(context, "adapter", None), "native_repair_metric", "normalized_v_legacy"),
             "code_commit": self.provenance["code_commit"], "model_signature": self.provenance["model_signature"],
             "execution_disposition": "reuse" if committed else "dense",
@@ -645,11 +649,21 @@ class Schema10OnlineExperimentBackend:
                      "canonical_builders": builders}
 
     def _unsupported_dense(self, context, request, dispatch, arrival, started, initial,
-                           reason="matched_dense_cost_unsupported"):
+                           reason="matched_dense_cost_unsupported", *, initial_digest=None):
+        initial_digest = digest_json(initial) if initial_digest is None else initial_digest
+        finish_started = time.perf_counter_ns()
         first = []
         output = context.finish(lambda: first.append(time.perf_counter_ns()))
         if len(first) != 1:
             raise RuntimeError("missing actual first-token endpoint")
+        from .request_wallclock import partition_request_wallclock
+        landmarks = [("service_start", started)]
+        opened = getattr(context, "online_context_opened_ns", None)
+        if opened is not None:
+            landmarks.append(("context_opened", opened))
+        landmarks.append(("unsupported_finish_call", finish_started))
+        landmarks += list(getattr(context, "finish_timing_landmarks", {}).items())
+        wallclock = partition_request_wallclock(arrival, first[0], landmarks)
         visible = [v for sid, s in context.segments.items()
                    if context.execution_inventory[sid].comparison_eligible
                    for v in self._lookup(s, request["request_epoch"])[0]]
@@ -661,6 +675,7 @@ class Schema10OnlineExperimentBackend:
             "residual_compatibility_observed": False, "quality_passed": output.get("quality_passed"),
             "matched_dense_ttft_ms": None, "actual_ttft_ms": (first[0] - arrival) / 1e6}
         row = {**output, "request_id": request["request_id"], "arrival_ns": arrival, "service_start_ns": started,
+            "request_wallclock": wallclock, "timing_scope": "arrival_to_first_token",
             "first_token_ns": first[0], "completion_ns": time.perf_counter_ns(), "request_ttft_ms": (first[0] - arrival) / 1e6,
             "queue_ms": (started - arrival) / 1e6, "execution_kind": "online_policy", "forced_source": False,
             "selection_events": [], "runtime_events": [{"kind": "dense_fallback", "reason": reason}],
@@ -668,7 +683,7 @@ class Schema10OnlineExperimentBackend:
             "selected_source_variant_ids": [], "committed_source_variant_ids": [], "final_commit_executed": False,
             "final_commit_not_applicable_reason": reason, "quality_passed": output.get("quality_passed"),
             "coverage_event": coverage, "execution_disposition": "dense",
-            "matched_dense_ttft_ms": None, "initial_pool_snapshot_sha256": digest_json(initial),
+            "matched_dense_ttft_ms": None, "initial_pool_snapshot_sha256": initial_digest,
             "dispatch_config": dict(dispatch), "code_commit": self.provenance["code_commit"],
             "model_signature": self.provenance["model_signature"], "evidence_origin": context.evidence_origin,
             "paper_evidence": False, "gpu_runtime_qualified": False}
