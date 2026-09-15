@@ -22,6 +22,7 @@ from .v8_schema10_cost_provider import UnsupportedTimelineCost
 from .v8_schema10_inventory import native_segment_inventory
 from .v8_schema10_execution import ProductionSelectionSession, SelectionCostLedger, SelectionCostPolicy, digest_json
 from .v8_schema10_materialization import VariantMaterializationControllerV10, VariantMaterializationRequestV10
+from .selection_comparison import prepare_current_k, residual_scores
 
 
 class Schema10OnlineExperimentBackend:
@@ -181,6 +182,18 @@ class Schema10OnlineExperimentBackend:
         return visible, tuple(eligible)
 
     def _compare(self, context, sid, depth, rows, current, ledger, request_id):
+        # Normalization may span microbatches, never checkpoints/requests. The
+        # persistent tensors retain their own reservation until all batches end.
+        with ExitStack() as workspace:
+            normalization = []
+            try:
+                return self._compare_with_workspace(context, sid, depth, rows, current,
+                                                    ledger, request_id, workspace, normalization)
+            finally:
+                normalization.clear()
+
+    def _compare_with_workspace(self, context, sid, depth, rows, current, ledger,
+                                request_id, workspace, normalization):
         import torch
         positions = tuple(context.segments[sid]["positions"])
         if tuple(sorted(set(positions))) != positions or current.dtype != torch.bfloat16 or current.ndim != 3:
@@ -216,19 +229,22 @@ class Schema10OnlineExperimentBackend:
                 if not count:
                     break
             event_id = f"{request_id}:{sid}:{depth}:{offset}"
+            if not normalization:
+                shared = self.hbm.reserve_batch(owner_request_id=request_id,
+                    rows=((event_id + ":current", per_source, HBMReservationKind.SELECTION_WORKSPACE),))[0]
+                workspace.callback(self.hbm.release, shared.reservation_id)
             reservation = self.hbm.reserve_batch(owner_request_id=request_id,
-                rows=((event_id, per_source * (count + 1), HBMReservationKind.SELECTION_WORKSPACE),))[0]
+                rows=((event_id, per_source * count, HBMReservationKind.SELECTION_WORKSPACE),))[0]
             begin = time.perf_counter_ns()
             source_tensor = drift = order = None
             try:
                 if prediction is not None:
                     ledger.reserve(event_id, prediction)
+                if not normalization:
+                    normalization.extend(prepare_current_k(current))
                 source_tensor = torch.stack([t.to(current.device, non_blocking=True) for _, t in states[offset:offset + count]])
-                drift = (source_tensor.float() - current.float()).square().sum((2, 3)).sqrt()
-                drift /= current.float().square().sum((1, 2)).sqrt().clamp_min(1e-12)
-                order = drift.argsort(dim=1, descending=True, stable=True)
-                trim = min(len(positions) - 1, math.ceil(context.selector.variant_profile.source_residual_trim_ratio * len(positions)))
-                scores = drift.gather(1, order)[:, trim:].mean(1).detach().cpu().tolist()
+                scores = residual_scores(source_tensor, *normalization,
+                    context.selector.variant_profile.source_residual_trim_ratio).detach().cpu().tolist()
                 end = time.perf_counter_ns()
                 if prediction is not None:
                     ledger.settle(event_id, begin, end)
