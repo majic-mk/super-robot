@@ -36,8 +36,14 @@ def dispatch_depths(selection_path, model_spec):
     raise ValueError("unconnected native dispatch")
 
 
-@lru_cache(maxsize=128)
 def _defer_layer_timing_capability(method):
+    # Never retain a bound method in the global cache: it owns the model.
+    # Replacing the implementation naturally produces a different cache key.
+    return _defer_layer_timing_implementation(getattr(method, "__func__", method))
+
+
+@lru_cache(maxsize=128)
+def _defer_layer_timing_implementation(method):
     """Fail-closed patch capability check, cached per implementation object.
 
     The audited patch is immutable for a running adapter, so repeating
@@ -50,6 +56,10 @@ def _defer_layer_timing_capability(method):
     except (OSError, TypeError) as exc:
         raise RuntimeError("deferred timing capability cannot be audited") from exc
     return "probekv_defer_layer_timing" in source
+
+
+_defer_layer_timing_capability.cache_clear = _defer_layer_timing_implementation.cache_clear
+_defer_layer_timing_capability.cache_info = _defer_layer_timing_implementation.cache_info
 
 
 def validate_native_sampling_request(request):
@@ -634,6 +644,14 @@ class NativeRequestContext:
         if (self.committed or session.commits or tuple(session.active_positions) != expected
                 or session._pending_target_positions is not None or session._pending_reuse_commit):
             raise RuntimeError("native dense continuation requires unmodified complete active rows")
+        # Shape alone cannot distinguish a composite from native paged storage.
+        # Continue only against the exact cache blocks and attention metadata
+        # allocated for this request; reject before submitting any layer.
+        if (len(session.working_kv) != a.spec.num_layers
+                or len(a.kv) != a.spec.num_layers
+                or any(actual is not native for actual, native in zip(session.working_kv, a.kv))
+                or session.attention_metadata is not self.attention):
+            raise RuntimeError("native dense continuation requires original paged KV and attention ownership")
         positions = self._prepared_inputs[1]
         if len(positions) != len(expected) or session.hidden_states.shape[0] != len(expected):
             raise RuntimeError("native dense continuation input geometry mismatch")

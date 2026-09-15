@@ -25,9 +25,11 @@ class FallbackAccountingTests(unittest.TestCase):
         adapter = SimpleNamespace(inner=SimpleNamespace(layers=[Layer(i) for i in range(3)],
                 cache_fuse_metadata={}), spec=SimpleNamespace(num_layers=3), check_deadline=lambda: None,
                 torch=SimpleNamespace(cuda=SimpleNamespace(Event=lambda **kw: Mock())))
+        adapter.kv = session.working_kv
         context = SimpleNamespace(adapter=adapter, engine=SimpleNamespace(session=session),
             cached_prefix_tokens=2, request={"token_ids": [1, 2, 3, 4]}, committed={},
-            _prepared_inputs=(None, torch.tensor([2, 3])), generation=1)
+            _prepared_inputs=(None, torch.tensor([2, 3])), generation=1,
+            attention=session.attention_metadata)
         return context, calls
 
     def test_native_continuation_preserves_state_and_skips_completed_layer(self):
@@ -50,6 +52,24 @@ class FallbackAccountingTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 NativeRequestContext._advance_native_dense_remaining(context)
             self.assertEqual(calls, [])
+
+    def test_native_continuation_rejects_composite_or_foreign_attention(self):
+        for foreign in ('kv', 'attention'):
+            context, calls = self.dense_context()
+            if foreign == 'kv':
+                context.engine.session.working_kv = [object()] * 3
+            else:
+                context.engine.session.attention_metadata = object()
+            with self.assertRaisesRegex(RuntimeError, 'original paged KV'):
+                NativeRequestContext._advance_native_dense_remaining(context)
+            self.assertEqual(calls, [])
+            self.assertEqual(context.engine.session.current_layer, 1)
+
+    def test_depth_two_continuation_does_not_replay_layer_one_or_two(self):
+        context, calls = self.dense_context()
+        context.engine.session.current_layer = 2
+        NativeRequestContext._advance_native_dense_remaining(context)
+        self.assertEqual([row[0] for row in calls], [2])
 
     def ticket(self):
         pair = (torch.ones(4, dtype=torch.bfloat16), torch.ones(4, dtype=torch.bfloat16))
