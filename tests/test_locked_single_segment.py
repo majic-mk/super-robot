@@ -54,6 +54,8 @@ class LockedEnvironmentTests(unittest.TestCase):
         self.assertIn("verify_cacheblend_patch.py", source)
         self.assertNotIn("pip install", source)
         self.assertNotIn("git reset", source)
+        self.assertIn("launch.extend(['--kv-layout-mode', args.kv_layout_mode])", source)
+        self.assertIn("choices=('legacy', 'packed_slice'), default='legacy'", source)
 
 
 if __name__ == '__main__':

@@ -203,6 +203,28 @@ instrumented totals include work outside TTFT and must not be summed or used
 as latency savings. They identify repeated query/mask construction, serialization
 and copying as the next investigation target; no planner check has been removed.
 
+## Exact-query construction optimization
+
+SHA `1a59009bf70ca4a277c32e8ce137dd034148b0a3` reuses equal layer masks and their
+serialization within a query. Canonical SHA bytes remain unchanged; no cross-
+decision identity-based cache was added. Mutation and canonical-encoding tests
+passed. Local suite: 920 tests, one existing skip, contract/compile checks pass.
+
+`recovery-1a59009-server22283-gpudadf3138-512-query-prefix-v1` passed GPU
+correctness and cost support. Native dense 53.144363 ms; fixed15 ready-to-token
+26.237103 ms. New SHA uses its own measurements.
+
+`recovery-1a59009-server22283-gpudadf3138-512-query-online-v1` completed 22
+replays, zero commits. Excluding two warmups, TTFT mean was 69.2475648 ms and
+mean planner elapsed 1.4892739 ms across all 20 decisions (both serialized event
+forms included). Thirteen initially acceptable estimates failed after actual
+planner time was added; seven were pruned on initial cost. Candidate totals
+after planner ranged 42.545345–45.954069 ms versus limit 42.5154904 ms. All warm
+host ledgers balanced exactly. No cost check or planner time was bypassed.
+
+Sequential configuration sweeps remain descriptive, not paired proof of final
+online speedup. No production reuse commit or positive complete-path gain yet.
+
 No multi-Segment, Qwen, multi-Source gain study, frozen Profile, qualification,
 H1–H5 or locked test has been authorized by these results. GPU hourly price and
 total monetary cost remain unknown, not zero.
