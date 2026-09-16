@@ -223,7 +223,35 @@ after planner ranged 42.545345–45.954069 ms versus limit 42.5154904 ms. All wa
 host ledgers balanced exactly. No cost check or planner time was bypassed.
 
 Sequential configuration sweeps remain descriptive, not paired proof of final
-online speedup. No production reuse commit or positive complete-path gain yet.
+online speedup. At that SHA no production reuse commit was observed.
+
+## Packed allocation control (bff0274)
+
+`recovery-bff0274-server22283-gpudadf3138-512-packed-prefix-v1` passed
+correctness and cost support with packed working KV; other switches stayed
+unchanged. Native Prefix dense was 55.111499 ms, fixed15 ready-to-token
+25.208229 ms, and winner preparation 3.170291 ms. This is a newly measured
+baseline, not the earlier 53.14 ms baseline reused across runs.
+
+`recovery-bff0274-server22283-gpudadf3138-512-packed-online-v1` completed
+22 requests: 21 committed, including all 20 post-warmup requests. Warm TTFT
+mean was 42.4753737 ms (range 41.381526–44.468956), with planner mean
+0.85735565 ms. One warm request exceeded the predicted gamma limit by
+0.3797568 ms; keep this realized overrun, rather than claiming admission
+guarantees actual latency. The former 69.25 ms run was dense fallback;
+its difference cannot all be attributed to packed allocation speed.
+
+Example replay 02 sums exactly to 42.214295 ms with zero unaccounted ns.
+Its context opening was 4.022304 ms, selection/preparation interval
+10.045897 ms, readiness 0.841608 ms, final admission 2.474299 ms, and
+remaining prefill submission interval 24.142406 ms. The raw ledger also
+retains queue, bookkeeping, logits, and token visibility intervals.
+
+These are genuine runtime commits on the diagnostic request, not proof of
+matched QA improvement: references and answer-F1 remain null. Packed mode
+remains opt-in pending matched factor controls and length regression.
+The next separate host-profile run investigates remaining initialization
+and selection costs; instrumented numbers are not performance samples.
 
 No multi-Segment, Qwen, multi-Source gain study, frozen Profile, qualification,
 H1–H5 or locked test has been authorized by these results. GPU hourly price and

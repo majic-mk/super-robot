@@ -56,6 +56,8 @@ class LockedEnvironmentTests(unittest.TestCase):
         self.assertNotIn("git reset", source)
         self.assertIn("launch.extend(['--kv-layout-mode', args.kv_layout_mode])", source)
         self.assertIn("choices=('legacy', 'packed_slice'), default='legacy'", source)
+        self.assertIn("launch.extend(['--prefix-shadow-transfer', args.prefix_shadow_transfer])", source)
+        self.assertIn("choices=('layerwise', 'batched'), default='layerwise'", source)
 
 
 if __name__ == '__main__':
