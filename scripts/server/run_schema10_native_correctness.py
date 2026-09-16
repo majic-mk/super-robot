@@ -126,6 +126,8 @@ def main():
     p.add_argument("--selection-path", choices=("legacy_multicheckpoint", "d1_only", "d1_d2_rescue"),
                    default="legacy_multicheckpoint",
                    help="Source-selection dispatch used for the diagnostic; legacy is the default")
+    p.add_argument("--contiguous-source-rows", action="store_true",
+                   help="opt-in slice copy for contiguous Source rows, without changing KV allocation")
     args = p.parse_args()
     if not 1 <= args.backend_repeats <= 20:
         p.error("--backend-repeats must be in 1..20")
@@ -188,6 +190,7 @@ def main():
         requests[request_name]["defer_layer_timing"] = args.defer_layer_timing
         requests[request_name]["native_dense_continuation"] = args.native_dense_continuation
         requests[request_name]["kv_layout_mode"] = args.kv_layout_mode
+        requests[request_name]["contiguous_source_rows"] = args.contiguous_source_rows
         requests[request_name]["component_timing"] = args.component_timing
         requests[request_name]["host_position_validation"] = args.host_position_validation
         requests[request_name]["prefix_shadow_transfer_mode"] = args.prefix_shadow_transfer

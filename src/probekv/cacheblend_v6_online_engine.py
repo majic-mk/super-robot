@@ -571,6 +571,7 @@ class CacheBlendV6OnlineEngine:
         source_loader: TorchLayerwiseSourceLoader,
         prefetch_window: int = 0,
         kv_layout_mode: str = "legacy",
+        contiguous_source_rows: bool = False,
         component_timing: bool = False,
     ) -> None:
         if kv_layout_mode not in {"legacy", "packed_slice"}:
@@ -586,6 +587,7 @@ class CacheBlendV6OnlineEngine:
         self._exact_prefix_layers: Tuple[Tuple[Any, Any], ...] = ()
         self._compute_events: Dict[int, Tuple[Any, Any]] = {}
         self.kv_layout_mode = kv_layout_mode
+        self.contiguous_source_rows = contiguous_source_rows
         self.component_timing = component_timing
         self._component_events = []
         self._source_row_indices = {}
@@ -763,7 +765,8 @@ class CacheBlendV6OnlineEngine:
                     raise ValueError("locked Sources have incompatible KV geometry")
         self.tickets[segment_id] = ticket
         row_positions = source_row_index(
-            ticket.segment_positions, contiguous_copy=self.kv_layout_mode == "packed_slice")
+            ticket.segment_positions, contiguous_copy=(self.contiguous_source_rows
+                                                       or self.kv_layout_mode == "packed_slice"))
         self._source_row_indices[segment_id] = row_positions
         # Residency must be explicit, never inferred from completed H2D copies.
         # Production continues to install layer-wise; the diagnostic opts in

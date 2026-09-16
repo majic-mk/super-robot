@@ -120,6 +120,35 @@ validation before model execution: the outer launcher omitted `--gpu-hot-cache`,
 which the CacheBlend loop control requires. The launcher is being corrected
 with a prerequisite regression test; any retry must use a new SHA/directory.
 
+## Matched executor retry completed
+
+Fix SHA `59a4f904c76d941c335aa12969f9d41486316a62` was committed, pushed and
+deployed to its own checkout. Local acceptance: 916 tests, 915 passed and one
+pre-existing skip; compileall and contract validator passed. No algorithm or
+threshold changed.
+
+Output: `recovery-59a4f90-server22283-gpudadf3138-512-matched-executor-v1`.
+The summary verified raw digests, numerical/boundary equivalence, fixed15 mask,
+Source integrity and resource cleanup. Each arm has 20 measured repeats after
+two excluded warmups.
+
+| Scope | Dense | Adapted CacheBlend | ProbeKV | Paired ProbeKV minus CacheBlend |
+| --- | ---: | ---: | ---: | ---: |
+| Setup-inclusive fixed-source first token (ms) | 74.12117355 | 48.9038818 | 64.24326755 | 15.33938575 |
+| Boundary executor (ms) | N/A | 43.5223698 | 44.1892811 | 0.6669113 |
+
+This fixture has **zero Prefix**, a resident Source and shared mask. Selection
+and planner are not executed. It is an adapted CacheBlend control, not untouched
+upstream. It does not certify fixed15 QA against dense, online FinalCommit,
+or end-to-end production gain. Do not compare its 74.12 ms dense directly with
+the ~53 ms native-Prefix baseline.
+
+The residual gap is concentrated outside the narrowly matched boundary executor.
+Separate profiler traces exist, but their instrumented durations cannot be
+subtracted as an exact partition of these uninstrumented timing samples. Setup,
+Source preparation and pre-boundary work need attribution before another
+optimization. The rejected native-continuation flag remains disabled.
+
 No multi-Segment, Qwen, multi-Source gain study, frozen Profile, qualification,
 H1–H5 or locked test has been authorized by these results. GPU hourly price and
 total monetary cost remain unknown, not zero.

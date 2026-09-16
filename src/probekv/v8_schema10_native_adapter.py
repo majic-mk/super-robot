@@ -370,6 +370,7 @@ class NativeRequestContext:
                 source_loader=a.loader,
                 prefetch_window=int(self.request.get("prefetch_window", 0)),
                 kv_layout_mode=self.request.get("kv_layout_mode", "legacy"),
+                contiguous_source_rows=bool(self.request.get("contiguous_source_rows", False)),
                 component_timing=bool(self.request.get("component_timing", False)))
             self.engine.begin_prefill(model_signature=a.provenance["model_signature"],
                 token_ids=tuple(self.request["token_ids"][self.cached_prefix_tokens:]),

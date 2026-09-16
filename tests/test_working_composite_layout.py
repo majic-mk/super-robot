@@ -58,6 +58,27 @@ class WorkingCompositeLayoutTests(unittest.TestCase):
             self.assertEqual(source_row_index(positions, contiguous_copy=True), list(positions))
         self.assertEqual(source_row_index((4, 5), contiguous_copy=False), [4, 5])
 
+    def test_slice_only_preserves_legacy_allocation_prefix_holes_and_source(self):
+        for positions in ((3, 4, 5), (3, 5, 7)):
+            source = [(torch.arange(12, dtype=torch.bfloat16).reshape(3, 2, 2),
+                       torch.ones(3, 2, 2, dtype=torch.bfloat16)) for _ in range(2)]
+            before = [[t.clone() for t in pair] for pair in source]
+            results = []
+            for enabled in (False, True):
+                api = SimpleNamespace(zeros=Mock(wraps=torch.zeros))
+                rows = allocate_working_composite(api, source, 10, "cpu", packed=False)
+                self.assertEqual(api.zeros.call_count, 4)
+                index = source_row_index(positions, contiguous_copy=enabled)
+                for destination, original in zip(rows, source):
+                    for dst, src in zip(destination, original):
+                        dst[:2] = 9
+                        dst[index] = src
+                results.append(rows)
+            for a, b in zip(*results):
+                self.assertTrue(all(torch.equal(x, y) for x, y in zip(a, b)))
+            for a, b in zip(source, before):
+                self.assertTrue(all(torch.equal(x, y) for x, y in zip(a, b)))
+
     def test_packed_mixed_geometry_and_dtype_rejected(self):
         for second in (torch.zeros(2, 4), torch.zeros(2, 3, dtype=torch.float64)):
             with self.assertRaisesRegex(ValueError, "homogeneous"):

@@ -71,6 +71,7 @@ def main():
     p.add_argument('--defer-layer-timing', action='store_true')
     p.add_argument('--host-position-validation', action='store_true')
     p.add_argument('--native-dense-continuation', action='store_true')
+    p.add_argument('--contiguous-source-rows', action='store_true')
     p.add_argument('--position-validation-ab-repeats', type=int, default=0, choices=range(21))
     p.add_argument('--matched-executor-only', action='store_true')
     p.add_argument('--backend-repeats', type=int, default=20, choices=range(1, 21))
@@ -132,7 +133,8 @@ def main():
                   '--model-audit', str(audit_path), '--patch-audit', str(patch_audit),
                   '--config', str(config), '--output', str(output / 'native'),
                   '--segment-tokens', str(args.segment_tokens), '--execute', '--cost-probe', '--skip-eager-cfo']
-        for key in ('defer_layer_timing', 'host_position_validation', 'native_dense_continuation'):
+        for key in ('defer_layer_timing', 'host_position_validation', 'native_dense_continuation',
+                    'contiguous_source_rows'):
             if getattr(args, key):
                 launch.append('--' + key.replace('_', '-'))
         if args.position_validation_ab_repeats:
