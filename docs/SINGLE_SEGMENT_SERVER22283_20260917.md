@@ -149,6 +149,60 @@ subtracted as an exact partition of these uninstrumented timing samples. Setup,
 Source preparation and pre-boundary work need attribution before another
 optimization. The rejected native-continuation flag remains disabled.
 
+## Isolated contiguous-row copy control
+
+SHA `275125cc3a3e1f6b62da1b24a6de06fc1f70103d` adds an opt-in
+`--contiguous-source-rows`. It selects a slice only for exactly contiguous
+ascending positions; noncontiguous rows keep the old indexing. Allocation stays
+legacy, repair stays fixed15, and native continuation remains disabled. Local
+acceptance: 917 tests, one existing skip, compileall and contract check passed.
+
+Output: `recovery-275125c-server22283-gpudadf3138-512-slice-executor-v1`.
+The same zero-Prefix resident fixture passed numerical, mask, integrity and
+cleanup prerequisites. Twenty measured samples per arm, after two warmups:
+
+- Setup-inclusive: dense 74.1885549 ms; adapted CacheBlend 48.88095905 ms;
+  ProbeKV 52.75619345 ms. Paired ProbeKV/CacheBlend gap 3.8752344 ms.
+- Boundary executor: CacheBlend 43.6152312 ms; ProbeKV 44.3809523 ms;
+  paired gap 0.7657211 ms.
+
+This reduces the descriptive setup-inclusive gap from 15.33938575 ms to
+3.8752344 ms across runs. The two optimization configurations were not themselves
+interleaved, so this is not a paired configuration-effect confidence interval.
+Both runs contain their own interleaved CacheBlend control.
+
+Separate profiler evidence corroborates the mechanism: prefill
+`cudaStreamSynchronize` count drops from 73 to 11. The prior longest waits nest
+under `probekv.source_rows_install` / `aten::to` / `aten::copy_`. Instrumented
+inclusive wait durations are not additive to uninstrumented TTFT. This evidence
+does not qualify the ordinary online path by itself.
+
+Next pending: `recovery-275125c-server22283-gpudadf3138-512-slice-prefix-v1`,
+revalidating Prefix, CPU backing, r=1 and matched cost support on the new SHA.
+
+The Prefix/CPU run subsequently passed correctness and cost support. Native
+dense measured 53.181305 ms; fixed15 boundary-to-token 28.501414 ms and
+ready-to-token 25.380233 ms. These remain single-cell observations.
+
+`recovery-275125c-server22283-gpudadf3138-512-slice-online-v1` completed all 22
+replays, 0 commits; the last 20 averaged 73.17949235 ms. A warm sample (05)
+shows sunk at snapshot 16.99208 ms, supported joint future 26.666203 ms and
+planner elapsed 5.550599 ms, giving 49.208882 ms versus admission limit
+42.545044 ms. The correct rejection explains why executor improvement has not
+yet become an online speedup: the request still falls back to dense.
+
+Next diagnostic is `recovery-275125c-server22283-gpudadf3138-512-host-profile-v1`,
+three host-profiled replays. Its latency must not enter uninstrumented performance
+summaries. It targets planner and initialization overhead; no threshold changes.
+
+Host profiling completed all three replays. Warm replay 02 attributes about
+7.18 ms inclusive to `plan_ready_subset`, including two cost `lookup` calls
+totaling about 7.05 ms. Across the profiled request, 27 `digest_json` calls take
+8.42 ms inclusive and deepcopy takes 5.08 ms inclusive. These overlapping,
+instrumented totals include work outside TTFT and must not be summed or used
+as latency savings. They identify repeated query/mask construction, serialization
+and copying as the next investigation target; no planner check has been removed.
+
 No multi-Segment, Qwen, multi-Source gain study, frozen Profile, qualification,
 H1–H5 or locked test has been authorized by these results. GPU hourly price and
 total monetary cost remain unknown, not zero.

@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 import json
+import hashlib
 from copy import copy
 from typing import Mapping
 
@@ -20,6 +21,38 @@ class UnsupportedTimelineCost(RuntimeError):
 
 EXECUTION_SHAPE_KEY = "execution_shape_v1"
 LEGACY_IDENTITY_KEY = "legacy_identity_v1"
+
+
+def digest_joint_query(query):
+    """Byte-identical canonical SHA, encoding repeated layer vectors once.
+
+    This cache lives for this call only. No Source/scheduler state or mutable
+    request object is memoized across decisions.
+    """
+    geometry = query.get("geometry")
+    if not isinstance(geometry, dict) or "layer_active_positions" not in geometry:
+        return digest_json(query)
+    encoded_rows = {}
+    def encode(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    def layers(value):
+        parts = []
+        for key in sorted(value):
+            positions = value[key]
+            # References remain owned by this query for the entire call.
+            # Identity is used only to deduplicate aliases during serialization.
+            encoded = encoded_rows.get(id(positions))
+            if encoded is None:
+                encoded = encode(positions)
+                encoded_rows[id(positions)] = encoded
+            parts.append(encode(key) + ":" + encoded)
+        return "{" + ",".join(parts) + "}"
+    geo = "{" + ",".join(encode(k) + ":" + (
+        layers(v) if k == "layer_active_positions" else encode(v))
+        for k, v in sorted(geometry.items())) + "}"
+    payload = "{" + ",".join(encode(k) + ":" + (
+        geo if k == "geometry" else encode(v)) for k, v in sorted(query.items())) + "}"
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def validate_measurement_provenance(provenance):
@@ -45,7 +78,12 @@ class MeasurementKey:
         forbidden = {"source_id", "source_variant_id", "request_id", "scheduler_snapshot",
                      "generation", "placement_epoch", "replica_id"}
         scalar_types = (int, float, str, bool, type(None))
+        visited = set()
         def check(value):
+            if isinstance(value, (Mapping, tuple, list)):
+                if id(value) in visited:
+                    return
+                visited.add(id(value))
             if isinstance(value, Mapping):
                 if forbidden.intersection(value):
                     raise ValueError("ephemeral identity in execution-shape measurement key")
@@ -98,16 +136,29 @@ class RequestExecutionShape:
             raise ValueError("committed fixed path is incomplete")
         boundaries = {**self.committed_boundary_by_segment, **context.boundary_by_segment}
         result = {}
+        position_sets = {sid: set(p) for sid, p in self.positions_by_segment.items()}
+        validated_supports, masks_by_support = set(), {}
         for layer in range(self.completed_depth + 1, self.num_layers + 1):
-            active = set(range(self.cached_prefix_tokens, self.prompt_token_count))
+            applicable = []
             for sid, boundary in boundaries.items():
                 if layer >= boundary:
                     support = self.repair_by_segment_by_layer.get(sid, {}).get(layer)
-                    if support is None or not set(support) <= set(self.positions_by_segment[sid]):
+                    if support is None:
                         raise UnsupportedTimelineCost("missing or invalid measured repair support")
-                    active.difference_update(self.positions_by_segment[sid])
+                    item = (sid, tuple(support))
+                    if item not in validated_supports:
+                        if not set(support) <= position_sets[sid]:
+                            raise UnsupportedTimelineCost("missing or invalid measured repair support")
+                        validated_supports.add(item)
+                    applicable.append(item)
+            signature = tuple(applicable)
+            if signature not in masks_by_support:
+                active = set(range(self.cached_prefix_tokens, self.prompt_token_count))
+                for sid, support in applicable:
+                    active.difference_update(position_sets[sid])
                     active.update(support)
-            result[layer] = tuple(sorted(active))
+                masks_by_support[signature] = tuple(sorted(active))
+            result[layer] = masks_by_support[signature]
         return result
 
 
@@ -213,8 +264,12 @@ class ProfiledJointTimelineEstimator:
                                  "reuse" if sid in context.reuse_segment_ids else "dense",
                     "boundary": self.shape.committed_boundary_by_segment.get(sid,
                                 context.boundary_by_segment.get(sid)), "physical": physical})
+            position_lists = {}
+            for positions in masks.values():
+                if positions not in position_lists:
+                    position_lists[positions] = list(positions)
             return MeasurementKey("joint_future", {
-                "segments": segments, "layer_active_positions": {str(l): list(p) for l, p in masks.items()},
+                "segments": segments, "layer_active_positions": {str(l): position_lists[p] for l, p in masks.items()},
                 "completed_depth": self.shape.completed_depth, "num_layers": self.shape.num_layers,
                 "prompt_tokens": self.shape.prompt_token_count, "prefix_tokens": self.shape.cached_prefix_tokens,
                 "sampling": self.shape.dense_reference_identity.get("sampling"),
@@ -253,7 +308,7 @@ class ProfiledJointTimelineEstimator:
             if self.query_audit is not None:
                 self.query_audit.append({"query": None, **asdict(result)})
             return result
-        key = digest_json(query)
+        key = digest_joint_query(query)
         row = self.rows.get(key)
         if row is None:
             result = CostLookup("UNSUPPORTED", key, None, "no_exact_joint_measurement", self.measurement_digest)
