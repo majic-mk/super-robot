@@ -11,6 +11,16 @@ spec.loader.exec_module(runner)
 
 
 class LockedEnvironmentTests(unittest.TestCase):
+    def test_matched_executor_includes_resident_source_prerequisites(self):
+        args = runner.matched_executor_args(20)
+        for flag in ('--matched-executor-only', '--matched-repair-backends',
+                     '--cacheblend-loop-control', '--gpu-hot-cache', '--cost-probe'):
+            self.assertIn(flag, args)
+        self.assertEqual(args[-2:], ['--backend-repeats', '20'])
+        for invalid in (0, 21):
+            with self.assertRaises(ValueError):
+                runner.matched_executor_args(invalid)
+
     def test_rejects_import_from_old_editable_tree(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / 'selected'

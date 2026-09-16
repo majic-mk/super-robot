@@ -52,6 +52,15 @@ def verify_assets(audit):
             raise ValueError('model asset digest mismatch: ' + name)
 
 
+def matched_executor_args(repeats):
+    """Keep the fixed-resident diagnostic's required flags together."""
+    if not 1 <= repeats <= 20:
+        raise ValueError('backend repeats must be in 1..20')
+    return ['--matched-executor-only', '--matched-repair-backends',
+            '--cacheblend-loop-control', '--gpu-hot-cache', '--cost-probe',
+            '--backend-repeats', str(repeats)]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--cacheblend', required=True)
@@ -129,8 +138,7 @@ def main():
         if args.position_validation_ab_repeats:
             launch.extend(['--position-validation-ab-repeats', str(args.position_validation_ab_repeats)])
         if args.matched_executor_only:
-            launch.extend(['--matched-executor-only', '--matched-repair-backends',
-                           '--cacheblend-loop-control', '--backend-repeats', str(args.backend_repeats)])
+            launch.extend(matched_executor_args(args.backend_repeats))
         lock = dict(code_sha=sha, patch_audit_sha256=file_sha(patch_audit),
                     cacheblend_tree=patch['cacheblend_tree'], model_audit_sha256=file_sha(audit_path),
                     model_id=audit['model_id'], model_revision=audit['revision'],
