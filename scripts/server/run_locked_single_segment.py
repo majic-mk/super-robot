@@ -74,6 +74,9 @@ def main():
     p.add_argument('--contiguous-source-rows', action='store_true')
     p.add_argument('--kv-layout-mode', choices=('legacy', 'packed_slice'), default='legacy')
     p.add_argument('--prefix-shadow-transfer', choices=('layerwise', 'batched'), default='layerwise')
+    p.add_argument('--repair-metric', choices=('normalized_kv_deviation', 'normalized_v_legacy',
+                                             'value_squared_l2_pinned_dtype'),
+                   default='normalized_kv_deviation')
     p.add_argument('--position-validation-ab-repeats', type=int, default=0, choices=range(21))
     p.add_argument('--matched-executor-only', action='store_true')
     p.add_argument('--backend-repeats', type=int, default=20, choices=range(1, 21))
@@ -137,6 +140,7 @@ def main():
                   '--segment-tokens', str(args.segment_tokens), '--execute', '--cost-probe', '--skip-eager-cfo']
         launch.extend(['--kv-layout-mode', args.kv_layout_mode])
         launch.extend(['--prefix-shadow-transfer', args.prefix_shadow_transfer])
+        launch.extend(['--repair-metric', args.repair_metric])
         for key in ('defer_layer_timing', 'host_position_validation', 'native_dense_continuation',
                     'contiguous_source_rows'):
             if getattr(args, key):

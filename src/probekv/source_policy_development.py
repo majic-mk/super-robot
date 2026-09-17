@@ -276,10 +276,10 @@ def development_experiment_spec():
         "repair_ratio_candidates": list(REPAIR_RATIO_CANDIDATES), "correctness_endpoint": 1.,
         "default_execution_objective": "efficiency_first",
         "objectives": ["efficiency_first", "quality_within_budget"],
-        "repair_metric_contract": CACHEBLEND_PINNED_REPAIR_METRIC,
+        "repair_metric_contract": CACHEBLEND_KV_DEVIATION_METRIC,
         "repair_metric_candidates": [CACHEBLEND_PINNED_REPAIR_METRIC,
                                       CACHEBLEND_KV_DEVIATION_METRIC],
-        "repair_metric_primary_status": "kv_deviation_candidate_pending_a800",
+        "repair_metric_primary_status": "kv_deviation_primary_pending_a800_revalidation",
         "selection_cells": selection, "chunking_cells": chunking,
         "candidate_comparison_policies": [
             {"name": "full_compare", "cfo_enabled": False, "anchor_enabled": False,

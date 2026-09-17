@@ -97,6 +97,9 @@ def main():
                    help="separate instrumented fixed15 arm; never use profiler TTFT as performance evidence")
     p.add_argument("--host-position-validation", action="store_true",
                    help="opt-in audited 0015: validate owned immutable indices on CPU")
+    p.add_argument("--repair-metric", choices=("normalized_kv_deviation", "normalized_v_legacy",
+                                             "value_squared_l2_pinned_dtype"),
+                   default="normalized_kv_deviation")
     p.add_argument("--prefix-shadow-transfer", choices=("layerwise", "batched"), default="layerwise",
                    help="same-value Prefix shadow H2D diagnostic; batched mode is not a frozen default")
     p.add_argument("--position-validation-ab-repeats", type=int, default=0,
@@ -207,6 +210,7 @@ def main():
                            "layer_controls": args.layer_controls, "numerical_execution_policy": numerical_policy,
                            "backing_tier": args.backing_tier, "reuse_boundary": args.reuse_boundary,
                            "cost_probe": args.cost_probe, "segment_tokens": args.segment_tokens,
+                           "repair_metric": args.repair_metric,
                            "cost_probe_readiness_cells": ["streaming", "all_ready_reuse", "all_ready_dense"],
                            "prefetch_window": args.prefetch_window,
                            "hardware_trace": args.hardware_trace,
@@ -234,6 +238,7 @@ def main():
             "thresholds": [[d, .25] for d in spec.checkpoints], "strong_margin": .6,
             "stable_margin": .3, "residual_band_relative_tolerance": .05},
         "sentinel_evidence_paths": {}, "repair_policy": "fixed_15", "integrity_mode": "qualification_full",
+        "repair_metric": args.repair_metric,
         "cfo_required_for_runtime": False,
         "installed_runtime_source_files_sha256": {name: file_digest(package / name) for name in RUNTIME_FILES}}
     manifest = {"protocol_version": 8, "schema_version": 10, "stage": "native_correctness_diagnostic",

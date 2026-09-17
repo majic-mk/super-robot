@@ -514,8 +514,8 @@ class NativeRequestContext:
             ticket.layer_events[depth + 1].synchronize()
             positions = tuple(self.segments[sid]["positions"])
             # Winner repair metric is independent of Source-score trimming.
-            # The normalized K/V candidate is opt-in; the historical V-only
-            # path remains the default until real QA evidence selects it.
+            # New manifests select normalized K/V explicitly. Missing metric
+            # remains V-only solely for historical manifest compatibility.
             metric = getattr(self.adapter, "native_repair_metric", "normalized_v_legacy")
             if metric == "normalized_kv_deviation":
                 from .source_policy_development import rank_winner_kv_positions

@@ -19,6 +19,7 @@ from probekv.v8_schema10_event_log import OnlineEventLog, atomic_json
 from probekv.v8_schema10_execution import digest_json
 from probekv.v8_schema10_native_factory import create_native_backend
 from probekv.v8_schema10_storage import file_digest
+from probekv.native_repair_contract import validate_repair_cost_evidence
 
 
 def _read_signed(path):
@@ -98,6 +99,8 @@ def build_cost_table(correctness_root, output_path):
     source = _read_signed(root / "cost-probe" / "fixed15_source.json")
     all_ready = _read_signed(root / "cost-probe" / "fixed15_all_ready.json")
     prepared_dense = _read_signed(root / "cost-probe" / "prepared_dense.json")
+    repair_shape = validate_repair_cost_evidence(
+        manifest["native_runtime"], (source, all_ready, prepared_dense))
     if (dense.get("cached_prefix_tokens") != source.get("cached_prefix_tokens")
             or source.get("diagnostic_repair_ratio") != .15
             or source.get("integrity_verification_mode") != "online_immutable"):
@@ -118,6 +121,7 @@ def build_cost_table(correctness_root, output_path):
              "head_dim": head_dim, "tier": tier, "bytes": full_bytes,
              "layout": "pre_rope_k_raw_v", "repair_ratio": .15,
              "timing_scope": "source_local_boundary_future"}
+    shape.update(repair_shape)
     provenance = manifest["native_runtime"]["cost_provenance"]
     identity = {"prompt_token_ids_sha256": digest_json(request["token_ids"]),
                 "cached_prefix_tokens": prefix, "prefix_cache_mode": dense["prefix_cache_mode"],
@@ -173,7 +177,7 @@ def build_cost_table(correctness_root, output_path):
                       "physical": {"tier": tier, "bytes": full_bytes,
                                    "ready_layers": ready_layers,
                                    "copy_in_flight": source["winner_copy_in_flight_at_commit_check"],
-                                   "layout": "pre_rope_k_raw_v"}}],
+                                   "layout": "pre_rope_k_raw_v", **repair_shape}}],
         "layer_active_positions": observed_masks, "completed_depth": depth, "num_layers": spec.num_layers,
         "prompt_tokens": prompt, "prefix_tokens": prefix, "sampling": identity["sampling"],
         "timing_scope": "boundary_to_first_token"}).query()

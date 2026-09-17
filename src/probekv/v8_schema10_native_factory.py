@@ -25,6 +25,7 @@ from .v8_schema10_selector import Schema10CheckpointSelector
 from .v8_schema10_contracts import AbsoluteResidualThreshold
 from .model_adapters import SCHEMA6_MODEL_SPECS
 from .v8_schema6_hbm import UnifiedHBMReservationManager
+from .native_repair_contract import historical_repair_metric
 
 
 def validate_native_attachment(manifest, *, allow_unmeasured=False):
@@ -47,10 +48,7 @@ def validate_native_attachment(manifest, *, allow_unmeasured=False):
         raise ValueError("native model is outside the frozen Mistral/Qwen adapters")
     if runtime.get("repair_policy", "fixed_15") != "fixed_15":
         raise ValueError("this native integration dispatch is fixed15; no silent gradual fallback")
-    if runtime.get("repair_metric", "normalized_v_legacy") not in {
-            "normalized_v_legacy", "value_squared_l2_pinned_dtype",
-            "normalized_kv_deviation"}:
-        raise ValueError("unknown explicit native winner repair metric")
+    historical_repair_metric(runtime)
     audit_path = Path(runtime["model_audit_path"])
     if file_digest(audit_path) != runtime["model_audit_sha256"]:
         raise ValueError("native model audit SHA mismatch")
@@ -258,7 +256,7 @@ def create_native_backend(manifest, *, _measurement_only=False):
         cost_provider=cost, shared_runtime_state=shared) for path in ("d1_only", "d1_d2_rescue", "legacy_multicheckpoint")}
     for adapter in adapters.values():
         adapter.expected_numerical_execution_policy = numerical_policy
-        adapter.native_repair_metric = runtime.get("repair_metric", "normalized_v_legacy")
+        adapter.native_repair_metric = historical_repair_metric(runtime)
     def selector_factory(dispatch, capacity):
         return Schema10CheckpointSelector(variant_profile=replace(template, max_variants_per_content=capacity),
             preparation_profile=PreparationPolicyProfile(code_commit=source["code_commit"], model_id=source["model_id"],
