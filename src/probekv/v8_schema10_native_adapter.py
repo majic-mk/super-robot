@@ -186,6 +186,7 @@ class NativeOnlineAdapter:
 
     @contextmanager
     def open_request(self, request, *, arrival_ns):
+        initialization_landmarks = [("adapter_open_enter", time.perf_counter_ns())]
         from vllm import SamplingParams
         from .v8_schema10_numerical_policy import assert_numerical_policy
         assert_numerical_policy(self.torch, getattr(self, "expected_numerical_execution_policy", None))
@@ -207,11 +208,14 @@ class NativeOnlineAdapter:
             self.active = None
             raise
         holder["native"] = native
+        initialization_landmarks.append(("native_request_constructed", time.perf_counter_ns()))
         native.allow_missing_shadow = True
         ctx = None
         try:
             with self.torch.inference_mode(), native:
+                initialization_landmarks.append(("native_blocks_and_shadow_acquired", time.perf_counter_ns()))
                 ctx = NativeRequestContext(self, native, request, arrival_ns)
+                ctx.initialization_landmarks = initialization_landmarks + ctx.initialization_landmarks
                 try:
                     yield ctx
                 finally:
@@ -267,8 +271,10 @@ class NativeRequestContext:
         self._setup_events = []
         self.finish_timing_landmarks = {}
         self.transfer_diagnostics = {}
+        self.initialization_landmarks = [("request_inventory_built", time.perf_counter_ns())]
         with self._setup_span("native_inputs_and_sampling"):
             self._prepared_inputs = adapter.prepare(native.metadata(is_prompt=True))
+        self.initialization_landmarks.append(("native_inputs_prepared", time.perf_counter_ns()))
         self.attention, self.sampling = self._prepared_inputs[2:4]
 
     @contextmanager

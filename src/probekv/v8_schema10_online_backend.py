@@ -309,13 +309,18 @@ class Schema10OnlineExperimentBackend:
                 raise ValueError("production entry forbids diagnostic admission bypass")
             started = time.perf_counter_ns()
             initial = self.snapshot(retain_backing=False)
+            initialization_landmarks = [("initial_snapshot_built", time.perf_counter_ns())]
             initial_digest = digest_json(initial)
+            initialization_landmarks.append(("initial_snapshot_hashed", time.perf_counter_ns()))
             self._emit("request_started", rid, {"request": request, "dispatch": dispatch, "arrival_ns": arrival_ns,
                                                 "initial_snapshot_sha256": initial_digest})
+            initialization_landmarks.append(("request_started_durable", time.perf_counter_ns()))
             try:
                 # Native context fences and drops GPU working tensors BEFORE
                 # the outer stack releases physical leases/HBM reservations.
                 with ExitStack() as leases, adapter.open_request(request, arrival_ns=arrival_ns) as context:
+                    context.initialization_landmarks = initialization_landmarks + list(
+                        getattr(context, "initialization_landmarks", ()))
                     context.online_context_opened_ns = time.perf_counter_ns()
                     row, exports = self._execute_context(context, request, dispatch, arrival_ns, started, initial, leases,
                                                          initial_digest=initial_digest)
@@ -599,6 +604,7 @@ class Schema10OnlineExperimentBackend:
         ttft = (first[0] - arrival_ns) / 1e6
         from .request_wallclock import partition_request_wallclock
         landmarks = [("service_start", started)]
+        landmarks += list(getattr(context, "initialization_landmarks", ()))
         opened = getattr(context, "online_context_opened_ns", None)
         if opened is not None:
             landmarks.append(("context_opened", opened))
@@ -658,6 +664,7 @@ class Schema10OnlineExperimentBackend:
             raise RuntimeError("missing actual first-token endpoint")
         from .request_wallclock import partition_request_wallclock
         landmarks = [("service_start", started)]
+        landmarks += list(getattr(context, "initialization_landmarks", ()))
         opened = getattr(context, "online_context_opened_ns", None)
         if opened is not None:
             landmarks.append(("context_opened", opened))

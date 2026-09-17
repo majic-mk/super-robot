@@ -217,6 +217,10 @@ class OnlineIntegration(unittest.TestCase):
         ledger = row['request_wallclock']
         self.assertEqual(ledger['ttft_ns'], row['first_token_ns'] - row['arrival_ns'])
         self.assertEqual(sum(i['duration_ns'] for i in ledger['intervals']), ledger['ttft_ns'])
+        ends = [i['end'] for i in ledger['intervals']]
+        self.assertLess(ends.index('initial_snapshot_built'), ends.index('initial_snapshot_hashed'))
+        self.assertLess(ends.index('initial_snapshot_hashed'), ends.index('request_started_durable'))
+        self.assertLess(ends.index('request_started_durable'), ends.index('context_opened'))
         self.assertIsNone(row['matched_dense_ttft_ms'])
         self.assertFalse(row['committed_source_variant_ids'])
 
