@@ -60,3 +60,41 @@ All formal profile, qualification, H1-H5 and locked-test permissions remain fals
   separate cleanup candidate, not a reason to modify a running checkout.
 - At this record time no target QA matrix had completed. Do not infer quality,
   complementarity or speedup from successful source construction.
+
+## CFO-free recapture and completed first matrix
+
+The previous job was interrupted at the user's request; its original outputs
+and KeyboardInterrupt trace inside CFO aggregation are retained.
+
+- Execution SHA: `c3e295352d9bfc44a46d537a2c841edf5288aa38`.
+- Fresh environment: `qa-env-c3e2953-v1`; fresh outputs: `qa-matrix-c3e2953-v1`
+  under server26111 `/root/autodl-tmp/probekv_stage2/artifacts`.
+- Ordinary canonical construction and current-request exact-full-prefill export
+  no longer collect CFO. Explicit bounded eager CFO diagnostics and historical
+  metadata validation remain available. Missing CFO uses an explicit
+  `cfo_collection=not_collected` marker, not fabricated statistics.
+- First group's four complete Source captures: 279.061, 251.392, 237.685,
+  271.840 ms. Prior first-source capture was 82,360.093 ms. These are construction
+  observations, not paired online TTFT performance evidence.
+- Both groups completed: 8 newly captured sources, 12 targets, each with dense
+  and four fixed15 normalized-K/V actions (60 QA actions), common boundary 9.
+- Whole diagnostic job: 77.848452 seconds. Integrity assertions passed or the
+  runner would have stopped; this is not a production FinalCommit qualification.
+
+### Answer-boundary problem: selector verdict remains inconclusive
+
+11/12 targets have at least one action continuing into a new `Question:`.
+Example dense output begins with the correct reference `Asia`, then generates
+another question; scoring the complete 32-token continuation gives F1 0.105263.
+Thus current raw F1 rankings mix answer correctness with unwanted continuation.
+Do not retrospectively truncate answers and call this the preregistered result.
+
+For debugging only, residual-trim-0.15 full-candidate d1 argmin matched the raw
+maximum-source-F1 tie set on 5/12 targets; d2 argmin on 4/12. These counts include
+all-zero ties, are NOT the d1/d2 early-exit policy accuracy, and cannot establish
+selector reliability or failure under an adequate QA contract. Deep oracle was
+not measured. No net-gain or multi-Source Go decision is authorized.
+
+Next: freeze an answer-boundary/stop contract shared by dense and every Source,
+test it independently, and rerun to a new directory. Preserve all current raw
+answers and do not tune selector thresholds on this validation pilot.
