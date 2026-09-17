@@ -20,6 +20,7 @@ from probekv.v8_schema10_execution import digest_json
 from probekv.v8_schema10_native_factory import create_native_backend
 from probekv.v8_schema10_storage import file_digest
 from probekv.native_repair_contract import validate_repair_cost_evidence
+from probekv.durable_event_journal import journal_path, archive_journal
 
 
 def _read_signed(path):
@@ -264,11 +265,13 @@ def main():
                         help="explicit repeated-request control; never enable caching just because replay > 0")
     parser.add_argument("--host-profile", action="store_true",
                         help="instrument backend.execute with cProfile; attribution only, not performance evidence")
+    parser.add_argument("--event-journal-directory", help="Fresh absolute directory for durable events; archive to output on success")
     args = parser.parse_args()
     if not 1 <= args.replays <= 22:
         raise ValueError("closure replay count must be between 1 and 22 (two warmups plus 20 measured)")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    event_path = journal_path(output, args.event_journal_directory)
     repo = Path(__file__).resolve().parents[2]
     code = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
@@ -291,6 +294,7 @@ def main():
     cost_sha = file_digest(cost_path)
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
+                    event_journal_path=str(event_path), request_event_fsync_enabled=True,
                     locked_test_accessed=False, closure_replays=args.replays,
                     selection_cache_mode=args.selection_cache_mode,
                     host_profile_enabled=args.host_profile,
@@ -337,7 +341,8 @@ def main():
                 "selection_budget_policy": "end_to_end_aware"}
     event_binding = {**manifest["binding"], "dispatch": digest_json(dispatch),
                      "initial_state_sha256": digest_json(initial), "job_id": "mistral-online-closure"}
-    backend.event_log = OnlineEventLog(output / "events.jsonl", binding=event_binding)
+    backend.event_log = OnlineEventLog(event_path, binding=event_binding)
+    trace_service_start_ns = time.perf_counter_ns()
     replay_summaries = []
     for replay in range(args.replays):
         if replay and not args.no_restore:
@@ -391,6 +396,8 @@ def main():
                "replay_summaries": replay_summaries,
                "runtime_cost_profile_frozen": False, "gpu_runtime_qualified": False,
                "paper_evidence": False, "locked_test_accessed": False}
+    summary["event_journal_archive"] = archive_journal(event_path, output / "events.jsonl", binding=event_binding)
+    summary["trace_service_including_restore_finalize_and_archive_ms"] = (time.perf_counter_ns() - trace_service_start_ns) / 1e6
     atomic_json(output / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False))
 
