@@ -35,6 +35,25 @@ Both use the same 29b1bc7 cost table and fixed joint-K/V repair configuration.
 This sequential diagnostic is not an interleaved paired performance certificate.
 Do not promote a default based solely on comparison with a different SHA.
 
+Both arms completed, excluding exactly two warm-ups in each:
+
+| Journal | Warm mean TTFT ms | Commits / 20 | Mean request-start log ms | Maximum request-start log ms |
+|---|---:|---:|---:|---:|
+| Data disk | 105.71659535 | 5 | 42.64256220 | 229.088338 |
+| System disk | 78.58499250 | 5 | 14.54537085 | 111.980544 |
+
+Same measured dense reference: 53.283621 ms. Each arm has zero unaccounted
+TTFT ns and one committed sample with realized gamma overrun. Both archives
+passed digest checks with 66 events. Full replay-service times (including
+restore/finalize/archive) are 86214.922266 and 86846.300519 ms respectively;
+these diagnostic reset runs are not production throughput measurements.
+
+Conclusion: moving the journal is insufficient and is **not promoted**.
+The observed interval includes hashing, JSON encoding and fsync; the current
+ledger does not yet prove which internal operation causes its long stalls.
+`p0-29b1bc7-server26111-512-log-profile-v1` is a separate 22-replay cProfile
+diagnostic to attribute this, explicitly excluded from performance comparisons.
+
 ## Multi-target full-QA audit (29b1bc7)
 
 `multitarget-qa-geometry-29b1bc7-musique-v1.json` verifies input digests
