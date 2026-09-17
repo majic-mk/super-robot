@@ -54,6 +54,29 @@ ledger does not yet prove which internal operation causes its long stalls.
 `p0-29b1bc7-server26111-512-log-profile-v1` is a separate 22-replay cProfile
 diagnostic to attribute this, explicitly excluded from performance comparisons.
 
+Function-level attribution subsequently caught replay 14: request-start log
+92.659916 ms, with two profiled `posix.fsync` calls totalling 93.987699 ms
+over execution (including completion logging). This supports fsync as the
+large-stall cause in this observation; it does not make all log work free.
+
+## Finalized-request durability experiment (f0dbb02)
+
+An additional **nondefault** `--event-durability request_finalized` option
+retains append/flush for every event but fsyncs at request finalization or
+failure. The durability choice is bound in the manifest and raw event chain.
+The default, and historical stage journals, remain per-event durable.
+Do not describe the nondefault request-start append as power-loss durable:
+the inherited `request_started_durable` ledger endpoint denotes log-call
+return in this mode; manifest `request_event_fsync_enabled=false` is authoritative.
+The evidence transaction is only durable after the finalization fence.
+Incomplete or failed prefixes cannot resume as successful requests. All
+finalization/archive cost remains in replay-service time; a crashed unfinalized
+task is pending/failed, never passed. This is not a gamma or lease bypass.
+
+Regression: 931 tests, 930 passed and one historical skip. A stage-journal
+compatibility regression was caught and fixed before deployment. This option
+requires new GPU evidence and is not yet a default performance recommendation.
+
 ## Multi-target full-QA audit (29b1bc7)
 
 `multitarget-qa-geometry-29b1bc7-musique-v1.json` verifies input digests
