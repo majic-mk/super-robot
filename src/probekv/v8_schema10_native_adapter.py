@@ -63,6 +63,8 @@ _defer_layer_timing_capability.cache_info = _defer_layer_timing_implementation.c
 
 
 def validate_native_sampling_request(request):
+    from .v8_schema10_qa import bounded_answer
+    bounded_answer('', request)
     count = request.get("max_new_tokens", 32)
     if type(count) is not int or count < 1:
         raise ValueError("max_new_tokens must be a positive integer")
@@ -713,6 +715,12 @@ class NativeRequestContext:
         for _ in range(1, self.sampling_signature["max_new_tokens"]):
             if not teacher_forced and predicted[-1] == eos:
                 break
+            if not teacher_forced and self.request.get("answer_boundary_contract"):
+                from .v8_schema10_qa import bounded_answer
+                _, matched_stop = bounded_answer(a.llm.get_tokenizer().decode(
+                    predicted, skip_special_tokens=True), self.request)
+                if matched_stop is not None:
+                    break
             a.check_deadline()
             feed_token = int(teachers[len(predicted) - 1]) if teacher_forced else predicted[-1]
             metadata = self.native.append_for_decode(feed_token)

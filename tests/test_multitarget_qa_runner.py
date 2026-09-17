@@ -17,9 +17,11 @@ class PilotValidationTests(unittest.TestCase):
         requests = [dict(request_id=str(i), request_epoch=i+1, token_ids=[1,2,3,4],
                     segments=[dict(segment_id='C', token_ids=[2,3], positions=[1,2], content_key='k')],
                     mandatory_suffix_positions=[3], partition_role='fit', content_group='g',
+                    answer_boundary_contract='qa_next_question_boundary_v1',
                     development_partition_digest='a'*64, locked_test_accessed=False)
                     for i in range(9)]
         return dict(kind='multitarget_qa_pilot_partition_v1', repair_metric='normalized_kv_deviation',
+                    answer_boundary_contract='qa_next_question_boundary_v1',
                     repair_ratio=.15, common_first_reuse_layer=9, locked_test_accessed=False,
                     input_sha256={'partition': 'a'*64},
                     groups=[dict(source_requests=requests[:4], target_requests=requests[4:])])

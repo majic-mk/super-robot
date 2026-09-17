@@ -23,6 +23,10 @@ def validate_pilot(pilot):
                      parent_development_partition_sha256=pilot['input_sha256']['partition'],
                      locked_test_accessed=False)
     for group in pilot['groups']:
+        if pilot.get('answer_boundary_contract') != 'qa_next_question_boundary_v1' or any(
+            q.get('answer_boundary_contract') != pilot['answer_boundary_contract']
+            for q in group['source_requests'] + group['target_requests']):
+            raise ValueError('uniform preregistered answer boundary required')
         if len(group['source_requests']) != 4 or len(group['target_requests']) < 5:
             raise ValueError('incomplete group')
         for target in group['target_requests']:

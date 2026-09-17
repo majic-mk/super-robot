@@ -83,6 +83,8 @@ def main():
                   tokenizer_asset_sha256=assets, split_seed=20260726,
                   chronology='corpus_derived_pseudotime_not_production_chronology',
                   selection_outcomes_used_for_split=False, repair_ratio=0.15,
+                  answer_boundary_contract='qa_next_question_boundary_v1',
+                  exploratory_revision_after_answer_format_diagnostic=True,
                   repair_metric='normalized_kv_deviation', common_first_reuse_layer=9,
                   dataset_scope=recovery['dataset'], mechanism_pilot_only=True,
                   online_execution_allowed=False, gpu_runtime_qualified=False,

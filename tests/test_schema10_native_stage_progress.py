@@ -178,6 +178,18 @@ class NativeFinishHarness(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_native_sampling_request(request)
 
+    def test_decode_stops_when_next_question_marker_completes(self):
+        q = dict(token_ids=[1,2,3], max_new_tokens=32, answers=['Asia'],
+                 answer_boundary_contract='qa_next_question_boundary_v1')
+        ctx, feeds, _, _ = self.context(q)
+        tok = ctx.adapter.llm.get_tokenizer()
+        tok.eos_token_id = -1
+        tok.decode = lambda ids, **kw: 'Asia' if len(ids) < 2 else 'Asia\nQuestion:'
+        result = ctx.finish(lambda: None)
+        self.assertEqual(len(result['token_ids']), 2)
+        self.assertEqual(len(feeds), 1)
+        self.assertEqual(result['qa_evidence']['answer_f1'], 1.)
+
     def test_production_backend_rejects_diagnostic_switches(self):
         backend = NativeExperimentBackend.__new__(NativeExperimentBackend)
         backend.costs = NS(sha="test-only")
