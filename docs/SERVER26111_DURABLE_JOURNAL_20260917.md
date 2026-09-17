@@ -77,6 +77,25 @@ Regression: 931 tests, 930 passed and one historical skip. A stage-journal
 compatibility regression was caught and fixed before deployment. This option
 requires new GPU evidence and is not yet a default performance recommendation.
 
+GPU follow-up completed under f0dbb02: correctness/cost probe passed, and
+`p0-f0dbb02-server26111-512-finalized-v1` completed 22 replays. Excluding exactly
+the first two warm-ups leaves 20 requests, 15 commits, mean TTFT 48.58702505 ms,
+median 40.890924 ms, range 39.674547–80.531318 ms. The matched dense cost sample
+is 53.133501 ms. Request-start append mean/max is 0.4047461/0.441971 ms.
+No committed request has a realized gamma overrun; all ledgers close exactly.
+66 raw events archived with SHA256
+`bec2b4be358f0ca17c0af862d5ee6bf21aafcb2a8269f31d6102345b4839c970`.
+Full diagnostic replay-service time is 83847.353686 ms including finalization,
+restore and archive; finalization I/O has not disappeared from service cost.
+
+Remaining rejections are replays 4, 9, 11, 12 and 17. Selection/ready/admission
+cost still crosses the frozen gamma boundary; admission intervals for replays
+4 and 17 are 5.609/10.013 ms. Do not solve this by dropping those samples or
+loosening gamma. This isolated run does not provide paired confidence intervals.
+All `quality_passed` fields are null: no matched-quality gain claim is allowed.
+The logging experiment is promising for TTFT, but remains explicitly selectable,
+not silently substituted for the original per-event durability contract.
+
 ## Multi-target full-QA audit (29b1bc7)
 
 `multitarget-qa-geometry-29b1bc7-musique-v1.json` verifies input digests
