@@ -81,7 +81,7 @@ class OnlineEventLog:
                 # Optional experimental transaction boundary: preserve every
                 # append, but only certify durability after finalization/failure.
                 # An interrupted request is still rejected by read/resume checks.
-                if self.durability == "per_event" or kind in {
+                if getattr(self, "durability", "per_event") == "per_event" or kind in {
                         "request_finalized", "request_failed", "materialization_failed"}:
                     os.fsync(stream.fileno())
             self.rows.append(row)
