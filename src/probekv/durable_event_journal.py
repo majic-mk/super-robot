@@ -18,7 +18,9 @@ def journal_path(output, directory=None):
     return path / 'events.jsonl'
 
 
-def archive_journal(source, destination, *, binding):
+def archive_journal(source, destination, *, binding, durability="per_event"):
+    if durability not in {"per_event", "request_finalized"}:
+        raise ValueError('unknown journal durability boundary')
     start = time.perf_counter_ns()
     source, destination = Path(source), Path(destination)
     rows = read_events(source, binding=binding)
@@ -37,4 +39,5 @@ def archive_journal(source, destination, *, binding):
     return dict(source_path=str(source), archived_path=str(destination),
                 sha256=digest, event_count=len(rows), source_retained=True,
                 archive_wall_ms=(time.perf_counter_ns() - start) / 1e6,
-                request_fsync_enabled=True)
+                request_fsync_enabled=durability == 'per_event',
+                durability=durability, finalized_request_fsync_required=True)

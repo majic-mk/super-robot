@@ -39,7 +39,14 @@ def read_events(path, *, binding):
 
 
 class OnlineEventLog:
-    def __init__(self, path, *, binding, resume=False):
+    def __init__(self, path, *, binding, resume=False, durability="per_event"):
+        if durability not in {"per_event", "request_finalized"}:
+            raise ValueError("unknown journal durability boundary")
+        if durability != "per_event" and binding.get("event_durability") != durability:
+            raise ValueError("nondefault durability must be explicitly bound")
+        if binding.get("event_durability", durability) != durability:
+            raise ValueError("journal durability differs from execution binding")
+        self.durability = durability
         required = {"code_commit", "patch_sha256", "model_signature", "config_sha256",
                     "initial_state_sha256", "runtime_measurement_sha256", "dispatch"}
         if not required <= binding.keys() or any(not binding[k] for k in required):
@@ -71,7 +78,12 @@ class OnlineEventLog:
             with self.path.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(encoded)
                 stream.flush()
-                os.fsync(stream.fileno())
+                # Optional experimental transaction boundary: preserve every
+                # append, but only certify durability after finalization/failure.
+                # An interrupted request is still rejected by read/resume checks.
+                if self.durability == "per_event" or kind in {
+                        "request_finalized", "request_failed", "materialization_failed"}:
+                    os.fsync(stream.fileno())
             self.rows.append(row)
             return row["event_sha256"]
 

@@ -266,6 +266,7 @@ def main():
     parser.add_argument("--host-profile", action="store_true",
                         help="instrument backend.execute with cProfile; attribution only, not performance evidence")
     parser.add_argument("--event-journal-directory", help="Fresh absolute directory for durable events; archive to output on success")
+    parser.add_argument("--event-durability", choices=("per_event", "request_finalized"), default="per_event")
     args = parser.parse_args()
     if not 1 <= args.replays <= 22:
         raise ValueError("closure replay count must be between 1 and 22 (two warmups plus 20 measured)")
@@ -294,7 +295,8 @@ def main():
     cost_sha = file_digest(cost_path)
     manifest = deepcopy(base)
     manifest.update(stage="native_single_request_online_closure", paper_evidence=False,
-                    event_journal_path=str(event_path), request_event_fsync_enabled=True,
+                    event_journal_path=str(event_path), event_durability=args.event_durability,
+                    request_event_fsync_enabled=args.event_durability == "per_event",
                     locked_test_accessed=False, closure_replays=args.replays,
                     selection_cache_mode=args.selection_cache_mode,
                     host_profile_enabled=args.host_profile,
@@ -340,8 +342,9 @@ def main():
     dispatch = {"selection_path": args.selection_path, "gate1_mode": "explicit_barrier",
                 "selection_budget_policy": "end_to_end_aware"}
     event_binding = {**manifest["binding"], "dispatch": digest_json(dispatch),
+                     "event_durability": args.event_durability,
                      "initial_state_sha256": digest_json(initial), "job_id": "mistral-online-closure"}
-    backend.event_log = OnlineEventLog(event_path, binding=event_binding)
+    backend.event_log = OnlineEventLog(event_path, binding=event_binding, durability=args.event_durability)
     trace_service_start_ns = time.perf_counter_ns()
     replay_summaries = []
     for replay in range(args.replays):
@@ -396,7 +399,8 @@ def main():
                "replay_summaries": replay_summaries,
                "runtime_cost_profile_frozen": False, "gpu_runtime_qualified": False,
                "paper_evidence": False, "locked_test_accessed": False}
-    summary["event_journal_archive"] = archive_journal(event_path, output / "events.jsonl", binding=event_binding)
+    summary["event_journal_archive"] = archive_journal(event_path, output / "events.jsonl", binding=event_binding,
+                                                      durability=args.event_durability)
     summary["trace_service_including_restore_finalize_and_archive_ms"] = (time.perf_counter_ns() - trace_service_start_ns) / 1e6
     atomic_json(output / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False))
