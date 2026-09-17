@@ -40,3 +40,23 @@ CPU-only preparation. No Source QA matrix has been executed for this partition.
    until measured. K=1/2/4 causal replay remains subsequent work.
 
 All formal profile, qualification, H1-H5 and locked-test permissions remain false.
+
+## Native matrix launched
+
+- Runner commit: `77d3aafbdfd1878cbee52eb92c9b07ee96088e858`.
+- Regression: 935 tests, 934 passed, one historical skip.
+- Independent environment lock: server26111
+  `/root/autodl-tmp/probekv_stage2/artifacts/qa-env-77d3aaf-v1/environment_lock.json`.
+- Fresh runtime manifest generated without inventing measured costs. The matrix
+  uses the explicitly diagnostic measurement backend, not production admission.
+- Output: `/root/autodl-tmp/probekv_stage2/artifacts/qa-matrix-77d3aaf-v1`.
+- Log: same path plus `.log`.
+- Started September 17, 2026, approximately 19:58 Asia/Shanghai.
+- First two complete source captures published. First capture: zero cached Prefix,
+  no paged-cache writes, no decode, capture host time 82,360.092717 ms.
+- Legacy canonical capture still collects CFO attention metadata despite CFO not
+  being required by the online selector. This substantial construction cost must
+  remain in total cost accounting. It is not source-comparison TTFT and is a
+  separate cleanup candidate, not a reason to modify a running checkout.
+- At this record time no target QA matrix had completed. Do not infer quality,
+  complementarity or speedup from successful source construction.
