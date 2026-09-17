@@ -175,6 +175,21 @@ class NativeBoundaryAndCaptureTests(unittest.TestCase):
         q = {"token_ids": [3,4,5,6], "segments": [{"segment_id": "s", "positions": [1,2],
              "token_ids": [4,5], "content_key": "c"}]}
         exported = export_original_full_prefill(adapter, q, Collector())["s"]
+        with patch('probekv.v8_schema10_canonical.CFOFullPrefillCollector',
+                   side_effect=AssertionError('CFO must not run')):
+            plain = export_original_full_prefill(adapter, q)["s"]
+        from probekv.v8_schema10_source_metadata import validate_publication_metadata
+        validate_publication_metadata(plain['source_metadata'], token_count=2, num_layers=3)
+        self.assertNotIn('cfo', plain['source_metadata'])
+        self.assertFalse(plain['capture_audit']['cfo']['collected'])
+        for a, b in zip(exported['layers'], plain['layers']):
+            for x, y in zip(a, b):
+                self.assertTrue(torch.equal(x, y))
+        for d in exported['selection_states']:
+            self.assertTrue(torch.equal(exported['selection_states'][d], plain['selection_states'][d]))
+        bad = dict(plain['source_metadata'], cfo={})
+        with self.assertRaises(ValueError):
+            validate_publication_metadata(bad, token_count=2, num_layers=3)
         adapter.outer.assert_not_called()
         self.assertEqual(exported["capture_audit"]["extra_full_prefill_count"], 0)
         self.assertEqual(exported["source_metadata"]["token_ids"], [4,5])

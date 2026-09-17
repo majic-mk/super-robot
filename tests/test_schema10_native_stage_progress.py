@@ -137,6 +137,7 @@ class NativeFinishHarness(unittest.TestCase):
         ctx.native = NS(finish_prefill=lambda **kw: exact.append(kw),
             append_for_decode=lambda token: feeds.append(token), finish_decode_step=lambda: steps.append(1))
         ctx.finished, ctx.engine, ctx.capture_collector = False, None, None
+        ctx.capture_reservation = None
         ctx.finish_timing_landmarks = {}
         ctx.committed, ctx.cached_prefix_tokens = {}, 0
         ctx.sampling_signature = {"max_new_tokens": request.get("max_new_tokens", 32)}

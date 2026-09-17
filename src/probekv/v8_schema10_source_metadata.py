@@ -25,6 +25,10 @@ def validate_publication_metadata(metadata, *, token_count, num_layers):
     tokens = metadata.get("token_ids", ())
     if len(tokens) != token_count or any(type(t) is not int or t < 0 for t in tokens):
         raise ValueError("publication token identity does not match KV rows")
+    if metadata.get("cfo_collection") == "not_collected":
+        if "cfo" in metadata:
+            raise ValueError("contradictory CFO collection metadata")
+        return
     try:
         cfo = read_cfo_metadata(metadata["cfo"])
     except (KeyError, TypeError) as exc:

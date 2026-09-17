@@ -398,9 +398,8 @@ class NativeRequestContext:
         # Explicit preregistered capture task only: no surprise CFO work on
         # normal TTFT requests, no claim that extra materialization is free.
         if (not self.request.get("capture_original_full_prefill", False)
-                or self.cached_prefix_tokens or self.capture_collector is not None):
+                or self.cached_prefix_tokens or self.capture_reservation is not None):
             return
-        from .v8_cfo import CFOFullPrefillCollector
         from .v8_schema10_canonical import request_occurrences
         _, _, ids = request_occurrences(self.request)
         a = self.adapter
@@ -408,9 +407,7 @@ class NativeRequestContext:
         size = len(ids) * a.spec.num_layers * attn.num_kv_heads * attn.head_dim * 4
         self.capture_reservation = a.hbm.reserve_batch(owner_request_id=self.request["request_id"],
             rows=(("original_full_prefill_capture", size, HBMReservationKind.COMMITTED_EXECUTION),))[0]
-        self.capture_collector = CFOFullPrefillCollector(token_occurrence_ids=ids, expected_layers=a.spec.num_layers,
-                                                        eager_reference=False)
-        a.inner.cache_fuse_metadata.update(collect=True, probekv_cfo_collector=self.capture_collector)
+        a.inner.cache_fuse_metadata.update(collect=True, probekv_cfo_collector=None)
 
     def advance_to_depth(self, depth):
         self._begin()
@@ -626,7 +623,7 @@ class NativeRequestContext:
             hidden = a.outer(input_ids=ids, positions=pos, kv_caches=a.kv, attn_metadata=self.attention)
         else:
             if (self.request.get("native_dense_continuation", False)
-                    and not self.committed and self.capture_collector is None):
+                    and not self.committed and self.capture_reservation is None):
                 self._advance_native_dense_remaining()
             else:
                 self.advance_to_depth(a.spec.num_layers)
@@ -634,7 +631,7 @@ class NativeRequestContext:
             if self.engine.session.active_positions[-1] != len(self.request["token_ids"]) - 1:
                 raise RuntimeError("native sampling lost the mandatory suffix row")
         self.finish_timing_landmarks["remaining_prefill_submitted"] = time.perf_counter_ns()
-        if self.capture_collector is not None and not self.committed and not self.cached_prefix_tokens:
+        if self.capture_reservation is not None and not self.committed and not self.cached_prefix_tokens:
             from .v8_schema10_canonical import export_original_full_prefill
             self.canonical_exports = export_original_full_prefill(a, self.request, self.capture_collector)
         return self.finish_from_prefill_hidden(hidden, on_first_token)

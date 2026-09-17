@@ -33,7 +33,15 @@ def request_occurrences(request):
     return occurrences, targets, ids
 
 
-def export_original_full_prefill(adapter, request, collector):
+def _optional_cfo(collector, occurrences, target):
+    if collector is None:
+        return {"cfo_collection": "not_collected"}, {"collected": False, "required_for_runtime": False}
+    cfo, audit = collector.finalize(prefix_occurrences=tuple(o for o in occurrences
+        if o.provenance_position < target.provenance_position), target_occurrence=target)
+    return {"cfo": asdict(cfo)}, audit
+
+
+def export_original_full_prefill(adapter, request, collector=None):
     """Export a capture already produced by this exact, no-prefix request.
 
     This does not execute another model forward. Caller must reject any
@@ -56,12 +64,11 @@ def export_original_full_prefill(adapter, request, collector):
     for sid, target in targets.items():
         begin, end = target.provenance_position, target.provenance_position + target.token_count
         layers = tuple(tuple(t[begin:end].detach().to(device="cpu", copy=True).contiguous() for t in pair) for pair in whole)
-        cfo, audit = collector.finalize(prefix_occurrences=tuple(o for o in occurrences if o.provenance_position < begin),
-                                       target_occurrence=target)
+        cfo_metadata, audit = _optional_cfo(collector, occurrences, target)
         result[sid] = {"layers": layers, "selection_states": {d: layers[d][0].clone() for d in adapter.spec.checkpoints},
             "source_metadata": {"token_ids": list(request["token_ids"][begin:end]),
                 "tokenizer_hash": adapter.provenance["tokenizer_hash"],
-                "runtime_compatibility": adapter.provenance["runtime_compatibility"], "cfo": asdict(cfo)},
+                "runtime_compatibility": adapter.provenance["runtime_compatibility"], **cfo_metadata},
             "capture_audit": {"origin": "exact_dense_full_prefill", "capture_reused_from_current_request": True,
                 "extra_full_prefill_count": 0, "cached_prefix_tokens": 0, "cfo": audit,
                 "shadow_published": shadow, "original_tokens_sha256": digest_json(request["token_ids"])}}
@@ -81,8 +88,10 @@ def capture_exact_dense_source(adapter, request, segment_id, *, eager_reference=
         raise ValueError("eager CFO reference is a bounded <=512-token diagnostic")
     occurrences, targets, occurrence_ids = request_occurrences(request)
     target = targets[segment_id]
-    collector = CFOFullPrefillCollector(token_occurrence_ids=occurrence_ids,
-        expected_layers=adapter.spec.num_layers, eager_reference=eager_reference)
+    # Ordinary canonical construction captures exact KV only. CFO survives as
+    # an explicit bounded diagnostic, not hidden work on every materialization.
+    collector = (CFOFullPrefillCollector(token_occurrence_ids=occurrence_ids,
+        expected_layers=adapter.spec.num_layers, eager_reference=True) if eager_reference else None)
     caches = [None] * adapter.spec.num_layers
     group = SequenceGroupMetadata(request_id=request["request_id"] + ":canonical-capture", is_prompt=True,
         seq_data={0: SequenceData(list(token_ids))}, sampling_params=SamplingParams(temperature=0, max_tokens=1),
@@ -121,15 +130,14 @@ def capture_exact_dense_source(adapter, request, segment_id, *, eager_reference=
                 begin, stop = target.provenance_position, target.provenance_position + target.token_count
                 layers.append((key[begin:stop].detach().cpu().clone(), value[begin:stop].detach().cpu().clone()))
                 shadows.append((key.detach(), value.detach()))
-            cfo, cfo_audit = collector.finalize(prefix_occurrences=tuple(o for o in occurrences
-                if o.provenance_position < target.provenance_position), target_occurrence=target)
+            cfo_metadata, cfo_audit = _optional_cfo(collector, occurrences, target)
             # Bounded shadow admission may decline without invalidating Source capture.
             shadow_published = adapter.shadows.publish(token_ids, shadows, origin="exact_dense_full_prefill")
             states = {d: layers[d][0].clone() for d in adapter.spec.checkpoints}
             return {"layers": tuple(layers), "selection_states": states,
                 "source_metadata": {"token_ids": list(token_ids[target.provenance_position:target.provenance_position + target.token_count]),
                     "tokenizer_hash": adapter.provenance["tokenizer_hash"],
-                    "runtime_compatibility": adapter.provenance["runtime_compatibility"], "cfo": asdict(cfo)},
+                    "runtime_compatibility": adapter.provenance["runtime_compatibility"], **cfo_metadata},
                 "capture_audit": {"origin": "exact_dense_full_prefill", "original_tokens_sha256": digest_json(token_ids),
                     "cached_prefix_tokens": 0, "paged_cache_writes": False, "decode_executed": False,
                     "capture_gpu_ms": start.elapsed_time(end), "cfo": cfo_audit,
