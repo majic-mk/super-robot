@@ -12,6 +12,9 @@ Root: `/root/autodl-tmp/probekv_stage2/artifacts/`.
 - `p0-1030b78-server26111-512-kv-profile-v1`: 3 cProfile diagnostic runs;
   not performance samples. Profile covers decode as well as prefill, so its
   aggregate function times are not a TTFT decomposition.
+- `p0-1030b78-server26111-128-kv-v1` and
+  `p0-1030b78-server26111-640-kv-v1`: both completed; Prefix/K-hook/r=1
+  and matched cost probe passed. Online replays at these lengths remain pending.
 
 New runs explicitly use `normalized_kv_deviation`. Old V-only measurements
 remain historical evidence, not the new baseline. CFO remains not applicable.
@@ -58,8 +61,8 @@ of an unsupported cost key. Do not relax gamma to force successful commits.
 
 ## Ordered remaining work
 
-1. Complete 128/640 joint-metric correctness/cost boundary checks (launched
-   sequentially under the same SHA; inspect actual results before claiming pass).
+1. 128/640 joint-metric correctness/cost boundary checks are complete;
+   their online performance and QA are not certified by these sentinels.
 2. Diagnose initialization variance and supported joint-future prediction error;
    preserve all samples. No new setup optimization without a measured cause.
 3. Build audited multi-target cohorts: four prior Sources and at least five
