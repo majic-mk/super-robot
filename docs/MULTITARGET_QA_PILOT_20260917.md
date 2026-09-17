@@ -98,3 +98,47 @@ not measured. No net-gain or multi-Source Go decision is authorized.
 Next: freeze an answer-boundary/stop contract shared by dense and every Source,
 test it independently, and rerun to a new directory. Preserve all current raw
 answers and do not tune selector thresholds on this validation pilot.
+
+## Prospective boundary-contract rerun completed
+
+- Execution SHA `bd4ebed62f49a2f1729ff8e9d2297633d303db98`.
+- Output server26111 `qa-matrix-bd4ebed-v1`; independently rebuilt environment
+  `qa-env-bd4ebed-v1`; all under the same artifacts root above.
+- New partition canonical digest
+  `fb3785406a5c4a79be4bd357ffb7a962b1e6f8f6cec1563048ea0c92e8bdc1ce`.
+- Contract `qa_next_question_boundary_v1`: stop decoding when the complete
+  literal newline + `Question:` appears; exclude that marker and any same-token
+  trailing text from the scoring answer, retaining all raw tokens/text.
+  No first-line extraction, reference-dependent truncation or teacher forcing.
+- Same prompt tokens, group roles, 4-source cohorts, fixed15 K/V repair and
+  boundary9. This is an exploratory protocol revision after looking at answer
+  formatting; it is not an untouched independent validation dataset.
+- Regression 939 tests: 938 passed, one historical skip.
+- 12 targets / 60 actions completed in 64.780356 seconds, including construction
+  and diagnostic work. This duration is not production throughput.
+
+### Observations, with ties made explicit
+
+| Measure | d1 full-candidate argmin | d2 full-candidate argmin |
+|---|---:|---:|
+| Maximum raw answer-F1 tie-set membership | 11/12 | 10/12 |
+| Membership on the two non-tied targets only | 1/2 | 0/2 |
+| Dense-relative F1 drop <=0.02 | 12/12 | 12/12 |
+
+Ten targets have identical F1 across all four sources (including zero-F1 ties).
+Dense exact match is 6/12. Stop marker occurred in 47/60 actions. Some remaining
+outputs continue into context/explanations rather than a new question; the
+fixed contract does not retroactively strip those. Their F1 differences can
+still reflect verbosity, not better factual correctness. The two non-tied cases
+belong to group00; group01 has no discriminatory F1 cases.
+
+These are fixed-boundary rankings, NOT qualified d1/d2 early-exit policies.
+No deep-state score or early-boundary performance was measured here. There is
+no evidence yet that d2 improves source choice, or that multi-Source improves
+coverage/net TTFT over one Source. Do not promote a dispatch from these counts.
+
+Next decision: audit full QA prompt formatting and semantic correctness of the
+few differing cases; preregister a short-answer protocol on separate development
+groups before broader validation. Keep this pilot unchanged. Do not repeatedly
+adjust extraction rules until the selector appears successful. SparseX/QCFuse,
+multi-Segment and formal qualification remain blocked on core evidence.
