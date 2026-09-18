@@ -7,6 +7,23 @@ from probekv.source_support_span import classify_support
 
 
 class SupportSpanTests(unittest.TestCase):
+    def test_preoutcome_group_selection_counts_only_full_support(self):
+        scripts = Path(__file__).resolve().parents[1]/'scripts'/'server'
+        sys.path.insert(0,str(scripts))
+        try:
+            spec=importlib.util.spec_from_file_location('freeze_support',scripts/'freeze_support_span_pilot.py')
+            module=importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        full=[dict(support_stratum='full_support_sentence') for _ in range(5)]
+        rows=[dict(case_id='b',group_id='g',targets=full),dict(case_id='a',group_id='g',targets=full),
+              dict(case_id='c',group_id='h',targets=full[:4]+[dict(support_stratum='audit_rejected')])]
+        selected=module.select_census_groups(dict(rows=rows))
+        self.assertEqual([r['case_id'] for r in selected],['a'])
+        with self.assertRaises(ValueError):
+            module.select_census_groups(dict(rows=[rows[-1]]))
+
     def test_extension_excludes_previous_groups_and_noncalibration(self):
         scripts = Path(__file__).resolve().parents[1]/'scripts'/'server'
         sys.path.insert(0, str(scripts))
