@@ -44,3 +44,16 @@ class QualityRequestTests(unittest.TestCase):
         case["segment_token_ids"][0] += 1
         with self.assertRaisesRegex(ValueError, "reconstruction"):
             self.build(example, case)
+
+    def test_short_answer_instruction_preserves_all_evidence_and_shared_tokens(self):
+        example, case = self.fixture()
+        old = self.build(example, case)
+        new = self.build(example, case, prompt_protocol='short_answer_v1')
+        delta = len(new['token_ids']) - len(old['token_ids'])
+        self.assertGreater(delta, 0)
+        self.assertEqual(new['token_ids'][delta:], old['token_ids'])
+        self.assertEqual(new['answers'], old['answers'])
+        self.assertEqual(new['segments'][0]['token_ids'], old['segments'][0]['token_ids'])
+        self.assertEqual(new['segments'][0]['positions'], [p+delta for p in old['segments'][0]['positions']])
+        with self.assertRaises(ValueError):
+            self.build(example, case, prompt_protocol='short_answer_v1', max_model_len=len(old['token_ids'])+32)

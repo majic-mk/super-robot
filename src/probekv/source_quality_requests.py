@@ -9,7 +9,9 @@ from .v8_schema10_execution import digest_json
 
 def build_quality_request(example, case, encode, *, request_id, request_epoch,
                           partition_role, partition_digest, max_model_len,
-                          max_new_tokens=32):
+                          max_new_tokens=32, prompt_protocol="legacy_context_qa"):
+    if prompt_protocol not in {"legacy_context_qa", "short_answer_v1"}:
+        raise ValueError("unsupported frozen QA prompt protocol")
     if partition_role not in {"fit", "validation"}:
         raise ValueError("explicit audited fit/validation role required")
     if not example.answers or not partition_digest or not request_id:
@@ -29,6 +31,10 @@ def build_quality_request(example, case, encode, *, request_id, request_epoch,
     # Keep every preceding/following document, including supporting evidence.
     # The canonical document's exact token slice is not retokenized in context.
     prefix = list(encode(render_preceding_context(example.documents[:index]))) + left
+    if prompt_protocol == "short_answer_v1":
+        prefix = list(encode("Answer the question using the provided documents. "
+                            "Output only the short answer, without explanation, "
+                            "additional questions, or copied documents.\n\n")) + prefix
     suffix = right + list(encode(render_preceding_context(example.documents[index + 1:])))
     suffix += list(encode("\nQuestion: " + example.question + "\nAnswer:"))
     tokens = prefix + shared + suffix
@@ -44,6 +50,7 @@ def build_quality_request(example, case, encode, *, request_id, request_epoch,
         "question": example.question, "answers": list(example.answers),
         "max_new_tokens": max_new_tokens, "prefetch_window": 1,
         "answer_boundary_contract": "qa_next_question_boundary_v1",
+        "prompt_protocol": prompt_protocol,
         "partition_role": partition_role, "content_group": case["group_id"],
         "development_partition_digest": partition_digest,
         "origin_example_id": example.example_id,

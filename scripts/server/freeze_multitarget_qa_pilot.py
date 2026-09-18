@@ -15,6 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('cases', 'partition', 'recovery', 'raw', 'geometry', 'tokenizer', 'output'):
         parser.add_argument('--' + key, required=True)
+    parser.add_argument('--prompt-protocol', choices=('legacy_context_qa', 'short_answer_v1'),
+                        default='legacy_context_qa')
     args = parser.parse_args()
     output = Path(args.output)
     if output.exists():
@@ -71,7 +73,7 @@ def main():
             requests.append(build_quality_request(examples[oid], case, encode,
                 request_id=digest_json([case['group_id'], oid]), request_epoch=epoch,
                 partition_role=roles[case['group_id']], partition_digest=hashes['partition'],
-                max_model_len=4096))
+                max_model_len=4096, prompt_protocol=args.prompt_protocol))
         prefixes = {digest_json(q['token_ids'][:q['segments'][0]['positions'][0]]) for q in requests[:4]}
         if len(prefixes) != 4:
             raise ValueError('four distinct historical prefix states required')
@@ -84,6 +86,7 @@ def main():
                   chronology='corpus_derived_pseudotime_not_production_chronology',
                   selection_outcomes_used_for_split=False, repair_ratio=0.15,
                   answer_boundary_contract='qa_next_question_boundary_v1',
+                  prompt_protocol=args.prompt_protocol,
                   exploratory_revision_after_answer_format_diagnostic=True,
                   repair_metric='normalized_kv_deviation', common_first_reuse_layer=9,
                   dataset_scope=recovery['dataset'], mechanism_pilot_only=True,
