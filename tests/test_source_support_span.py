@@ -48,3 +48,7 @@ class SupportSpanTests(unittest.TestCase):
         raw['supporting_facts']=[['T',9]]
         with self.assertRaises(ValueError):
             classify_support(raw,d,**args)
+        raw['supporting_facts']=[]
+        raw['context'].append(['T',['different same-title document']])
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            classify_support(raw,d,**args)

@@ -62,10 +62,14 @@ def main():
             if len(docs) != 1:
                 raise ValueError('ambiguous repeated document')
             encoded = tok(segment_text(docs[0]), add_special_tokens=False, return_offsets_mapping=True)
-            label = classify_support(raw, docs[0], parent_token_ids=parent, encoded=encoded,
-                token_start=len(left), token_end=len(left)+len(case['segment_token_ids']))
+            error = None
+            try:
+                label = classify_support(raw, docs[0], parent_token_ids=parent, encoded=encoded,
+                    token_start=len(left), token_end=len(left)+len(case['segment_token_ids']))
+            except ValueError as exc:
+                label, error = 'audit_rejected', str(exc)
             labels.append(dict(origin_example_id=ex.example_id, support_stratum=label,
-                               pseudo_time_rank=target['pseudo_time_rank']))
+                               rejection_reason=error, pseudo_time_rank=target['pseudo_time_rank']))
         rows.append(dict(case_id=case['case_id'], group_id=case['group_id'],
             source_origin_ids=[s['origin_example_id'] for s in case['sources']],
             token_count=len(case['segment_token_ids']), targets=labels,
