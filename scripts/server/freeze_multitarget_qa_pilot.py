@@ -6,7 +6,7 @@ from pathlib import Path
 from audit_multitarget_qa_geometry import file_sha
 from probekv.io import atomic_write_json
 from probekv.rag_data import iter_raw_records, normalize_example
-from probekv.source_quality_partition import freeze_group_roles
+from probekv.source_quality_partition import freeze_group_roles, validation_only_representatives, validation_only_roles
 from probekv.source_quality_requests import build_quality_request
 from probekv.v8_schema10_execution import digest_json
 
@@ -17,6 +17,8 @@ def main():
         parser.add_argument('--' + key, required=True)
     parser.add_argument('--prompt-protocol', choices=('legacy_context_qa', 'short_answer_v1'),
                         default='legacy_context_qa')
+    parser.add_argument('--validation-only', action='store_true',
+        help='explicit no-fit diagnostic; select one slice per group before outcomes')
     args = parser.parse_args()
     output = Path(args.output)
     if output.exists():
@@ -36,6 +38,8 @@ def main():
     allowed = {p['case_id']: p['group_id'] for p in parents}
     eligible = {g['case_id'] for g in geometry['groups'] if not g['failures'] and g['all_fit_4096']}
     cases = [json.loads(x) for x in Path(args.cases).read_text().splitlines() if x.strip()]
+    if args.validation_only:
+        cases = validation_only_representatives([c for c in cases if c['case_id'] in eligible])
     selected, descriptors = [], []
     for case in cases:
         if case['case_id'] not in eligible:
@@ -47,7 +51,7 @@ def main():
         descriptors.append(dict(group_id=case['group_id'], content_key=case['reuse_content_key'],
                                 source_origin_ids=sources, target_origin_ids=targets))
         selected.append(case)
-    roles = freeze_group_roles(descriptors)
+    roles = validation_only_roles(descriptors) if args.validation_only else freeze_group_roles(descriptors)
     required = {o for d in descriptors for o in d['source_origin_ids'] + d['target_origin_ids']}
     examples = {}
     for raw in iter_raw_records(Path(args.raw)):
@@ -90,6 +94,7 @@ def main():
                   exploratory_revision_after_answer_format_diagnostic=True,
                   repair_metric='normalized_kv_deviation', common_first_reuse_layer=9,
                   dataset_scope=recovery['dataset'], mechanism_pilot_only=True,
+                  validation_only_no_profile_fit=args.validation_only,
                   online_execution_allowed=False, gpu_runtime_qualified=False,
                   paper_evidence=False, locked_test_accessed=False)
     report['partition_sha256'] = digest_json(report)
