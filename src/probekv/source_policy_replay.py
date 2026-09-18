@@ -17,6 +17,8 @@ from .v8_schema10_execution import digest_json
 
 
 KIND = "source_policy_full_cohort_observation_v1"
+LEGACY_KIND = "source_policy_legacy_diagnostic_observation_v1"
+LEGACY_DEPTHS = ((1, 2, 4, 5, 8), (1, 2, 4, 5, 7))
 PROVENANCE_FIELDS = (
     "request_id", "segment_id", "model_signature", "tokenizer_signature",
     "request_token_ids_sha256", "source_inventory_digest", "code_commit",
@@ -49,8 +51,8 @@ def observe_depth_k(current_k, source_k_by_id, *, completed_depth):
     Host extraction/digests are diagnostic work, not an online fast path.
     """
     import torch
-    if type(completed_depth) is not int or completed_depth not in (1, 2):
-        raise ValueError("only completed depths 1 and 2 are valid")
+    if type(completed_depth) is not int or completed_depth not in (1, 2, 4, 5, 7, 8):
+        raise ValueError("only registered diagnostic checkpoints are valid")
     if (not isinstance(current_k, torch.Tensor) or current_k.ndim != 3
             or current_k.dtype != torch.bfloat16 or current_k.shape[0] < 2
             or any(n == 0 for n in current_k.shape)):
@@ -74,6 +76,8 @@ def observe_depth_k(current_k, source_k_by_id, *, completed_depth):
         if not bool(torch.isfinite(drift).all().item()):
             raise ValueError("nonfinite normalized residual")
         sources[sid] = {"selection_k_digest": _hash_tensor(source),
+                        "relative_l2": float((source.detach().float()-current).norm().item() /
+                                             max(current.norm().item(), 1e-12)),
                         "normalized_k_drifts": drift.cpu().tolist()}
     return {"completed_depth": completed_depth,
             "k_observation_layer_1based": completed_depth + 1,
@@ -83,8 +87,8 @@ def observe_depth_k(current_k, source_k_by_id, *, completed_depth):
 
 
 def build_observation(*, provenance, absolute_positions, correctness_eligible_source_ids,
-                      depth_observations, evidence_origin="cpu_interface_test"):
-    value = {"kind": KIND, "provenance": dict(provenance),
+                      depth_observations, evidence_origin="cpu_interface_test", legacy_diagnostic=False):
+    value = {"kind": LEGACY_KIND if legacy_diagnostic else KIND, "provenance": dict(provenance),
              "absolute_positions": list(absolute_positions),
              "correctness_eligible_source_ids": list(correctness_eligible_source_ids),
              "depth_observations": list(depth_observations),
@@ -103,7 +107,7 @@ def _digest(value):
 
 
 def validate_observation(value):
-    if not isinstance(value, dict) or value.get("kind") != KIND:
+    if not isinstance(value, dict) or value.get("kind") not in (KIND, LEGACY_KIND):
         raise ValueError("unsupported observation format")
     unsigned = {k: v for k, v in value.items() if k != "observation_sha256"}
     if not _digest(value.get("observation_sha256")) or digest_json(unsigned) != value["observation_sha256"]:
@@ -134,10 +138,12 @@ def validate_observation(value):
             or len(set(eligible)) != len(eligible)):
         raise ValueError("explicit immutable correctness-eligible inventory required")
     depths = value.get("depth_observations", [])
-    if not isinstance(depths, list) or len(depths) != 2:
-        raise ValueError("both full-cohort d1 and d2 observations required")
+    expected = tuple(r.get("completed_depth") for r in depths if isinstance(r, dict)) if isinstance(depths, list) else ()
+    if (value["kind"] == KIND and expected != (1, 2) or
+            value["kind"] == LEGACY_KIND and expected not in LEGACY_DEPTHS):
+        raise ValueError("complete registered checkpoint trajectory required")
     cohorts, geometries = [], []
-    for depth, record in enumerate(depths, 1):
+    for depth, record in zip(expected, depths):
         if (not isinstance(record, dict) or type(record.get("completed_depth")) is not int
                 or record["completed_depth"] != depth
                 or type(record.get("k_observation_layer_1based")) is not int
@@ -161,12 +167,14 @@ def validate_observation(value):
             if (not isinstance(drifts, list) or len(drifts) != len(positions)
                     or any(type(x) not in (int, float) or not math.isfinite(x) or x < 0 for x in drifts)):
                 raise ValueError("finite per-token drift rows required")
-    if cohorts[0] != cohorts[1] or geometries[0] != geometries[1]:
+    if any(c != cohorts[0] for c in cohorts) or any(g != geometries[0] for g in geometries):
         raise ValueError("d2 shadow must cover exactly the entire d1 cohort/geometry")
 
 
 def replay_observation(value):
     validate_observation(value)
+    if value['kind'] != KIND:
+        raise ValueError('legacy diagnostic cannot masquerade as d1/d2 policy replay')
     provenance = value["provenance"]
     positions = value["absolute_positions"]
     eligible_k = len(value["correctness_eligible_source_ids"])

@@ -43,6 +43,7 @@ def main():
     for key in ('pilot', 'pilot-sha256', 'runtime', 'runtime-sha256', 'output'):
         p.add_argument('--' + key, required=True)
     p.add_argument('--execute', action='store_true')
+    p.add_argument('--legacy-alignment-diagnostic', action='store_true')
     args = p.parse_args()
     pilot = read_verified(args.pilot, args.pilot_sha256)
     runtime = read_verified(args.runtime, args.runtime_sha256)
@@ -62,6 +63,10 @@ def main():
     root = Path(args.output)
     root.mkdir(parents=True, exist_ok=False)
     atomic_write_json(root / 'inputs.json', dict(pilot=pilot, runtime=runtime))
+    atomic_write_json(root / 'diagnostic_contract.json', dict(
+        legacy_alignment_diagnostic=args.legacy_alignment_diagnostic,
+        thresholds_changed=False, fixed_source_policies=['earliest', 'latest'],
+        post_hoc_best_fixed_is_upper_bound_only=True))
     started = time.perf_counter()
     try:
         from probekv.v8_schema10_native_factory import create_native_measurement_backend
@@ -89,10 +94,32 @@ def main():
                 atomic_write_json(folder / ('source-%02d.json' % si), dict(source_id=source.source_variant_id,
                     request_sha256=digest_json(q), capture_audit=capture['capture_audit']))
                 del capture
+            if args.legacy_alignment_diagnostic:
+                from probekv.source_state_alignment import audit_source_identity, audit_self_observation
+                for si, (q, source_id) in enumerate(zip(group['source_requests'], source_ids)):
+                    # Same mathematical input; only diagnostic lookup epoch changes.
+                    self_request = dict(q, request_epoch=max(x['request_epoch'] for x in group['source_requests'])+1)
+                    identity_audit = audit_source_identity(q, self_request, source_id,
+                        backend.store.objects[source_id].metadata, backend.provenance['model_signature'])
+                    adapter.reset()
+                    observed = capture_native_source_observation(backend, request=self_request,
+                        selection_path=path, source_ids=[source_id], binding=runtime['binding'],
+                        host_budget_bytes=2**30, legacy_diagnostic=True)
+                    audit = audit_self_observation(observed, source_id)
+                    atomic_write_json(folder / ('self-%02d-alignment.json' % si),
+                        dict(identity=identity_audit, numeric=audit, capture=observed))
+                    if not audit['passed']:
+                        raise RuntimeError('canonical/live self-state alignment failed; stop before ranking')
             for ti, request in enumerate(group['target_requests']):
+                if args.legacy_alignment_diagnostic:
+                    identity_rows = [audit_source_identity(q, request, source_id,
+                        backend.store.objects[source_id].metadata, backend.provenance['model_signature'])
+                        for q, source_id in zip(group['source_requests'], source_ids)]
+                    atomic_write_json(folder / ('target-%02d-identity.json' % ti), identity_rows)
                 adapter.reset()
                 observation = capture_native_source_observation(backend, request=request,
-                    selection_path=path, source_ids=source_ids, binding=runtime['binding'], host_budget_bytes=2**30)
+                    selection_path=path, source_ids=source_ids, binding=runtime['binding'], host_budget_bytes=2**30,
+                    legacy_diagnostic=args.legacy_alignment_diagnostic)
                 atomic_write_json(folder / ('target-%02d-selection.json' % ti), observation)
                 adapter.reset()
                 report = run_native_source_oracle(backend, request=request,

@@ -41,6 +41,7 @@ def main():
     hashes, groups = {}, {}
     for folder in sorted(root.glob('group-*')):
         rows = []
+        source_order = [json.loads(p.read_text())['source_id'] for p in sorted(folder.glob('source-*.json'))]
         for path in sorted(folder.glob('target-*-qa.json')):
             select = path.with_name(path.name.replace('-qa.json', '-selection.json'))
             for f in (path, select):
@@ -74,8 +75,19 @@ def main():
                     margin=(residual[order[1]]-residual[order[0]])/max(residual[order[1]],1e-12)))
             rows.append(dict(target=path.stem, dense_f1=dense[0]['qa_evidence']['answer_f1'],
                 f1_by_source=scores, rankings=ranks,
+                token_ids_by_source={r['source_id']:r['qa_evidence']['token_ids'] for r in sources},
                 source_answers={r['source_id']:r['answer'] for r in sources}))
         groups[folder.name] = summarize_group(rows)
+        if source_order:
+            groups[folder.name]['outcome_independent_fixed_policies'] = {
+                policy: dict(source_id=s, mean_f1=groups[folder.name]['fixed_mean_f1'][s],
+                    safe_coverage=groups[folder.name]['fixed_safe_coverage'][s])
+                for policy, s in [('earliest', source_order[0]), ('latest', source_order[-1])]}
+        groups[folder.name]['per_depth'] = {
+            str(d): dict(mean_selected_f1=sum(r['f1_by_source'][next(x for x in r['rankings'] if x['depth']==d)['source_order'][0]] for r in rows)/len(rows),
+                max_f1_tie_hits=sum(r['f1_by_source'][next(x for x in r['rankings'] if x['depth']==d)['source_order'][0]] >= max(r['f1_by_source'].values())-1e-12 for r in rows),
+                safe_hits=sum(r['f1_by_source'][next(x for x in r['rankings'] if x['depth']==d)['source_order'][0]] >= r['dense_f1']-.02-1e-12 for r in rows))
+            for d in [x['depth'] for x in rows[0]['rankings']]}
     report = dict(kind='post_hoc_source_dominance_audit_v1', groups=groups, input_sha256=hashes,
         fixed_repair_ratio=.15, residual_trim_ratio=.15, quality_drop_tolerance=.02,
         threshold_fitted=False, production_admission_applicable=False, paper_evidence=False)

@@ -13,7 +13,8 @@ from .v8_schema10_inventory import native_segment_inventory
 
 
 def capture_native_source_observation(backend, *, request, selection_path, source_ids,
-                                      binding, host_budget_bytes, allow_cpu_test=False):
+                                      binding, host_budget_bytes, allow_cpu_test=False,
+                                      legacy_diagnostic=False):
     if (len(request.get("segments", ())) != 1 or request.get("locked_test_accessed") is not False
             or request.get("partition_role") not in {"fit", "validation", "development", "profile_freeze"}
             or not request.get("development_partition_digest")
@@ -34,6 +35,11 @@ def capture_native_source_observation(backend, *, request, selection_path, sourc
     if actual_binding is not None and any(binding[key] != actual_binding.get(key) for key in required):
         raise ValueError("capture/native manifest binding differs")
     adapter = backend.adapters[selection_path]
+    checkpoints = tuple(adapter.spec.checkpoints) if legacy_diagnostic else (1, 2)
+    if legacy_diagnostic:
+        from .source_policy_replay import LEGACY_DEPTHS
+        if checkpoints not in LEGACY_DEPTHS:
+            raise ValueError('unsupported full legacy checkpoint tuple')
     with backend.lock, backend.store.pool.mutation_lock:
         if backend.pending or getattr(adapter, "active", None) or backend.hbm.active_reserved_bytes:
             raise RuntimeError("capture requires a quiescent backend")
@@ -46,7 +52,7 @@ def capture_native_source_observation(backend, *, request, selection_path, sourc
         if not set(source_ids) <= set(eligible_ids):
             raise ValueError("Source set includes future/unavailable/non-exact variants")
         for source in source_ids:
-            if not {1, 2} <= set(backend.store.objects[source].metadata["selection_completed_depths"]):
+            if not set(checkpoints) <= set(backend.store.objects[source].metadata["selection_completed_depths"]):
                 raise ValueError("full d1/d2 SelectionState is required; no full-KV fallback")
         pool_before = backend.store.snapshot_descriptor()
         runtime_snapshot = (adapter.snapshot(retain=True) if adapter.capabilities.get("snapshot_accepts_retention")
@@ -64,7 +70,7 @@ def capture_native_source_observation(backend, *, request, selection_path, sourc
                 native = context.evidence_origin == "real_cuda_execution"
                 if not native and not allow_cpu_test:
                     raise RuntimeError("CPU context cannot impersonate native capture")
-                for depth in (1, 2):
+                for depth in checkpoints:
                     if hasattr(adapter, "check_deadline"):
                         adapter.check_deadline()
                     begin = time.perf_counter_ns()
@@ -112,7 +118,8 @@ def capture_native_source_observation(backend, *, request, selection_path, sourc
                     "development_partition_digest": request["development_partition_digest"]}
                 result = {"observation": build_observation(provenance=provenance,
                     absolute_positions=descriptor["positions"], correctness_eligible_source_ids=eligible_ids,
-                    depth_observations=depths, evidence_origin="native_hook_diagnostic" if native else "cpu_interface_test"),
+                    depth_observations=depths, evidence_origin="native_hook_diagnostic" if native else "cpu_interface_test",
+                    legacy_diagnostic=legacy_diagnostic),
                     "diagnostic_stages": stages, "cached_prefix_tokens": context.cached_prefix_tokens,
                     "diagnostic_first_token_wall_ms": (first[0] - started) / 1e6,
                     "output_token_ids": output.get("token_ids"), "qa_passed": None,
